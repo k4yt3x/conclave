@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package conclave.v1;
+
+// ============================================================
+// Authentication
+// ============================================================
+
+message RegisterRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message RegisterResponse {
+  uint64 user_id = 1;
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string token = 1;
+  uint64 user_id = 2;
+}
+
+// ============================================================
+// Key Packages
+// ============================================================
+
+message UploadKeyPackageRequest {
+  bytes key_package_data = 1;
+}
+
+message UploadKeyPackageResponse {}
+
+message GetKeyPackageResponse {
+  bytes key_package_data = 1;
+}
+
+// ============================================================
+// Groups
+// ============================================================
+
+message CreateGroupRequest {
+  string name = 1;
+  repeated string member_usernames = 2;
+}
+
+message CreateGroupResponse {
+  string group_id = 1;
+  // Key packages for each requested member, keyed by username
+  map<string, bytes> member_key_packages = 2;
+}
+
+message GroupInfo {
+  string group_id = 1;
+  string name = 2;
+  uint64 creator_id = 3;
+  repeated GroupMember members = 4;
+  uint64 created_at = 5;
+}
+
+message GroupMember {
+  uint64 user_id = 1;
+  string username = 2;
+}
+
+message ListGroupsResponse {
+  repeated GroupInfo groups = 1;
+}
+
+// ============================================================
+// Commits (MLS group state changes)
+// ============================================================
+
+message UploadCommitRequest {
+  bytes commit_message = 1;
+  // Welcome messages keyed by recipient username
+  map<string, bytes> welcome_messages = 2;
+  // Group info for server-side ExternalClient observation
+  bytes group_info = 3;
+}
+
+message UploadCommitResponse {}
+
+// Pending welcome that a newly-invited member can fetch
+message PendingWelcome {
+  string group_id = 1;
+  string group_name = 2;
+  bytes welcome_message = 3;
+}
+
+message ListPendingWelcomesResponse {
+  repeated PendingWelcome welcomes = 1;
+}
+
+// ============================================================
+// Invitations (post-creation member addition)
+// ============================================================
+
+message InviteToGroupRequest {
+  repeated string usernames = 1;
+}
+
+message InviteToGroupResponse {
+  // Key packages for each invited user, keyed by username
+  map<string, bytes> member_key_packages = 1;
+}
+
+// ============================================================
+// Messages
+// ============================================================
+
+message SendMessageRequest {
+  bytes mls_message = 1;
+}
+
+message SendMessageResponse {
+  uint64 sequence_num = 1;
+}
+
+message StoredMessage {
+  uint64 sequence_num = 1;
+  uint64 sender_id = 2;
+  string sender_username = 3;
+  bytes mls_message = 4;
+  uint64 created_at = 5;
+}
+
+message GetMessagesResponse {
+  repeated StoredMessage messages = 1;
+}
+
+// ============================================================
+// SSE Events
+// ============================================================
+
+message ServerEvent {
+  oneof event {
+    NewMessageEvent new_message = 1;
+    GroupUpdateEvent group_update = 2;
+    WelcomeEvent welcome = 3;
+  }
+}
+
+message NewMessageEvent {
+  string group_id = 1;
+  uint64 sequence_num = 2;
+  uint64 sender_id = 3;
+}
+
+message GroupUpdateEvent {
+  string group_id = 1;
+  string update_type = 2;
+}
+
+message WelcomeEvent {
+  string group_id = 1;
+  string group_name = 2;
+}
+
+// ============================================================
+// Common
+// ============================================================
+
+message ErrorResponse {
+  string message = 1;
+}
+
+message UserInfoResponse {
+  uint64 user_id = 1;
+  string username = 2;
+}
