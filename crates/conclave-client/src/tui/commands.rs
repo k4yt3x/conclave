@@ -915,3 +915,247 @@ pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_register() {
+        let cmd = parse("/register alice pass1234").unwrap();
+        if let Command::Register { username, password } = cmd {
+            assert_eq!(username, "alice");
+            assert_eq!(password, "pass1234");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_register_missing_args() {
+        assert!(parse("/register alice").is_err());
+    }
+
+    #[test]
+    fn test_parse_login() {
+        let cmd = parse("/login alice pass1234").unwrap();
+        if let Command::Login { username, password } = cmd {
+            assert_eq!(username, "alice");
+            assert_eq!(password, "pass1234");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_login_missing_args() {
+        assert!(parse("/login alice").is_err());
+    }
+
+    #[test]
+    fn test_parse_keygen() {
+        let cmd = parse("/keygen").unwrap();
+        assert!(matches!(cmd, Command::Keygen));
+    }
+
+    #[test]
+    fn test_parse_create() {
+        let cmd = parse("/create room alice,bob").unwrap();
+        if let Command::Create { name, members } = cmd {
+            assert_eq!(name, "room");
+            assert_eq!(members, vec!["alice", "bob"]);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_create_missing_args() {
+        assert!(parse("/create room").is_err());
+    }
+
+    #[test]
+    fn test_parse_join_no_arg() {
+        let cmd = parse("/join").unwrap();
+        if let Command::Join { target } = cmd {
+            assert!(target.is_none());
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_join_with_target() {
+        let cmd = parse("/join myroom").unwrap();
+        if let Command::Join { target } = cmd {
+            assert_eq!(target, Some("myroom".to_string()));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_invite() {
+        let cmd = parse("/invite alice,bob").unwrap();
+        if let Command::Invite { members } = cmd {
+            assert_eq!(members, vec!["alice", "bob"]);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_invite_missing_args() {
+        assert!(parse("/invite").is_err());
+    }
+
+    #[test]
+    fn test_parse_kick() {
+        let cmd = parse("/kick alice").unwrap();
+        if let Command::Kick { username } = cmd {
+            assert_eq!(username, "alice");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_kick_missing_args() {
+        assert!(parse("/kick").is_err());
+    }
+
+    #[test]
+    fn test_parse_leave() {
+        let cmd = parse("/leave").unwrap();
+        assert!(matches!(cmd, Command::Leave));
+    }
+
+    #[test]
+    fn test_parse_part() {
+        let cmd = parse("/part").unwrap();
+        assert!(matches!(cmd, Command::Part));
+    }
+
+    #[test]
+    fn test_parse_rotate() {
+        let cmd = parse("/rotate").unwrap();
+        assert!(matches!(cmd, Command::Rotate));
+    }
+
+    #[test]
+    fn test_parse_reset() {
+        let cmd = parse("/reset").unwrap();
+        assert!(matches!(cmd, Command::Reset));
+    }
+
+    #[test]
+    fn test_parse_info() {
+        let cmd = parse("/info").unwrap();
+        assert!(matches!(cmd, Command::Info));
+    }
+
+    #[test]
+    fn test_parse_rooms() {
+        let cmd = parse("/rooms").unwrap();
+        assert!(matches!(cmd, Command::Rooms));
+    }
+
+    #[test]
+    fn test_parse_rooms_alias() {
+        let cmd = parse("/list").unwrap();
+        assert!(matches!(cmd, Command::Rooms));
+    }
+
+    #[test]
+    fn test_parse_who() {
+        let cmd = parse("/who").unwrap();
+        assert!(matches!(cmd, Command::Who));
+    }
+
+    #[test]
+    fn test_parse_msg() {
+        let cmd = parse("/msg room hello world").unwrap();
+        if let Command::Msg { room, text } = cmd {
+            assert_eq!(room, "room");
+            assert_eq!(text, "hello world");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_msg_missing_args() {
+        assert!(parse("/msg room").is_err());
+    }
+
+    #[test]
+    fn test_parse_unread() {
+        let cmd = parse("/unread").unwrap();
+        assert!(matches!(cmd, Command::Unread));
+    }
+
+    #[test]
+    fn test_parse_logout() {
+        let cmd = parse("/logout").unwrap();
+        assert!(matches!(cmd, Command::Logout));
+    }
+
+    #[test]
+    fn test_parse_me() {
+        let cmd = parse("/me").unwrap();
+        assert!(matches!(cmd, Command::Me));
+    }
+
+    #[test]
+    fn test_parse_help() {
+        let cmd = parse("/help").unwrap();
+        assert!(matches!(cmd, Command::Help));
+    }
+
+    #[test]
+    fn test_parse_help_alias() {
+        let cmd = parse("/h").unwrap();
+        assert!(matches!(cmd, Command::Help));
+    }
+
+    #[test]
+    fn test_parse_quit() {
+        let cmd = parse("/quit").unwrap();
+        assert!(matches!(cmd, Command::Quit));
+    }
+
+    #[test]
+    fn test_parse_quit_aliases() {
+        let cmd_exit = parse("/exit").unwrap();
+        assert!(matches!(cmd_exit, Command::Quit));
+
+        let cmd_q = parse("/q").unwrap();
+        assert!(matches!(cmd_q, Command::Quit));
+    }
+
+    #[test]
+    fn test_parse_plain_message() {
+        let cmd = parse("hello").unwrap();
+        if let Command::Message { text } = cmd {
+            assert_eq!(text, "hello");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_command() {
+        assert!(parse("/xyz").is_err());
+    }
+
+    #[test]
+    fn test_parse_password_with_spaces() {
+        let cmd = parse("/login user pass word here").unwrap();
+        if let Command::Login { username, password } = cmd {
+            assert_eq!(username, "user");
+            assert_eq!(password, "pass word here");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+}

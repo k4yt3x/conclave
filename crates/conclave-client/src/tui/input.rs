@@ -123,3 +123,215 @@ impl InputLine {
         self.buffer.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_and_content() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        assert_eq!(input.content(), "abc");
+    }
+
+    #[test]
+    fn test_backspace() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        input.backspace();
+        assert_eq!(input.content(), "ab");
+    }
+
+    #[test]
+    fn test_backspace_empty() {
+        let mut input = InputLine::new();
+        input.backspace();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        input.move_left();
+        input.delete();
+        assert_eq!(input.content(), "ab");
+    }
+
+    #[test]
+    fn test_delete_at_end() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        input.delete();
+        assert_eq!(input.content(), "abc");
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        input.insert('d');
+
+        input.home();
+        assert_eq!(input.cursor_position(), 0);
+
+        input.end();
+        assert_eq!(input.cursor_position(), 4);
+
+        input.move_left();
+        assert_eq!(input.cursor_position(), 3);
+
+        input.move_right();
+        assert_eq!(input.cursor_position(), 4);
+    }
+
+    #[test]
+    fn test_cursor_left_at_zero() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.home();
+        input.move_left();
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_cursor_right_at_end() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.end();
+        input.move_right();
+        assert_eq!(input.cursor_position(), input.content().len());
+    }
+
+    #[test]
+    fn test_submit_clears_buffer() {
+        let mut input = InputLine::new();
+        for ch in "hello".chars() {
+            input.insert(ch);
+        }
+        let result = input.submit();
+        assert_eq!(result, "hello");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn test_submit_adds_to_history() {
+        let mut input = InputLine::new();
+        for ch in "hello".chars() {
+            input.insert(ch);
+        }
+        input.submit();
+        input.history_up();
+        assert_eq!(input.content(), "hello");
+    }
+
+    #[test]
+    fn test_submit_excludes_login_from_history() {
+        let mut input = InputLine::new();
+        for ch in "/login user pass".chars() {
+            input.insert(ch);
+        }
+        input.submit();
+        input.history_up();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_submit_excludes_register_from_history() {
+        let mut input = InputLine::new();
+        for ch in "/register user pass".chars() {
+            input.insert(ch);
+        }
+        input.submit();
+        input.history_up();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_history_navigation() {
+        let mut input = InputLine::new();
+        for ch in "first".chars() {
+            input.insert(ch);
+        }
+        input.submit();
+        for ch in "second".chars() {
+            input.insert(ch);
+        }
+        input.submit();
+
+        input.history_up();
+        assert_eq!(input.content(), "second");
+
+        input.history_up();
+        assert_eq!(input.content(), "first");
+
+        input.history_down();
+        assert_eq!(input.content(), "second");
+
+        input.history_down();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_history_up_empty() {
+        let mut input = InputLine::new();
+        input.history_up();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_history_down_no_navigation() {
+        let mut input = InputLine::new();
+        input.history_down();
+        assert_eq!(input.content(), "");
+    }
+
+    #[test]
+    fn test_is_empty() {
+        let mut input = InputLine::new();
+        assert!(input.is_empty());
+        input.insert('a');
+        assert!(!input.is_empty());
+    }
+
+    #[test]
+    fn test_insert_at_cursor_position() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('c');
+        input.move_left();
+        input.insert('b');
+        assert_eq!(input.content(), "abc");
+    }
+
+    #[test]
+    fn test_cursor_position_tracking() {
+        let mut input = InputLine::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        assert_eq!(input.cursor_position(), 3);
+        input.move_left();
+        assert_eq!(input.cursor_position(), 2);
+    }
+
+    #[test]
+    fn test_submit_empty_not_added_to_history() {
+        let mut input = InputLine::new();
+        input.submit();
+        input.history_up();
+        assert_eq!(input.content(), "");
+    }
+}

@@ -139,3 +139,106 @@ impl MessageStore {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::state::DisplayMessage;
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_open_creates_db() {
+        let dir = TempDir::new().unwrap();
+        let _store = MessageStore::open(dir.path()).unwrap();
+        assert!(dir.path().join("message_history.db").exists());
+    }
+
+    #[test]
+    fn test_push_and_load_messages() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::user("alice", "hello", 1));
+        store.push_message("g1", &DisplayMessage::user("bob", "world", 2));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].sender, "alice");
+        assert_eq!(msgs[0].content, "hello");
+        assert_eq!(msgs[1].sender, "bob");
+        assert_eq!(msgs[1].content, "world");
+    }
+
+    #[test]
+    fn test_load_messages_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        let msgs = store.load_messages("nonexistent");
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_load_messages_limit() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        for i in 0..1001 {
+            store.push_message(
+                "g1",
+                &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
+            );
+        }
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1000);
+    }
+
+    #[test]
+    fn test_last_seen_seq_default() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_last_seen_seq("unknown"), 0);
+    }
+
+    #[test]
+    fn test_set_and_get_last_seen_seq() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 42);
+        assert_eq!(store.get_last_seen_seq("g1"), 42);
+    }
+
+    #[test]
+    fn test_last_read_seq_default() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_last_read_seq("unknown"), 0);
+    }
+
+    #[test]
+    fn test_set_and_get_last_read_seq() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_read_seq("g1", 10);
+        assert_eq!(store.get_last_read_seq("g1"), 10);
+    }
+
+    #[test]
+    fn test_set_last_seen_seq_upsert() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 5);
+        store.set_last_seen_seq("g1", 10);
+        assert_eq!(store.get_last_seen_seq("g1"), 10);
+    }
+
+    #[test]
+    fn test_messages_isolated_by_group() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::user("alice", "for g1", 1));
+        store.push_message("g2", &DisplayMessage::user("bob", "for g2", 2));
+        let g1_msgs = store.load_messages("g1");
+        assert_eq!(g1_msgs.len(), 1);
+        assert_eq!(g1_msgs[0].content, "for g1");
+        let g2_msgs = store.load_messages("g2");
+        assert_eq!(g2_msgs.len(), 1);
+        assert_eq!(g2_msgs[0].content, "for g2");
+    }
+}

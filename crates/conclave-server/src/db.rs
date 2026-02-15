@@ -29,7 +29,6 @@ impl Database {
     }
 
     /// Create an in-memory database (for testing).
-    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         let db = Self {
@@ -440,6 +439,8 @@ impl Database {
 mod tests {
     use super::*;
 
+    // ── Existing tests (1-3) ───────────────────────────────────────
+
     #[test]
     fn test_user_crud() {
         let db = Database::open_in_memory().unwrap();
@@ -503,5 +504,354 @@ mod tests {
         let msgs = db.get_messages("g1", 1, 100).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].3, b"msg2");
+    }
+
+    // ── New tests (4-31) ───────────────────────────────────────────
+
+    #[test]
+    fn test_duplicate_username_returns_conflict() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_user("alice", "hash123").unwrap();
+        let result = db.create_user("alice", "hash456");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("already exists"),
+            "Expected error to contain 'already exists', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_get_nonexistent_user() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.get_user_by_username("nobody").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_user_by_id() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db.create_user("alice", "hash").unwrap();
+        let user = db.get_user_by_id(id).unwrap().unwrap();
+        assert_eq!(user.0, id);
+        assert_eq!(user.1, "alice");
+    }
+
+    #[test]
+    fn test_get_user_by_id_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.get_user_by_id(9999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_session_create_validate() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+        let token = "test-session-token";
+        db.create_session(token, uid, i64::MAX).unwrap();
+        let result = db.validate_session(token).unwrap();
+        assert_eq!(result, Some(uid));
+    }
+
+    #[test]
+    fn test_session_invalid_token() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+        db.create_session("real-token", uid, i64::MAX).unwrap();
+        let result = db.validate_session("wrong-token").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_session_expired() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+        let token = "expired-token";
+        db.create_session(token, uid, 0).unwrap();
+        let result = db.validate_session(token).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_session_delete() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+        let token = "delete-me";
+        db.create_session(token, uid, i64::MAX).unwrap();
+
+        // Session is valid before deletion.
+        assert!(db.validate_session(token).unwrap().is_some());
+
+        db.delete_session(token).unwrap();
+
+        // Session is gone after deletion.
+        assert!(db.validate_session(token).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_cleanup_expired_sessions() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        // One expired session (expires_at = 0, in the past).
+        db.create_session("expired-token", uid, 0).unwrap();
+
+        // One valid session (expires_at far in the future).
+        db.create_session("valid-token", uid, i64::MAX).unwrap();
+
+        let cleaned = db.cleanup_expired_sessions().unwrap();
+        assert_eq!(cleaned, 1);
+
+        // The valid session should still work.
+        assert_eq!(db.validate_session("valid-token").unwrap(), Some(uid));
+
+        // The expired session should already have been gone, but confirm.
+        assert!(db.validate_session("expired-token").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_key_package_replace() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        db.store_key_package(uid, b"kp1").unwrap();
+        db.store_key_package(uid, b"kp2").unwrap();
+
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"kp2");
+    }
+
+    #[test]
+    fn test_consume_key_package_nonexistent_user() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.consume_key_package(9999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_group_membership_check_nonmember() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        assert!(db.is_group_member("g1", alice).unwrap());
+        assert!(!db.is_group_member("g1", bob).unwrap());
+    }
+
+    #[test]
+    fn test_add_group_member_idempotent() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+        db.add_group_member("g1", bob).unwrap();
+        // Adding the same member again should not error.
+        db.add_group_member("g1", bob).unwrap();
+
+        let members = db.get_group_members("g1").unwrap();
+        assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_group_member() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+        db.add_group_member("g1", bob).unwrap();
+        assert!(db.is_group_member("g1", bob).unwrap());
+
+        db.remove_group_member("g1", bob).unwrap();
+        assert!(!db.is_group_member("g1", bob).unwrap());
+    }
+
+    #[test]
+    fn test_remove_group_member_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        // Removing a non-member should not panic or error.
+        db.remove_group_member("g1", bob).unwrap();
+    }
+
+    #[test]
+    fn test_list_user_groups_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        let groups = db.list_user_groups(alice).unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_get_group_members_after_removal() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+        db.add_group_member("g1", bob).unwrap();
+
+        let members = db.get_group_members("g1").unwrap();
+        assert_eq!(members.len(), 2);
+
+        db.remove_group_member("g1", bob).unwrap();
+
+        let members = db.get_group_members("g1").unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, alice);
+        assert_eq!(members[0].1, "alice");
+    }
+
+    #[test]
+    fn test_messages_sequence_numbers() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let seq1 = db.store_message("g1", alice, b"msg1").unwrap();
+        let seq2 = db.store_message("g1", alice, b"msg2").unwrap();
+        let seq3 = db.store_message("g1", alice, b"msg3").unwrap();
+
+        assert_eq!(seq1, 1);
+        assert_eq!(seq2, 2);
+        assert_eq!(seq3, 3);
+
+        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].0, 1);
+        assert_eq!(msgs[1].0, 2);
+        assert_eq!(msgs[2].0, 3);
+    }
+
+    #[test]
+    fn test_get_messages_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_get_messages_limit() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        for i in 1..=5 {
+            db.store_message("g1", alice, format!("msg{i}").as_bytes())
+                .unwrap();
+        }
+
+        let msgs = db.get_messages("g1", 0, 2).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].0, 1);
+        assert_eq!(msgs[1].0, 2);
+    }
+
+    #[test]
+    fn test_pending_welcomes_crud() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+        db.store_pending_welcome("g1", "test-group", alice, b"welcome_data")
+            .unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert_eq!(welcomes.len(), 1);
+        assert_eq!(welcomes[0].1, "g1");
+        assert_eq!(welcomes[0].2, "test-group");
+        assert_eq!(welcomes[0].3, b"welcome_data");
+
+        let welcome_id = welcomes[0].0;
+        db.delete_pending_welcome(welcome_id, alice).unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert!(welcomes.is_empty());
+    }
+
+    #[test]
+    fn test_pending_welcomes_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert!(welcomes.is_empty());
+    }
+
+    #[test]
+    fn test_store_group_info_insert_and_upsert() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        // Initial insert.
+        db.store_group_info("g1", b"info_v1").unwrap();
+        let info = db.get_group_info("g1").unwrap().unwrap();
+        assert_eq!(info, b"info_v1");
+
+        // Upsert (replace).
+        db.store_group_info("g1", b"info_v2").unwrap();
+        let info = db.get_group_info("g1").unwrap().unwrap();
+        assert_eq!(info, b"info_v2");
+    }
+
+    #[test]
+    fn test_get_group_info_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.get_group_info("nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_delete_key_packages() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        db.store_key_package(uid, b"kp_data").unwrap();
+        db.delete_key_packages(uid).unwrap();
+
+        let result = db.consume_key_package(uid).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_delete_key_packages_no_packages() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        // Deleting when none exist should not error.
+        db.delete_key_packages(uid).unwrap();
+    }
+
+    #[test]
+    fn test_get_user_id_by_username() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db.create_user("alice", "hash").unwrap();
+
+        let result = db.get_user_id_by_username("alice").unwrap().unwrap();
+        assert_eq!(result, id);
+    }
+
+    #[test]
+    fn test_get_user_id_by_username_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.get_user_id_by_username("nobody").unwrap();
+        assert!(result.is_none());
     }
 }

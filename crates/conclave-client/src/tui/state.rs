@@ -140,3 +140,137 @@ impl AppState {
         self.system_messages.push(msg);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_room(id: &str, name: &str) -> Room {
+        Room {
+            server_group_id: id.to_string(),
+            name: name.to_string(),
+            members: vec!["alice".to_string()],
+            last_seen_seq: 0,
+            last_read_seq: 0,
+        }
+    }
+
+    #[test]
+    fn test_new_defaults() {
+        let state = AppState::new();
+        assert!(!state.logged_in);
+        assert!(state.active_room.is_none());
+        assert!(state.rooms.is_empty());
+    }
+
+    #[test]
+    fn test_active_messages_no_room() {
+        let mut state = AppState::new();
+        state.push_system_message(DisplayMessage::system("hello"));
+        let msgs = state.active_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "hello");
+    }
+
+    #[test]
+    fn test_active_messages_with_room() {
+        let mut state = AppState::new();
+        state.active_room = Some("g1".to_string());
+        state.push_room_message("g1", DisplayMessage::user("alice", "hi", 100));
+        let msgs = state.active_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "hi");
+    }
+
+    #[test]
+    fn test_active_messages_empty_room() {
+        let mut state = AppState::new();
+        state.active_room = Some("g1".to_string());
+        let msgs = state.active_messages();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_find_room_by_name_exact() {
+        let mut state = AppState::new();
+        state
+            .rooms
+            .insert("g1".to_string(), make_room("g1", "general"));
+        assert!(state.find_room_by_name("general").is_some());
+    }
+
+    #[test]
+    fn test_find_room_by_name_case_insensitive() {
+        let mut state = AppState::new();
+        state
+            .rooms
+            .insert("g1".to_string(), make_room("g1", "general"));
+        assert!(state.find_room_by_name("GENERAL").is_some());
+    }
+
+    #[test]
+    fn test_find_room_by_name_prefix() {
+        let mut state = AppState::new();
+        state
+            .rooms
+            .insert("g1".to_string(), make_room("g1", "general"));
+        assert!(state.find_room_by_name("gen").is_some());
+    }
+
+    #[test]
+    fn test_find_room_by_name_not_found() {
+        let mut state = AppState::new();
+        state
+            .rooms
+            .insert("g1".to_string(), make_room("g1", "general"));
+        assert!(state.find_room_by_name("xyz").is_none());
+    }
+
+    #[test]
+    fn test_push_room_message() {
+        let mut state = AppState::new();
+        state.push_room_message("g1", DisplayMessage::user("alice", "hi", 100));
+        assert_eq!(state.room_messages["g1"].len(), 1);
+    }
+
+    #[test]
+    fn test_push_system_message() {
+        let mut state = AppState::new();
+        state.push_system_message(DisplayMessage::system("joined"));
+        assert_eq!(state.system_messages.len(), 1);
+    }
+
+    #[test]
+    fn test_active_room_info() {
+        let mut state = AppState::new();
+        state.active_room = Some("g1".to_string());
+        state
+            .rooms
+            .insert("g1".to_string(), make_room("g1", "general"));
+        assert!(state.active_room_info().is_some());
+        assert_eq!(state.active_room_info().unwrap().name, "general");
+    }
+
+    #[test]
+    fn test_active_room_info_none() {
+        let state = AppState::new();
+        assert!(state.active_room_info().is_none());
+    }
+
+    #[test]
+    fn test_display_message_user() {
+        let msg = DisplayMessage::user("alice", "hi", 123);
+        assert!(!msg.is_system);
+        assert_eq!(msg.sender, "alice");
+        assert_eq!(msg.content, "hi");
+        assert_eq!(msg.timestamp, 123);
+    }
+
+    #[test]
+    fn test_display_message_system() {
+        let msg = DisplayMessage::system("joined");
+        assert!(msg.is_system);
+        assert_eq!(msg.sender, "");
+        assert_eq!(msg.content, "joined");
+    }
+}

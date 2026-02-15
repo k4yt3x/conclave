@@ -634,3 +634,601 @@ fn mls_rs_codec_from_slice(bytes: &[u8]) -> Result<SigningIdentity> {
     SigningIdentity::mls_decode(&mut &*bytes)
         .map_err(|e| Error::Mls(format!("MLS codec decode failed: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    /// Create an MlsManager in a fresh temporary directory.
+    /// The TempDir is returned so it stays alive for the test's duration.
+    fn create_manager(username: &str) -> (TempDir, MlsManager) {
+        let dir = TempDir::new().unwrap();
+        let mgr = MlsManager::new(dir.path(), username).unwrap();
+        (dir, mgr)
+    }
+
+    /// Helper: Alice creates a group containing herself and bob.
+    /// Returns everything needed for further interaction.
+    fn setup_alice_bob() -> (
+        TempDir,
+        MlsManager,
+        TempDir,
+        MlsManager,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, commit_bytes, welcome_map, group_info_bytes) =
+            alice.create_group(&members).unwrap();
+
+        let welcome_bytes = welcome_map.get("bob").unwrap().clone();
+
+        (
+            _dir_a,
+            alice,
+            _dir_b,
+            bob,
+            group_id,
+            commit_bytes,
+            welcome_bytes,
+            group_info_bytes,
+        )
+    }
+
+    // ── 1. test_generate_key_package ─────────────────────────────────
+
+    #[test]
+    fn test_generate_key_package() {
+        let (_dir, mgr) = create_manager("alice");
+        let kp = mgr.generate_key_package().unwrap();
+        assert!(!kp.is_empty(), "key package bytes must not be empty");
+    }
+
+    // ── 2. test_create_group_single_member ───────────────────────────
+
+    #[test]
+    fn test_create_group_single_member() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, commit_bytes, welcome_map, group_info_bytes) =
+            alice.create_group(&members).unwrap();
+
+        assert!(!group_id.is_empty(), "group_id must not be empty");
+        // group_id should be valid hex
+        assert!(hex::decode(&group_id).is_ok(), "group_id must be valid hex");
+        assert!(!commit_bytes.is_empty(), "commit must not be empty");
+        assert!(
+            welcome_map.contains_key("bob"),
+            "welcome_map must contain bob"
+        );
+        assert!(
+            !welcome_map.get("bob").unwrap().is_empty(),
+            "bob's welcome must not be empty"
+        );
+        assert!(!group_info_bytes.is_empty(), "group_info must not be empty");
+    }
+
+    // ── 3. test_join_group_via_welcome ────────────────────────────────
+
+    #[test]
+    fn test_join_group_via_welcome() {
+        let (_dir_a, _alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+        assert_eq!(bob_group_id, group_id, "bob's group_id must match alice's");
+    }
+
+    // ── 4. test_encrypt_decrypt_roundtrip ────────────────────────────
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        let plaintext = b"hello, world!";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+        assert!(!ciphertext.is_empty());
+
+        let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
+        match decrypted {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            _ => panic!("expected Application message, got something else"),
+        }
+    }
+
+    // ── 5. test_decrypt_returns_application_message ──────────────────
+
+    #[test]
+    fn test_decrypt_returns_application_message() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        let plaintext = b"specific payload bytes";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        let result = bob.decrypt_message(&group_id, &ciphertext).unwrap();
+        if let DecryptedMessage::Application(data) = result {
+            assert_eq!(
+                data,
+                plaintext.to_vec(),
+                "decrypted data must match original plaintext"
+            );
+        } else {
+            panic!("expected DecryptedMessage::Application variant");
+        }
+    }
+
+    // ── 6. test_decrypt_commit_message ───────────────────────────────
+
+    #[test]
+    fn test_decrypt_commit_message() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome_bob, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome_bob).unwrap();
+
+        // Create carol and invite her to the group
+        let (_dir_c, carol) = create_manager("carol");
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (invite_commit, _welcome_map, _gi2) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+
+        // Bob processes the invite commit
+        let result = bob.decrypt_message(&group_id, &invite_commit).unwrap();
+        match result {
+            DecryptedMessage::Commit(info) => {
+                assert!(
+                    info.members_added.contains(&"carol".to_string()),
+                    "commit info must list carol as added, got: {:?}",
+                    info.members_added
+                );
+                assert!(!info.self_removed, "bob must not be self_removed");
+            }
+            _ => panic!("expected DecryptedMessage::Commit variant"),
+        }
+    }
+
+    // ── 7. test_create_group_multiple_members ────────────────────────
+
+    #[test]
+    fn test_create_group_multiple_members() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        // Create group with bob first
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut bob_members = HashMap::new();
+        bob_members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
+
+        let bob_gid = bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+        assert_eq!(bob_gid, group_id, "bob's group_id must match");
+
+        // Invite carol to the existing group
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (_invite_commit, welcome_map_carol, _gi2) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+
+        let carol_gid = carol
+            .join_group(welcome_map_carol.get("carol").unwrap())
+            .unwrap();
+        assert_eq!(carol_gid, group_id, "carol's group_id must match");
+    }
+
+    // ── 8. test_remove_member ────────────────────────────────────────
+
+    #[test]
+    fn test_remove_member() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        // Create group with bob
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut bob_members = HashMap::new();
+        bob_members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
+        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+
+        // Invite carol
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (_invite_commit, welcome_map_carol, _gi2) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        carol
+            .join_group(welcome_map_carol.get("carol").unwrap())
+            .unwrap();
+
+        let carol_index = alice
+            .find_member_index(&group_id, "carol")
+            .unwrap()
+            .expect("carol must be found in group");
+
+        let (commit, group_info) = alice.remove_member(&group_id, carol_index).unwrap();
+        assert!(!commit.is_empty(), "removal commit must not be empty");
+        assert!(
+            !group_info.is_empty(),
+            "removal group_info must not be empty"
+        );
+    }
+
+    // ── 9. test_find_member_index_found ──────────────────────────────
+
+    #[test]
+    fn test_find_member_index_found() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+
+        let result = alice.find_member_index(&group_id, "bob").unwrap();
+        assert!(result.is_some(), "bob must be found in the group");
+    }
+
+    // ── 10. test_find_member_index_not_found ─────────────────────────
+
+    #[test]
+    fn test_find_member_index_not_found() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+
+        let result = alice.find_member_index(&group_id, "carol").unwrap();
+        assert!(result.is_none(), "carol must not be found in the group");
+    }
+
+    // ── 11. test_rotate_keys ─────────────────────────────────────────
+
+    #[test]
+    fn test_rotate_keys() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        let (commit, group_info) = alice.rotate_keys(&group_id).unwrap();
+        assert!(!commit.is_empty(), "rotation commit must not be empty");
+        assert!(
+            !group_info.is_empty(),
+            "rotation group_info must not be empty"
+        );
+    }
+
+    // ── 12. test_rotate_keys_advances_epoch ──────────────────────────
+
+    #[test]
+    fn test_rotate_keys_advances_epoch() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        let details_before = alice.group_info_details(&group_id).unwrap();
+        let epoch_before = details_before.epoch;
+
+        alice.rotate_keys(&group_id).unwrap();
+
+        let details_after = alice.group_info_details(&group_id).unwrap();
+        assert!(
+            details_after.epoch > epoch_before,
+            "epoch must increase after key rotation: before={}, after={}",
+            epoch_before,
+            details_after.epoch
+        );
+    }
+
+    // ── 13. test_group_info_details ──────────────────────────────────
+
+    #[test]
+    fn test_group_info_details() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+
+        let details = alice.group_info_details(&group_id).unwrap();
+
+        assert!(details.epoch >= 1, "epoch must be at least 1");
+        assert_eq!(
+            details.member_count, 2,
+            "member_count must be 2 (alice + bob)"
+        );
+        assert!(
+            !details.cipher_suite.is_empty(),
+            "cipher_suite must not be empty"
+        );
+        assert!(
+            !details.members.is_empty(),
+            "members list must not be empty"
+        );
+
+        // Verify alice and bob are in the member list
+        let member_names: Vec<&str> = details.members.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(
+            member_names.contains(&"alice"),
+            "members must include alice"
+        );
+        assert!(member_names.contains(&"bob"), "members must include bob");
+    }
+
+    // ── 14. test_group_info_details_nonexistent_group ────────────────
+
+    #[test]
+    fn test_group_info_details_nonexistent_group() {
+        let (_dir, mgr) = create_manager("alice");
+        // Generate a key package to ensure the SQLite DB exists
+        mgr.generate_key_package().unwrap();
+
+        let result = mgr.group_info_details("deadbeef");
+        assert!(
+            result.is_err(),
+            "group_info_details for a nonexistent group must return Err"
+        );
+    }
+
+    // ── 15. test_delete_group_state ──────────────────────────────────
+
+    #[test]
+    fn test_delete_group_state() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+
+        // delete_group_state should not return an error
+        let result = alice.delete_group_state(&group_id);
+        assert!(result.is_ok(), "delete_group_state must not error");
+    }
+
+    // ── 16. test_wipe_local_state ────────────────────────────────────
+
+    #[test]
+    fn test_wipe_local_state() {
+        let (dir, mgr) = create_manager("alice");
+        // Generate a key package to create the SQLite state DB
+        mgr.generate_key_package().unwrap();
+
+        let data_dir = dir.path();
+        assert!(
+            data_dir.join("mls_identity.bin").exists(),
+            "identity file must exist before wipe"
+        );
+        assert!(
+            data_dir.join("mls_signing_key.bin").exists(),
+            "signing key file must exist before wipe"
+        );
+        assert!(
+            data_dir.join("mls_state.db").exists(),
+            "state DB must exist before wipe"
+        );
+
+        mgr.wipe_local_state().unwrap();
+
+        assert!(
+            !data_dir.join("mls_identity.bin").exists(),
+            "identity file must be gone after wipe"
+        );
+        assert!(
+            !data_dir.join("mls_signing_key.bin").exists(),
+            "signing key file must be gone after wipe"
+        );
+        assert!(
+            !data_dir.join("mls_state.db").exists(),
+            "state DB must be gone after wipe"
+        );
+    }
+
+    // ── 17. test_external_rejoin_group ───────────────────────────────
+
+    #[test]
+    fn test_external_rejoin_group() {
+        let (_dir_a, _alice, _dir_b, bob, group_id, _commit, welcome, group_info_bytes) =
+            setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        // A new identity performs an external commit to join the group
+        let (_dir_new, alice_new) = create_manager("alice_new");
+        let (new_group_id, ext_commit) = alice_new
+            .external_rejoin_group(&group_info_bytes, None)
+            .unwrap();
+
+        assert_eq!(
+            new_group_id, group_id,
+            "external rejoin group_id must match original"
+        );
+        assert!(!ext_commit.is_empty(), "external commit must not be empty");
+    }
+
+    // ── 18. test_encrypt_message_nonexistent_group ───────────────────
+
+    #[test]
+    fn test_encrypt_message_nonexistent_group() {
+        let (_dir, mgr) = create_manager("alice");
+        // Ensure the SQLite DB exists
+        mgr.generate_key_package().unwrap();
+
+        let result = mgr.encrypt_message("deadbeef", b"hello");
+        assert!(
+            result.is_err(),
+            "encrypt_message on nonexistent group must return Err"
+        );
+    }
+
+    // ── 19. test_decrypt_invalid_message ─────────────────────────────
+
+    #[test]
+    fn test_decrypt_invalid_message() {
+        let (_dir_a, _alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        // Garbage bytes fail at MlsMessage::from_bytes and propagate as Err.
+        let result = bob.decrypt_message(&group_id, b"garbage data");
+        assert!(result.is_err(), "decrypt of garbage bytes must return Err");
+    }
+
+    // ── 20. test_new_creates_identity_files ──────────────────────────
+
+    #[test]
+    fn test_new_creates_identity_files() {
+        let dir = TempDir::new().unwrap();
+        let _mgr = MlsManager::new(dir.path(), "alice").unwrap();
+
+        assert!(
+            dir.path().join("mls_identity.bin").exists(),
+            "mls_identity.bin must exist after MlsManager::new"
+        );
+        assert!(
+            dir.path().join("mls_signing_key.bin").exists(),
+            "mls_signing_key.bin must exist after MlsManager::new"
+        );
+    }
+
+    // ── 21. test_new_loads_existing_identity ──────────────────────────
+
+    #[test]
+    fn test_new_loads_existing_identity() {
+        let dir = TempDir::new().unwrap();
+
+        let mgr1 = MlsManager::new(dir.path(), "alice").unwrap();
+        let id1 = mgr1.identity_bytes.clone();
+        let sk1 = mgr1.signing_key_bytes.clone();
+
+        let mgr2 = MlsManager::new(dir.path(), "alice").unwrap();
+        assert_eq!(
+            mgr2.identity_bytes, id1,
+            "identity must be the same on reload"
+        );
+        assert_eq!(
+            mgr2.signing_key_bytes, sk1,
+            "signing key must be the same on reload"
+        );
+    }
+
+    // ── 22. test_message_after_key_rotation ──────────────────────────
+
+    #[test]
+    fn test_message_after_key_rotation() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+
+        bob.join_group(&welcome).unwrap();
+
+        // Alice rotates keys
+        let (rotation_commit, _gi2) = alice.rotate_keys(&group_id).unwrap();
+
+        // Bob must process the rotation commit first
+        let rotation_result = bob.decrypt_message(&group_id, &rotation_commit).unwrap();
+        match &rotation_result {
+            DecryptedMessage::Commit(_) => {} // expected
+            _ => panic!("rotation must produce a Commit message for bob"),
+        }
+
+        // Now alice encrypts at the new epoch
+        let plaintext = b"post-rotation secret";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        // Bob decrypts
+        let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
+        match decrypted {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            _ => panic!("expected Application message after rotation"),
+        }
+    }
+
+    // ── 23. test_remove_member_then_decrypt ──────────────────────────
+
+    #[test]
+    fn test_remove_member_then_decrypt() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        // Create group with bob
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut bob_members = HashMap::new();
+        bob_members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
+        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+
+        // Invite carol
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (invite_commit, welcome_map_carol, _gi2) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+
+        // Bob must process the invite commit so his state advances
+        bob.decrypt_message(&group_id, &invite_commit).unwrap();
+
+        carol
+            .join_group(welcome_map_carol.get("carol").unwrap())
+            .unwrap();
+
+        // Alice removes carol
+        let carol_index = alice
+            .find_member_index(&group_id, "carol")
+            .unwrap()
+            .expect("carol must be in the group");
+        let (removal_commit, _gi3) = alice.remove_member(&group_id, carol_index).unwrap();
+
+        // Bob processes the removal commit
+        let removal_result = bob.decrypt_message(&group_id, &removal_commit).unwrap();
+        match &removal_result {
+            DecryptedMessage::Commit(info) => {
+                assert!(
+                    !info.members_removed.is_empty(),
+                    "removal commit must list removed members"
+                );
+            }
+            _ => panic!("removal must produce a Commit message for bob"),
+        }
+
+        // Alice encrypts a message after removal
+        let plaintext = b"carol cannot see this";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        // Bob can still decrypt
+        let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
+        match decrypted {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            _ => panic!("expected Application message from bob after carol removal"),
+        }
+
+        // Carol should NOT be able to decrypt (she was removed).
+        // Her group state is from the old epoch, so processing should fail
+        // or return None.
+        let carol_result = carol.decrypt_message(&group_id, &ciphertext).unwrap();
+        match carol_result {
+            DecryptedMessage::None => {} // expected: message from unknown epoch
+            DecryptedMessage::Application(_) => {
+                panic!("carol must NOT be able to decrypt after removal")
+            }
+            DecryptedMessage::Commit(_) => {
+                panic!("carol must NOT process this as a commit")
+            }
+        }
+    }
+}

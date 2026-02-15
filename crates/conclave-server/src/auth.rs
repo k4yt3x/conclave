@@ -70,3 +70,58 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_and_verify_password() {
+        let hash = hash_password("correcthorse").expect("hashing should succeed");
+        let result = verify_password("correcthorse", &hash).expect("verification should succeed");
+        assert!(result, "correct password should verify as true");
+    }
+
+    #[test]
+    fn test_verify_wrong_password() {
+        let hash = hash_password("correcthorse").expect("hashing should succeed");
+        let result = verify_password("wrongpassword", &hash).expect("verification should succeed");
+        assert!(!result, "wrong password should verify as false");
+    }
+
+    #[test]
+    fn test_hash_produces_different_outputs() {
+        let hash1 = hash_password("samepassword").expect("hashing should succeed");
+        let hash2 = hash_password("samepassword").expect("hashing should succeed");
+        assert_ne!(
+            hash1, hash2,
+            "two hashes of the same password should differ due to random salt"
+        );
+    }
+
+    #[test]
+    fn test_generate_token_uniqueness() {
+        let token1 = generate_token();
+        let token2 = generate_token();
+        assert_ne!(token1, token2, "two generated tokens should differ");
+    }
+
+    #[test]
+    fn test_generate_token_length() {
+        let token = generate_token();
+        assert_eq!(
+            token.len(),
+            64,
+            "token should be 64 chars long (32 bytes hex-encoded)"
+        );
+    }
+
+    #[test]
+    fn test_verify_invalid_hash_format() {
+        let result = verify_password("pass", "not_a_valid_hash");
+        assert!(
+            result.is_err(),
+            "verifying against an invalid hash format should return Err"
+        );
+    }
+}

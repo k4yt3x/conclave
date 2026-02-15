@@ -1,9 +1,4 @@
-mod api;
-mod auth;
-mod config;
-mod db;
-mod error;
-mod state;
+use conclave_server::{api, config, db, state};
 
 use std::path::PathBuf;
 use std::sync::Arc;
