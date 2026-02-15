@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use argon2::password_hash::SaltString;
-use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use rand::RngCore;
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
