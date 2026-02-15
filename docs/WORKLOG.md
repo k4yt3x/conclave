@@ -112,13 +112,50 @@ data_dir/
 
 `MlsManager::new()` now creates and uses a per-user subdirectory. The REPL reloads the group mapping when a user logs in. `MlsManager::user_data_dir()` exposes the per-user path for callers that need it.
 
+## 2026-02-15: IRC-Style TUI Redesign
+
+### What Changed
+
+Replaced the blocking rustyline REPL (`repl.rs`) with an IRC-style interactive TUI using crossterm for raw terminal mode and reqwest-eventsource for real-time SSE message delivery.
+
+### New Architecture
+
+The TUI module (`src/tui/`) has 6 files:
+
+- **`mod.rs`** — Main event loop using `tokio::select!` over crossterm key events, SSE events, and a reconnection timer. Manages raw mode setup/teardown with alternate screen.
+- **`state.rs`** — `AppState` (rooms, active room, message history, group mapping, connection status), `Room`, `DisplayMessage`, `ConnectionStatus`.
+- **`input.rs`** — `InputLine` line editor with cursor movement, command history (up/down), and standard editing keys.
+- **`render.rs`** — Terminal drawing: message area (scrollable), reverse-video status line, input line with room prefix. ANSI nick coloring via username hash.
+- **`commands.rs`** — IRC-style command parsing and execution. Lines starting with `/` are commands; plain text sends to the active room.
+- **`events.rs`** — SSE event decoding (hex-encoded protobuf) and handling: new message fetch + MLS decrypt, welcome processing, group updates.
+
+### Key UX Changes
+
+- **Room context**: Users `/join` a room and type messages directly (no `/send <group_id>` needed)
+- **Real-time messages**: SSE pushes `NewMessageEvent` notifications; client fetches and decrypts new messages automatically
+- **Status line**: Shows connection status, active room with member count, and username
+- **IRC commands**: `/create`, `/join`, `/part`, `/rooms`, `/who`, `/invite`, `/msg`, `/help`, `/quit`
+- **Sent messages displayed locally**: Sender sees their own messages immediately without waiting for SSE echo
+
+### Dependency Changes
+
+- **Removed**: `rustyline`
+- **Added**: `crossterm` (event-stream), `reqwest-eventsource`, `futures-util`, `chrono`
+
+### MLS Threading
+
+MLS operations are sync (mls-rs compiled in sync mode). In the async TUI event loop, MLS decrypt/encrypt operations from SSE event handling use `tokio::task::spawn_blocking` with a fresh `MlsManager` constructed inside the closure. Command-initiated MLS operations (send, create, join) run inline since the event loop is blocked during command execution anyway.
+
+### SSE Reconnection
+
+The event loop includes a 5-second reconnection timer. When the SSE connection drops, the client automatically reconnects. Message continuity is maintained via `Room.last_seen_seq` — on reconnect, the client fetches only messages after the last seen sequence number.
+
 ### What to Build Next
 
-1. **Local sent message cache**: Store sent messages in plaintext locally so they appear in message history.
-2. **Message cursor/watermark**: Track last-read sequence per group per user to avoid reprocessing.
-3. **Multiple key packages**: Allow users to have N key packages so they can be added to multiple groups without re-uploading.
-4. **Member removal**: Wire up `commit_builder().remove_member()` with a `DELETE /api/v1/groups/{id}/members/{uid}` endpoint.
-5. **Background SSE in REPL**: Spawn a tokio task in the REPL that listens to SSE and displays incoming messages.
-6. **TLS support**: Add rustls-based TLS termination or document reverse proxy setup.
-7. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
-8. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
+1. **Multiple key packages**: Allow users to have N key packages so they can be added to multiple groups without re-uploading.
+2. **Member removal**: Wire up `commit_builder().remove_member()` with a `DELETE /api/v1/groups/{id}/members/{uid}` endpoint.
+3. **TLS support**: Add rustls-based TLS termination or document reverse proxy setup.
+4. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
+5. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
+6. **Tab completion**: Command and room name auto-completion in the TUI.
+7. **Unread indicators**: Show unread message counts for non-active rooms in the status line.

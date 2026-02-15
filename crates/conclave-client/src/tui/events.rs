@@ -1,0 +1,165 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use prost::Message;
+use tokio::sync::Mutex;
+
+use crate::api::ApiClient;
+use crate::error::{Error, Result};
+use crate::mls::MlsManager;
+
+use super::commands;
+use super::state::{AppState, DisplayMessage};
+
+/// Handle an SSE message (hex-encoded protobuf ServerEvent).
+/// Returns a list of (group_id, DisplayMessage) pairs to render.
+pub async fn handle_sse_message(
+    hex_data: &str,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    data_dir: &PathBuf,
+) -> Result<Vec<(String, DisplayMessage)>> {
+    let bytes =
+        hex::decode(hex_data).map_err(|e| Error::Other(format!("SSE hex decode failed: {e}")))?;
+    let event = conclave_proto::ServerEvent::decode(bytes.as_slice())?;
+
+    match event.event {
+        Some(conclave_proto::server_event::Event::NewMessage(msg_event)) => {
+            handle_new_message(msg_event, api, state, data_dir).await
+        }
+        Some(conclave_proto::server_event::Event::Welcome(welcome_event)) => {
+            handle_welcome(welcome_event, api, state, data_dir).await
+        }
+        Some(conclave_proto::server_event::Event::GroupUpdate(update_event)) => {
+            handle_group_update(update_event, state).await
+        }
+        None => Ok(vec![]),
+    }
+}
+
+async fn handle_new_message(
+    event: conclave_proto::NewMessageEvent,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    data_dir: &PathBuf,
+) -> Result<Vec<(String, DisplayMessage)>> {
+    let group_id = event.group_id;
+    let mut results = Vec::new();
+
+    // Get the room's last seen sequence number.
+    let last_seq = state
+        .rooms
+        .get(&group_id)
+        .map(|r| r.last_seen_seq)
+        .unwrap_or(0);
+
+    // Fetch new messages from the server.
+    let resp = api
+        .lock()
+        .await
+        .get_messages(&group_id, last_seq as i64)
+        .await?;
+
+    // Get the MLS group ID for decryption.
+    let mls_group_id = match state.group_mapping.get(&group_id) {
+        Some(id) => id.clone(),
+        None => return Ok(results),
+    };
+
+    let username = match &state.username {
+        Some(u) => u.clone(),
+        None => return Ok(results),
+    };
+
+    for stored_msg in &resp.messages {
+        // Decrypt via spawn_blocking (MLS is sync).
+        let data_dir_clone = data_dir.clone();
+        let username_clone = username.clone();
+        let mls_group_id_clone = mls_group_id.clone();
+        let mls_bytes = stored_msg.mls_message.clone();
+
+        let plaintext = tokio::task::spawn_blocking(move || {
+            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+            mls.decrypt_message(&mls_group_id_clone, &mls_bytes)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+
+        if let Some(plaintext) = plaintext {
+            let text = String::from_utf8_lossy(&plaintext).to_string();
+            let msg = DisplayMessage::user(
+                &stored_msg.sender_username,
+                &text,
+                stored_msg.created_at as i64,
+            );
+            results.push((group_id.clone(), msg));
+        }
+
+        // Update last seen sequence.
+        if let Some(room) = state.rooms.get_mut(&group_id) {
+            room.last_seen_seq = room.last_seen_seq.max(stored_msg.sequence_num);
+        }
+    }
+
+    Ok(results)
+}
+
+async fn handle_welcome(
+    event: conclave_proto::WelcomeEvent,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    data_dir: &PathBuf,
+) -> Result<Vec<(String, DisplayMessage)>> {
+    let mut results = Vec::new();
+
+    let username = match &state.username {
+        Some(u) => u.clone(),
+        None => return Ok(results),
+    };
+
+    // Fetch pending welcomes and join.
+    let resp = api.lock().await.list_pending_welcomes().await?;
+
+    for welcome in &resp.welcomes {
+        let data_dir_clone = data_dir.clone();
+        let username_clone = username.clone();
+        let welcome_bytes = welcome.welcome_message.clone();
+
+        let mls_group_id = tokio::task::spawn_blocking(move || {
+            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+            mls.join_group(&welcome_bytes)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+
+        state
+            .group_mapping
+            .insert(welcome.group_id.clone(), mls_group_id);
+
+        // Save updated mapping.
+        let udir = data_dir.join("users").join(&username);
+        commands::save_group_mapping(&udir, &state.group_mapping);
+
+        // Refresh rooms.
+        commands::load_rooms(api, state).await?;
+
+        let msg = DisplayMessage::system(&format!(
+            "You have been invited to #{} ({})",
+            event.group_name, event.group_id
+        ));
+        results.push((welcome.group_id.clone(), msg));
+    }
+
+    Ok(results)
+}
+
+async fn handle_group_update(
+    event: conclave_proto::GroupUpdateEvent,
+    _state: &mut AppState,
+) -> Result<Vec<(String, DisplayMessage)>> {
+    let msg = DisplayMessage::system(&format!(
+        "Group {} updated ({})",
+        event.group_id, event.update_type
+    ));
+    Ok(vec![(event.group_id, msg)])
+}

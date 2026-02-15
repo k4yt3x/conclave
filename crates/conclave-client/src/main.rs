@@ -2,7 +2,7 @@ mod api;
 mod config;
 mod error;
 mod mls;
-mod repl;
+mod tui;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -97,8 +97,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            // Interactive REPL mode.
-            repl::run(&config).await?;
+            // Interactive TUI mode.
+            tui::run(&config).await?;
         }
         Some(cmd) => {
             run_command(cmd, &config).await?;

@@ -20,7 +20,10 @@ serde = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { version = "0.12", features = ["http2"] }
-rustyline = "15"
+reqwest-eventsource = "0.6"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-util = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = "6"
 anyhow = "1"
 mls-rs = { version = "0.53", features = ["sqlite-bundled"] }
@@ -28,3 +31,4 @@ mls-rs-core = "0.25"
 mls-rs-codec = "0.7"
 mls-rs-crypto-openssl = "0.19"
 mls-rs-provider-sqlite = { version = "0.21", features = ["sqlite-bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }

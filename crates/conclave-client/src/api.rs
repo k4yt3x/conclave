@@ -1,5 +1,6 @@
 use prost::Message;
 use reqwest::Client;
+use reqwest_eventsource::EventSource;
 
 use crate::error::{Error, Result};
 
@@ -208,5 +209,22 @@ impl ApiClient {
         Ok(conclave_proto::ListPendingWelcomesResponse::decode(
             bytes.as_slice(),
         )?)
+    }
+
+    // ── SSE ───────────────────────────────────────────────────────
+
+    /// Create an SSE EventSource connected to the server's event stream.
+    pub fn connect_sse(&self) -> Result<EventSource> {
+        let token = self
+            .token
+            .as_ref()
+            .ok_or_else(|| Error::Other("not logged in".into()))?;
+        let url = format!("{}/api/v1/events", self.base_url);
+        let builder = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"));
+        Ok(EventSource::new(builder)
+            .map_err(|e| Error::Other(format!("SSE connection failed: {e}")))?)
     }
 }

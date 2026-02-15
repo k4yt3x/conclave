@@ -18,6 +18,9 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("terminal error: {0}")]
+    Terminal(String),
+
     #[error("{0}")]
     Other(String),
 }
