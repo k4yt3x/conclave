@@ -4,18 +4,28 @@ use rusqlite::{Connection, params};
 
 use super::state::DisplayMessage;
 
+/// Set restrictive permissions on a file (Unix only).
+#[cfg(unix)]
+fn set_file_permissions_0600(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
 /// Persistent message store backed by SQLite.
 pub struct MessageStore {
     conn: Connection,
 }
 
 impl MessageStore {
-    /// Open (or create) the message history database for a user.
-    pub fn open(user_data_dir: &Path) -> crate::error::Result<Self> {
-        std::fs::create_dir_all(user_data_dir)?;
-        let db_path = user_data_dir.join("message_history.db");
+    /// Open (or create) the message history database.
+    pub fn open(data_dir: &Path) -> crate::error::Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+        let db_path = data_dir.join("message_history.db");
         let conn = Connection::open(&db_path)
             .map_err(|e| crate::error::Error::Other(format!("message store open failed: {e}")))?;
+
+        #[cfg(unix)]
+        set_file_permissions_0600(&db_path);
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -63,11 +73,11 @@ impl MessageStore {
         );
     }
 
-    /// Load all messages for a room, ordered chronologically.
+    /// Load recent messages for a room (last 1000), ordered chronologically.
     pub fn load_messages(&self, group_id: &str) -> Vec<DisplayMessage> {
         let mut stmt = match self.conn.prepare(
             "SELECT sender, content, timestamp, is_system
-             FROM messages WHERE group_id = ?1
+             FROM (SELECT * FROM messages WHERE group_id = ?1 ORDER BY id DESC LIMIT 1000)
              ORDER BY id ASC",
         ) {
             Ok(s) => s,

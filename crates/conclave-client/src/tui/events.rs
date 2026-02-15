@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::api::ApiClient;
 use crate::error::{Error, Result};
-use crate::mls::MlsManager;
+use crate::mls::{DecryptedMessage, MlsManager};
 
 use super::commands;
 use super::state::{AppState, DisplayMessage};
@@ -32,6 +32,9 @@ pub async fn handle_sse_message(
         }
         Some(conclave_proto::server_event::Event::GroupUpdate(update_event)) => {
             handle_group_update(update_event, state).await
+        }
+        Some(conclave_proto::server_event::Event::MemberRemoved(removed_event)) => {
+            handle_member_removed(removed_event, state, data_dir).await
         }
         None => Ok(vec![]),
     }
@@ -78,21 +81,54 @@ async fn handle_new_message(
         let mls_group_id_clone = mls_group_id.clone();
         let mls_bytes = stored_msg.mls_message.clone();
 
-        let plaintext = tokio::task::spawn_blocking(move || {
+        let decrypted = tokio::task::spawn_blocking(move || {
             let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
             mls.decrypt_message(&mls_group_id_clone, &mls_bytes)
         })
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-        if let Some(plaintext) = plaintext {
-            let text = String::from_utf8_lossy(&plaintext).to_string();
-            let msg = DisplayMessage::user(
-                &stored_msg.sender_username,
-                &text,
-                stored_msg.created_at as i64,
-            );
-            results.push((group_id.clone(), msg));
+        match decrypted {
+            DecryptedMessage::Application(plaintext) => {
+                let text = String::from_utf8_lossy(&plaintext).to_string();
+                let msg = DisplayMessage::user(
+                    &stored_msg.sender_username,
+                    &text,
+                    stored_msg.created_at as i64,
+                );
+                results.push((group_id.clone(), msg));
+            }
+            DecryptedMessage::Commit(commit_info) => {
+                for added in &commit_info.members_added {
+                    results.push((
+                        group_id.clone(),
+                        DisplayMessage::system(&format!("{added} joined the group")),
+                    ));
+                }
+                for removed in &commit_info.members_removed {
+                    results.push((
+                        group_id.clone(),
+                        DisplayMessage::system(&format!("{removed} was removed from the group")),
+                    ));
+                }
+                if commit_info.self_removed {
+                    results.push((
+                        group_id.clone(),
+                        DisplayMessage::system("You were removed from this group"),
+                    ));
+                }
+                // If no adds/removes, it's likely a key rotation or empty commit.
+                if commit_info.members_added.is_empty()
+                    && commit_info.members_removed.is_empty()
+                    && !commit_info.self_removed
+                {
+                    results.push((
+                        group_id.clone(),
+                        DisplayMessage::system("Group keys updated"),
+                    ));
+                }
+            }
+            DecryptedMessage::None => {}
         }
 
         // Update last seen sequence.
@@ -137,8 +173,7 @@ async fn handle_welcome(
             .insert(welcome.group_id.clone(), mls_group_id);
 
         // Save updated mapping.
-        let udir = data_dir.join("users").join(&username);
-        commands::save_group_mapping(&udir, &state.group_mapping);
+        commands::save_group_mapping(data_dir, &state.group_mapping);
 
         // Refresh rooms.
         commands::load_rooms(api, state).await?;
@@ -162,4 +197,66 @@ async fn handle_group_update(
         event.group_id, event.update_type
     ));
     Ok(vec![(event.group_id, msg)])
+}
+
+async fn handle_member_removed(
+    event: conclave_proto::MemberRemovedEvent,
+    state: &mut AppState,
+    data_dir: &PathBuf,
+) -> Result<Vec<(String, DisplayMessage)>> {
+    let mut results = Vec::new();
+
+    let our_username = state.username.as_deref().unwrap_or("");
+    let group_id = &event.group_id;
+    let removed = &event.removed_username;
+
+    if removed == our_username {
+        // We were removed from the group.
+        let room_name = state
+            .rooms
+            .get(group_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| group_id.clone());
+
+        // Delete local MLS group state.
+        if let Some(mls_group_id) = state.group_mapping.get(group_id) {
+            if let Some(username) = &state.username {
+                let data_dir_clone = data_dir.clone();
+                let username_clone = username.clone();
+                let mls_group_id_clone = mls_group_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(mls) = MlsManager::new(&data_dir_clone, &username_clone) {
+                        let _ = mls.delete_group_state(&mls_group_id_clone);
+                    }
+                })
+                .await;
+            }
+        }
+
+        // Remove from local state.
+        state.group_mapping.remove(group_id);
+        commands::save_group_mapping(data_dir, &state.group_mapping);
+        state.rooms.remove(group_id);
+        if state.active_room.as_deref() == Some(group_id) {
+            state.active_room = None;
+        }
+
+        results.push((
+            group_id.clone(),
+            DisplayMessage::system(&format!("You were removed from #{room_name}")),
+        ));
+    } else {
+        // Someone else was removed.
+        results.push((
+            group_id.clone(),
+            DisplayMessage::system(&format!("{removed} was removed from the group")),
+        ));
+
+        // Refresh member list for this room.
+        if let Some(room) = state.rooms.get_mut(group_id) {
+            room.members.retain(|m| m != removed);
+        }
+    }
+
+    Ok(results)
 }

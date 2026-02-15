@@ -22,6 +22,7 @@ thiserror = { workspace = true }
 axum = { version = "0.8", features = ["http2"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 argon2 = "0.5"
+sha2 = "0.10"
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

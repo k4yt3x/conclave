@@ -28,17 +28,32 @@ pub enum Error {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let status = match &self {
-            Error::Database(_) | Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::NotFound(_) => StatusCode::NOT_FOUND,
-            Error::Conflict(_) => StatusCode::CONFLICT,
-            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            Error::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Error::ProtobufDecode(_) => StatusCode::BAD_REQUEST,
+        let (status, client_message) = match &self {
+            Error::Database(e) => {
+                tracing::error!("database error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
+            }
+            Error::Internal(e) => {
+                tracing::error!("internal error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
+            }
+            Error::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            Error::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            Error::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            Error::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Error::ProtobufDecode(_) => {
+                (StatusCode::BAD_REQUEST, "invalid request body".to_string())
+            }
         };
 
         let error_resp = conclave_proto::ErrorResponse {
-            message: self.to_string(),
+            message: client_message,
         };
 
         let mut body = Vec::new();

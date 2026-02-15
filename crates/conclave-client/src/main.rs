@@ -21,6 +21,10 @@ struct Cli {
     #[arg(short, long, default_value = "conclave-client.toml")]
     config: PathBuf,
 
+    /// Override the data directory (default: $CONCLAVE_DATA_DIR or XDG data dir).
+    #[arg(short, long)]
+    data_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -88,12 +92,17 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let config: ClientConfig = if cli.config.exists() {
+    let mut config: ClientConfig = if cli.config.exists() {
         let contents = std::fs::read_to_string(&cli.config)?;
         toml::from_str(&contents)?
     } else {
         ClientConfig::default()
     };
+
+    // CLI --data-dir overrides config file and env var.
+    if let Some(data_dir) = cli.data_dir {
+        config.data_dir = data_dir;
+    }
 
     match cli.command {
         None => {
@@ -174,10 +183,9 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
             .await?;
 
             // Save group mapping.
-            let udir = user_data_dir(&config.data_dir, username);
-            let mut mapping = load_group_mapping(&udir);
+            let mut mapping = load_group_mapping(&config.data_dir);
             mapping.insert(server_group_id.clone(), mls_group_id);
-            save_group_mapping(&udir, &mapping);
+            save_group_mapping(&config.data_dir, &mapping);
 
             println!("Group '{name}' created (ID: {server_group_id})");
         }
@@ -198,8 +206,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
                 .as_ref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
-            let udir = user_data_dir(&config.data_dir, username);
-            let mapping = load_group_mapping(&udir);
+            let mapping = load_group_mapping(&config.data_dir);
             let mls_group_id = mapping
                 .get(&group)
                 .ok_or_else(|| Error::Other(format!("unknown group '{group}' — run join first")))?;
@@ -247,8 +254,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
             let mls = MlsManager::new(&config.data_dir, username)?;
 
-            let udir = user_data_dir(&config.data_dir, username);
-            let mut mapping = load_group_mapping(&udir);
+            let mut mapping = load_group_mapping(&config.data_dir);
 
             for welcome in &resp.welcomes {
                 let mls_group_id = mls.join_group(&welcome.welcome_message)?;
@@ -259,7 +265,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
                 );
             }
 
-            save_group_mapping(&udir, &mapping);
+            save_group_mapping(&config.data_dir, &mapping);
         }
 
         Commands::Send { group, message } => {
@@ -268,8 +274,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
                 .as_ref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
-            let udir = user_data_dir(&config.data_dir, username);
-            let mapping = load_group_mapping(&udir);
+            let mapping = load_group_mapping(&config.data_dir);
             let mls_group_id = mapping
                 .get(&group)
                 .ok_or_else(|| Error::Other(format!("unknown group '{group}' — run join first")))?;
@@ -287,8 +292,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
                 .as_ref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
-            let udir = user_data_dir(&config.data_dir, username);
-            let mapping = load_group_mapping(&udir);
+            let mapping = load_group_mapping(&config.data_dir);
             let mls_group_id = mapping
                 .get(&group)
                 .ok_or_else(|| Error::Other(format!("unknown group '{group}' — run join first")))?;
@@ -301,11 +305,19 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
             } else {
                 for msg in &resp.messages {
                     match mls.decrypt_message(mls_group_id, &msg.mls_message) {
-                        Ok(Some(plaintext)) => {
+                        Ok(mls::DecryptedMessage::Application(plaintext)) => {
                             let text = String::from_utf8_lossy(&plaintext);
                             println!("  [{}] {}: {}", msg.sequence_num, msg.sender_username, text);
                         }
-                        Ok(None) => {}
+                        Ok(mls::DecryptedMessage::Commit(info)) => {
+                            for added in &info.members_added {
+                                println!("  [{}] * {added} joined", msg.sequence_num);
+                            }
+                            for removed in &info.members_removed {
+                                println!("  [{}] * {removed} was removed", msg.sequence_num);
+                            }
+                        }
+                        Ok(mls::DecryptedMessage::None) => {}
                         Err(e) => {
                             eprintln!(
                                 "  [{}] {}: <decryption failed: {}>",
@@ -321,13 +333,8 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> Result<()> {
     Ok(())
 }
 
-/// Compute the per-user data directory for MLS state and group mappings.
-fn user_data_dir(data_dir: &std::path::Path, username: &str) -> std::path::PathBuf {
-    data_dir.join("users").join(username)
-}
-
-fn load_group_mapping(user_dir: &std::path::Path) -> HashMap<String, String> {
-    let path = user_dir.join("group_mapping.toml");
+fn load_group_mapping(data_dir: &std::path::Path) -> HashMap<String, String> {
+    let path = data_dir.join("group_mapping.toml");
     if path.exists() {
         let contents = std::fs::read_to_string(&path).unwrap_or_default();
         toml::from_str(&contents).unwrap_or_default()
@@ -336,8 +343,8 @@ fn load_group_mapping(user_dir: &std::path::Path) -> HashMap<String, String> {
     }
 }
 
-fn save_group_mapping(user_dir: &std::path::Path, mapping: &HashMap<String, String>) {
-    let path = user_dir.join("group_mapping.toml");
+fn save_group_mapping(data_dir: &std::path::Path, mapping: &HashMap<String, String>) {
+    let path = data_dir.join("group_mapping.toml");
     if let Ok(contents) = toml::to_string_pretty(mapping) {
         let _ = std::fs::write(path, contents);
     }

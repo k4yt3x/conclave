@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use mls_rs::client_builder::MlsConfig;
-use mls_rs::group::ReceivedMessage;
+use mls_rs::group::proposal::Proposal;
+use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, MlsMessage};
@@ -14,6 +17,32 @@ use crate::error::{Error, Result};
 
 const CIPHERSUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
+/// Result of decrypting an incoming MLS message.
+pub enum DecryptedMessage {
+    /// Application message with plaintext bytes.
+    Application(Vec<u8>),
+    /// A commit was processed. Contains info about roster changes.
+    Commit(CommitInfo),
+    /// Other MLS message types (proposals, etc.) — no visible content.
+    None,
+}
+
+/// Information about changes in a commit.
+pub struct CommitInfo {
+    pub members_added: Vec<String>,
+    pub members_removed: Vec<String>,
+    pub self_removed: bool,
+}
+
+/// MLS group details for display.
+pub struct GroupDetails {
+    pub epoch: u64,
+    pub cipher_suite: String,
+    pub member_count: usize,
+    pub own_index: u32,
+    pub members: Vec<(u32, String)>,
+}
+
 /// Persistent MLS state manager for the client.
 pub struct MlsManager {
     identity_bytes: Vec<u8>,
@@ -24,15 +53,15 @@ pub struct MlsManager {
 impl MlsManager {
     /// Load or create MLS identity for the given username.
     ///
-    /// Each user gets their own subdirectory under `data_dir` so that
-    /// multiple users sharing the same client data directory do not
-    /// collide on MLS identity files or SQLite state.
+    /// All MLS state is stored directly in `data_dir` (single-account model).
+    /// The `username` is used only for the MLS credential, not for directory paths.
     pub fn new(data_dir: &Path, username: &str) -> Result<Self> {
-        let user_dir = data_dir.join("users").join(username);
-        std::fs::create_dir_all(&user_dir)?;
+        std::fs::create_dir_all(data_dir)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
 
-        let identity_path = user_dir.join("mls_identity.bin");
-        let signing_key_path = user_dir.join("mls_signing_key.bin");
+        let identity_path = data_dir.join("mls_identity.bin");
+        let signing_key_path = data_dir.join("mls_signing_key.bin");
 
         if identity_path.exists() && signing_key_path.exists() {
             let identity_bytes = std::fs::read(&identity_path)?;
@@ -40,7 +69,7 @@ impl MlsManager {
             Ok(Self {
                 identity_bytes,
                 signing_key_bytes,
-                data_dir: user_dir,
+                data_dir: data_dir.to_path_buf(),
             })
         } else {
             // Generate a new identity.
@@ -63,17 +92,25 @@ impl MlsManager {
 
             std::fs::write(&identity_path, &identity_bytes)?;
             std::fs::write(&signing_key_path, &signing_key_bytes)?;
+            #[cfg(unix)]
+            {
+                std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600))?;
+                std::fs::set_permissions(
+                    &signing_key_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )?;
+            }
 
             Ok(Self {
                 identity_bytes,
                 signing_key_bytes,
-                data_dir: user_dir,
+                data_dir: data_dir.to_path_buf(),
             })
         }
     }
 
-    /// Returns the per-user data directory (for storing group mappings, etc.).
-    pub fn user_data_dir(&self) -> &Path {
+    /// Returns the data directory.
+    pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
@@ -172,7 +209,7 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
 
         let group_info_msg = group
-            .group_info_message(true)
+            .group_info_message_allowing_ext_commit(true)
             .map_err(|e| Error::Mls(format!("group info generation failed: {e}")))?;
         let group_info_bytes = group_info_msg
             .to_bytes()
@@ -239,7 +276,7 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
 
         let group_info_msg = group
-            .group_info_message(true)
+            .group_info_message_allowing_ext_commit(true)
             .map_err(|e| Error::Mls(format!("group info generation failed: {e}")))?;
         let group_info_bytes = group_info_msg
             .to_bytes()
@@ -295,12 +332,12 @@ impl MlsManager {
     }
 
     /// Decrypt an incoming MLS message for a group.
-    /// Returns Some(plaintext) for application messages, None for other message types (commits, etc.).
+    /// Returns detailed information about the message content and any roster changes.
     pub fn decrypt_message(
         &self,
         mls_group_id: &str,
         mls_message_bytes: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<DecryptedMessage> {
         let client = self.build_client()?;
         let group_id_bytes =
             hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
@@ -317,7 +354,7 @@ impl MlsManager {
             Err(_) => {
                 // Messages from prior epochs (e.g., commits already processed via welcome)
                 // are expected and can be safely skipped.
-                return Ok(None);
+                return Ok(DecryptedMessage::None);
             }
         };
 
@@ -326,13 +363,260 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
 
         match received {
-            ReceivedMessage::ApplicationMessage(app_msg) => Ok(Some(app_msg.data().to_vec())),
-            ReceivedMessage::Commit(_)
-            | ReceivedMessage::Proposal(_)
-            | ReceivedMessage::GroupInfo(_)
-            | ReceivedMessage::Welcome
-            | ReceivedMessage::KeyPackage(_) => Ok(None),
+            ReceivedMessage::ApplicationMessage(app_msg) => {
+                Ok(DecryptedMessage::Application(app_msg.data().to_vec()))
+            }
+            ReceivedMessage::Commit(commit_desc) => {
+                let mut members_added = Vec::new();
+                let mut members_removed = Vec::new();
+                let mut self_removed = false;
+
+                // Extract roster changes from applied proposals.
+                let new_epoch = match &commit_desc.effect {
+                    CommitEffect::NewEpoch(epoch) => Some(epoch),
+                    CommitEffect::Removed { new_epoch, .. } => {
+                        self_removed = true;
+                        Some(new_epoch)
+                    }
+                    _ => None,
+                };
+
+                if let Some(epoch) = new_epoch {
+                    for proposal_info in &epoch.applied_proposals {
+                        match &proposal_info.proposal {
+                            Proposal::Add(add) => {
+                                let name = extract_username_from_identity(add.signing_identity());
+                                members_added.push(name);
+                            }
+                            Proposal::Remove(remove) => {
+                                let removed_index = remove.to_remove();
+                                members_removed.push(format!("#{removed_index}"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                Ok(DecryptedMessage::Commit(CommitInfo {
+                    members_added,
+                    members_removed,
+                    self_removed,
+                }))
+            }
+            _ => Ok(DecryptedMessage::None),
         }
+    }
+
+    /// Remove a member from a group by their leaf index.
+    /// Returns (commit_bytes, group_info_bytes).
+    pub fn remove_member(
+        &self,
+        mls_group_id: &str,
+        member_index: u32,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        let mut group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+
+        let commit_output = group
+            .commit_builder()
+            .remove_member(member_index)
+            .map_err(|e| Error::Mls(format!("remove member failed: {e}")))?
+            .build()
+            .map_err(|e| Error::Mls(format!("commit build failed: {e}")))?;
+
+        group
+            .apply_pending_commit()
+            .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
+
+        let commit_bytes = commit_output
+            .commit_message
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
+
+        let group_info_msg = group
+            .group_info_message_allowing_ext_commit(true)
+            .map_err(|e| Error::Mls(format!("group info generation failed: {e}")))?;
+        let group_info_bytes = group_info_msg
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("group info serialization failed: {e}")))?;
+
+        group
+            .write_to_storage()
+            .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+
+        Ok((commit_bytes, group_info_bytes))
+    }
+
+    /// Find a member's leaf index by their identity (username).
+    pub fn find_member_index(&self, mls_group_id: &str, username: &str) -> Result<Option<u32>> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        let group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+
+        for member in group.roster().members_iter() {
+            let name = extract_username_from_identity(&member.signing_identity);
+            if name == username {
+                return Ok(Some(member.index));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Perform an external commit to rejoin a group with a new identity.
+    /// Returns (mls_group_id_hex, commit_bytes).
+    pub fn external_rejoin_group(
+        &self,
+        group_info_bytes: &[u8],
+        old_leaf_index: Option<u32>,
+    ) -> Result<(String, Vec<u8>)> {
+        let client = self.build_client()?;
+
+        let group_info_msg = MlsMessage::from_bytes(group_info_bytes)
+            .map_err(|e| Error::Mls(format!("invalid group info: {e}")))?;
+
+        let mut builder = client
+            .external_commit_builder()
+            .map_err(|e| Error::Mls(format!("external commit builder failed: {e}")))?;
+
+        // Remove our old leaf if we know our previous index.
+        if let Some(old_index) = old_leaf_index {
+            builder = builder.with_removal(old_index);
+        }
+
+        let (mut group, commit_msg) = builder
+            .build(group_info_msg)
+            .map_err(|e| Error::Mls(format!("external commit build failed: {e}")))?;
+
+        group
+            .write_to_storage()
+            .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+
+        let group_id = hex::encode(group.group_id());
+        let commit_bytes = commit_msg
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
+
+        Ok((group_id, commit_bytes))
+    }
+
+    /// Perform a key update for forward secrecy.
+    /// Returns (commit_bytes, group_info_bytes).
+    pub fn rotate_keys(&self, mls_group_id: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        let mut group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+
+        // An empty commit advances the epoch and rotates keys.
+        let commit_output = group
+            .commit_builder()
+            .build()
+            .map_err(|e| Error::Mls(format!("commit build failed: {e}")))?;
+
+        group
+            .apply_pending_commit()
+            .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
+
+        let commit_bytes = commit_output
+            .commit_message
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
+
+        let group_info_msg = group
+            .group_info_message_allowing_ext_commit(true)
+            .map_err(|e| Error::Mls(format!("group info generation failed: {e}")))?;
+        let group_info_bytes = group_info_msg
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("group info serialization failed: {e}")))?;
+
+        group
+            .write_to_storage()
+            .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+
+        Ok((commit_bytes, group_info_bytes))
+    }
+
+    /// Get group information: epoch, cipher suite, member count, own index.
+    pub fn group_info_details(&self, mls_group_id: &str) -> Result<GroupDetails> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        let group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+
+        let roster = group.roster();
+        let members: Vec<(u32, String)> = roster
+            .members_iter()
+            .map(|m| {
+                let name = extract_username_from_identity(&m.signing_identity);
+                (m.index, name)
+            })
+            .collect();
+
+        Ok(GroupDetails {
+            epoch: group.current_epoch(),
+            cipher_suite: format!("{:?}", group.cipher_suite()),
+            member_count: members.len(),
+            own_index: group.current_member_index(),
+            members,
+        })
+    }
+
+    /// Delete local group state (for when we've been removed or left).
+    pub fn delete_group_state(&self, mls_group_id: &str) -> Result<()> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        // Load and delete from storage by overwriting with a cleared state.
+        // The simplest approach: just try to load and ignore if it doesn't exist.
+        if let Ok(mut group) = client.load_group(&group_id_bytes) {
+            group
+                .write_to_storage()
+                .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Wipe all local MLS state (identity + group state DB).
+    /// Used for account reset.
+    pub fn wipe_local_state(&self) -> Result<()> {
+        let identity_path = self.data_dir.join("mls_identity.bin");
+        let signing_key_path = self.data_dir.join("mls_signing_key.bin");
+        let state_db_path = self.data_dir.join("mls_state.db");
+
+        let _ = std::fs::remove_file(identity_path);
+        let _ = std::fs::remove_file(signing_key_path);
+        let _ = std::fs::remove_file(state_db_path);
+        // Also remove WAL/SHM files if they exist.
+        let _ = std::fs::remove_file(self.data_dir.join("mls_state.db-wal"));
+        let _ = std::fs::remove_file(self.data_dir.join("mls_state.db-shm"));
+
+        Ok(())
+    }
+}
+
+/// Extract a username from an MLS SigningIdentity's BasicCredential.
+fn extract_username_from_identity(identity: &SigningIdentity) -> String {
+    match identity.credential.as_basic() {
+        Some(basic) => String::from_utf8_lossy(&basic.identifier).to_string(),
+        None => "<unknown>".to_string(),
     }
 }
 

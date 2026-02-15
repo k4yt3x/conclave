@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -35,8 +35,22 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/welcomes", get(list_pending_welcomes))
         .route("/api/v1/welcomes/{welcome_id}/accept", post(accept_welcome))
+        .route(
+            "/api/v1/groups/{group_id}/remove",
+            post(remove_group_member),
+        )
+        .route("/api/v1/groups/{group_id}/leave", post(leave_group))
+        .route("/api/v1/groups/{group_id}/group-info", get(get_group_info))
+        .route(
+            "/api/v1/groups/{group_id}/external-join",
+            post(external_join),
+        )
+        .route("/api/v1/reset-account", post(reset_account))
+        .route("/api/v1/logout", post(logout))
         .route("/api/v1/events", get(sse_stream))
         .route("/api/v1/users/{username}", get(get_user_by_username))
+        // Limit request body size to 1 MiB to prevent memory exhaustion.
+        .layer(DefaultBodyLimit::max(1024 * 1024))
 }
 
 /// Helper to encode a protobuf message into a response body.
@@ -79,6 +93,12 @@ async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<imp
         ));
     }
 
+    if req.password.len() < 8 {
+        return Err(Error::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
+    }
+
     let password_hash = auth::hash_password(&req.password)?;
     let user_id = state.db.create_user(&req.username, &password_hash)?;
 
@@ -93,10 +113,16 @@ async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<imp
 async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl IntoResponse> {
     let req = decode_proto::<conclave_proto::LoginRequest>(&body)?;
 
-    let (user_id, _username, password_hash) = state
-        .db
-        .get_user_by_username(&req.username)?
-        .ok_or_else(|| Error::Unauthorized("invalid username or password".into()))?;
+    let user_record = state.db.get_user_by_username(&req.username)?;
+
+    let (user_id, _username, password_hash) = match user_record {
+        Some(record) => record,
+        None => {
+            // Hash a dummy password to equalize timing and prevent username enumeration.
+            let _ = auth::hash_password("dummy_timing_equalization");
+            return Err(Error::Unauthorized("invalid username or password".into()));
+        }
+    };
 
     if !auth::verify_password(&req.password, &password_hash)? {
         return Err(Error::Unauthorized("invalid username or password".into()));
@@ -113,6 +139,11 @@ async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl I
             user_id: user_id as u64,
         },
     ))
+}
+
+async fn logout(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<impl IntoResponse> {
+    state.db.delete_session(&auth.token)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── Authenticated Endpoints ───────────────────────────────────────
@@ -162,6 +193,12 @@ async fn upload_key_package(
         return Err(Error::BadRequest("key_package_data is required".into()));
     }
 
+    if req.key_package_data.len() > 16 * 1024 {
+        return Err(Error::BadRequest(
+            "key_package_data must be 16 KiB or smaller".into(),
+        ));
+    }
+
     state
         .db
         .store_key_package(auth.user_id, &req.key_package_data)?;
@@ -199,6 +236,12 @@ async fn create_group(
 
     if req.name.is_empty() {
         return Err(Error::BadRequest("group name is required".into()));
+    }
+
+    if req.name.len() > 128 {
+        return Err(Error::BadRequest(
+            "group name must be 128 characters or fewer".into(),
+        ));
     }
 
     let group_id = uuid::Uuid::new_v4().to_string();
@@ -373,6 +416,11 @@ async fn upload_commit(
         });
     }
 
+    // Store the latest group info for external commits.
+    if !req.group_info.is_empty() {
+        state.db.store_group_info(&group_id, &req.group_info)?;
+    }
+
     // Store the commit as a message so other existing members can process it.
     if !req.commit_message.is_empty() {
         state
@@ -479,7 +527,8 @@ async fn get_messages(
         return Err(Error::Unauthorized("not a member of this group".into()));
     }
 
-    let messages = state.db.get_messages(&group_id, query.after, query.limit)?;
+    let limit = query.limit.min(500);
+    let messages = state.db.get_messages(&group_id, query.after, limit)?;
 
     let stored_messages: Vec<conclave_proto::StoredMessage> = messages
         .into_iter()
@@ -536,9 +585,205 @@ async fn accept_welcome(
         return Err(Error::NotFound("welcome not found".into()));
     }
 
-    state.db.delete_pending_welcome(welcome_id)?;
+    state.db.delete_pending_welcome(welcome_id, auth.user_id)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Member Management ─────────────────────────────────────────────
+
+async fn remove_group_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let req = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
+
+    if !state.db.is_group_member(&group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
+    let target_user_id = state
+        .db
+        .get_user_id_by_username(&req.username)?
+        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", req.username)))?;
+
+    if !state.db.is_group_member(&group_id, target_user_id)? {
+        return Err(Error::BadRequest(format!(
+            "user '{}' is not a member of this group",
+            req.username
+        )));
+    }
+
+    // Store the group info from the removal commit.
+    if !req.group_info.is_empty() {
+        state.db.store_group_info(&group_id, &req.group_info)?;
+    }
+
+    // Store the commit message for other members to process.
+    if !req.commit_message.is_empty() {
+        state
+            .db
+            .store_message(&group_id, auth.user_id, &req.commit_message)?;
+    }
+
+    // Remove from server DB.
+    state.db.remove_group_member(&group_id, target_user_id)?;
+
+    // Notify all remaining members via SSE.
+    let members = state.db.get_group_members(&group_id)?;
+    let member_ids: Vec<i64> = members.iter().map(|(id, _)| *id).collect();
+
+    let event = conclave_proto::ServerEvent {
+        event: Some(conclave_proto::server_event::Event::MemberRemoved(
+            conclave_proto::MemberRemovedEvent {
+                group_id: group_id.clone(),
+                removed_username: req.username.clone(),
+            },
+        )),
+    };
+    let mut event_bytes = Vec::new();
+    event.encode(&mut event_bytes).unwrap();
+    let _ = state.sse_tx.send(crate::state::SseEvent {
+        data: event_bytes.clone(),
+        target_user_ids: member_ids,
+    });
+
+    // Also notify the removed user.
+    let _ = state.sse_tx.send(crate::state::SseEvent {
+        data: event_bytes,
+        target_user_ids: vec![target_user_id],
+    });
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::RemoveMemberResponse {},
+    ))
+}
+
+async fn leave_group(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    if !state.db.is_group_member(&group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
+    let (_, username) = state
+        .db
+        .get_user_by_id(auth.user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    // Remove from server DB.
+    state.db.remove_group_member(&group_id, auth.user_id)?;
+
+    // Notify remaining members via SSE.
+    let members = state.db.get_group_members(&group_id)?;
+    let member_ids: Vec<i64> = members.iter().map(|(id, _)| *id).collect();
+
+    let event = conclave_proto::ServerEvent {
+        event: Some(conclave_proto::server_event::Event::MemberRemoved(
+            conclave_proto::MemberRemovedEvent {
+                group_id: group_id.clone(),
+                removed_username: username,
+            },
+        )),
+    };
+    let mut event_bytes = Vec::new();
+    event.encode(&mut event_bytes).unwrap();
+    let _ = state.sse_tx.send(crate::state::SseEvent {
+        data: event_bytes,
+        target_user_ids: member_ids,
+    });
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::LeaveGroupResponse {},
+    ))
+}
+
+async fn get_group_info(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    if !state.db.is_group_member(&group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
+    let group_info_data = state
+        .db
+        .get_group_info(&group_id)?
+        .ok_or_else(|| Error::NotFound("no group info available".into()))?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::GetGroupInfoResponse {
+            group_info: group_info_data,
+        },
+    ))
+}
+
+async fn external_join(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let req = decode_proto::<conclave_proto::ExternalJoinRequest>(&body)?;
+
+    // Add user as group member (re-add after reset).
+    state.db.add_group_member(&group_id, auth.user_id)?;
+
+    // Store the external commit as a message for other members to process.
+    if !req.commit_message.is_empty() {
+        state
+            .db
+            .store_message(&group_id, auth.user_id, &req.commit_message)?;
+
+        // Notify existing members.
+        let members = state.db.get_group_members(&group_id)?;
+        let member_ids: Vec<i64> = members
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| *id != auth.user_id)
+            .collect();
+
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                conclave_proto::GroupUpdateEvent {
+                    group_id: group_id.clone(),
+                    update_type: "commit".into(),
+                },
+            )),
+        };
+        let mut event_bytes = Vec::new();
+        event.encode(&mut event_bytes).unwrap();
+        let _ = state.sse_tx.send(crate::state::SseEvent {
+            data: event_bytes,
+            target_user_ids: member_ids,
+        });
+    }
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ExternalJoinResponse {},
+    ))
+}
+
+async fn reset_account(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+) -> Result<impl IntoResponse> {
+    // Delete all key packages for this user.
+    state.db.delete_key_packages(auth.user_id)?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ResetAccountResponse {},
+    ))
 }
 
 // ── SSE ───────────────────────────────────────────────────────────

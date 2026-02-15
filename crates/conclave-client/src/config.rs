@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +16,12 @@ pub struct ClientConfig {
 }
 
 fn default_data_dir() -> PathBuf {
+    // $CONCLAVE_DATA_DIR takes top priority.
+    if let Ok(dir) = std::env::var("CONCLAVE_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    // Fall back to XDG data directory (respects $XDG_DATA_HOME).
     directories::ProjectDirs::from("", "", "conclave")
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".conclave"))
@@ -49,10 +57,14 @@ impl SessionState {
 
     pub fn save(&self, data_dir: &PathBuf) -> crate::error::Result<()> {
         std::fs::create_dir_all(data_dir)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
         let path = data_dir.join("session.toml");
         let contents =
             toml::to_string_pretty(self).map_err(|e| crate::error::Error::Config(e.to_string()))?;
-        std::fs::write(path, contents)?;
+        std::fs::write(&path, contents)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
 }

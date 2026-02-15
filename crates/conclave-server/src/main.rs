@@ -47,7 +47,24 @@ async fn main() -> anyhow::Result<()> {
     let bind_address = config.bind_address.clone();
     let app_state = Arc::new(state::AppState::new(database, config));
 
-    let app = api::router().with_state(app_state);
+    let app = api::router().with_state(app_state.clone());
+
+    // Periodically clean up expired sessions.
+    {
+        let state = app_state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match state.db.cleanup_expired_sessions() {
+                    Ok(count) if count > 0 => {
+                        info!("cleaned up {count} expired session(s)");
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     info!("listening on {bind_address}");

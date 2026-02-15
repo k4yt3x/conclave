@@ -134,6 +134,38 @@ message GetMessagesResponse {
 }
 
 // ============================================================
+// Member Management
+// ============================================================
+
+message RemoveMemberRequest {
+  string username = 1;
+  bytes commit_message = 2;
+  bytes group_info = 3;
+}
+
+message RemoveMemberResponse {}
+
+message LeaveGroupRequest {}
+
+message LeaveGroupResponse {}
+
+// ============================================================
+// External Commit (account reset / rejoin)
+// ============================================================
+
+message GetGroupInfoResponse {
+  bytes group_info = 1;
+}
+
+message ResetAccountResponse {}
+
+message ExternalJoinRequest {
+  bytes commit_message = 1;
+}
+
+message ExternalJoinResponse {}
+
+// ============================================================
 // SSE Events
 // ============================================================
 
@@ -142,6 +174,7 @@ message ServerEvent {
     NewMessageEvent new_message = 1;
     GroupUpdateEvent group_update = 2;
     WelcomeEvent welcome = 3;
+    MemberRemovedEvent member_removed = 4;
   }
 }
 
@@ -159,6 +192,11 @@ message GroupUpdateEvent {
 message WelcomeEvent {
   string group_id = 1;
   string group_name = 2;
+}
+
+message MemberRemovedEvent {
+  string group_id = 1;
+  string removed_username = 2;
 }
 
 // ============================================================

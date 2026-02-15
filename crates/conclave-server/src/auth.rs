@@ -39,6 +39,7 @@ pub fn generate_token() -> String {
 /// Axum extractor that validates the Bearer token and provides the authenticated user ID.
 pub struct AuthUser {
     pub user_id: i64,
+    pub token: String,
 }
 
 impl FromRequestParts<Arc<AppState>> for AuthUser {
@@ -63,6 +64,9 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             .validate_session(token)?
             .ok_or_else(|| Error::Unauthorized("invalid or expired token".into()))?;
 
-        Ok(AuthUser { user_id })
+        Ok(AuthUser {
+            user_id,
+            token: token.to_string(),
+        })
     }
 }

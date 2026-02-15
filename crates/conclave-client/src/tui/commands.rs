@@ -34,7 +34,14 @@ pub enum Command {
     Invite {
         members: Vec<String>,
     },
+    Kick {
+        username: String,
+    },
+    Leave,
     Part,
+    Rotate,
+    Reset,
+    Info,
     Rooms,
     Who,
     Msg {
@@ -42,6 +49,7 @@ pub enum Command {
         text: String,
     },
     Unread,
+    Logout,
     Me,
     Help,
     Quit,
@@ -106,7 +114,19 @@ pub fn parse(input: &str) -> Result<Command> {
             let members = parts[1].split(',').map(|s| s.trim().to_string()).collect();
             Ok(Command::Invite { members })
         }
-        "/part" | "/leave" => Ok(Command::Part),
+        "/kick" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /kick <username>".into()));
+            }
+            Ok(Command::Kick {
+                username: parts[1].to_string(),
+            })
+        }
+        "/leave" => Ok(Command::Leave),
+        "/part" => Ok(Command::Part),
+        "/rotate" => Ok(Command::Rotate),
+        "/reset" => Ok(Command::Reset),
+        "/info" => Ok(Command::Info),
         "/rooms" | "/list" => Ok(Command::Rooms),
         "/who" => Ok(Command::Who),
         "/msg" => {
@@ -119,6 +139,7 @@ pub fn parse(input: &str) -> Result<Command> {
             })
         }
         "/unread" => Ok(Command::Unread),
+        "/logout" => Ok(Command::Logout),
         "/me" => Ok(Command::Me),
         "/help" | "/h" => Ok(Command::Help),
         "/quit" | "/exit" | "/q" => Ok(Command::Quit),
@@ -172,8 +193,7 @@ pub async fn execute(
             *mls = Some(MlsManager::new(&config.data_dir, &username)?);
 
             // Load group mapping.
-            let udir = user_data_dir(&config.data_dir, &username);
-            state.group_mapping = load_group_mapping(&udir);
+            state.group_mapping = load_group_mapping(&config.data_dir);
 
             // Load rooms from server.
             load_rooms(api, state).await?;
@@ -221,7 +241,7 @@ pub async fn execute(
             state
                 .group_mapping
                 .insert(server_group_id.clone(), mls_group_id.clone());
-            save_group_mapping(mls_mgr.user_data_dir(), &state.group_mapping);
+            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
 
             // Refresh rooms from server to get member list.
             load_rooms(api, state).await?;
@@ -263,7 +283,7 @@ pub async fn execute(
                 )));
             }
 
-            save_group_mapping(mls_mgr.user_data_dir(), &state.group_mapping);
+            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
 
             // Refresh rooms and auto-switch to the last joined room.
             load_rooms(api, state).await?;
@@ -346,6 +366,81 @@ pub async fn execute(
             load_rooms(api, state).await?;
         }
 
+        Command::Kick { username } => {
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
+            let group_id = state
+                .active_room
+                .as_ref()
+                .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
+                .clone();
+
+            let mls_group_id = state
+                .group_mapping
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                .clone();
+
+            let member_index = mls_mgr
+                .find_member_index(&mls_group_id, &username)?
+                .ok_or_else(|| {
+                    Error::Other(format!("user '{username}' not found in MLS roster"))
+                })?;
+
+            let (commit_bytes, group_info_bytes) =
+                mls_mgr.remove_member(&mls_group_id, member_index)?;
+
+            api.lock()
+                .await
+                .remove_member(&group_id, &username, commit_bytes, group_info_bytes)
+                .await?;
+
+            // Refresh room info.
+            load_rooms(api, state).await?;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Removed {username} from the room"
+            )));
+        }
+
+        Command::Leave => {
+            let group_id = state
+                .active_room
+                .as_ref()
+                .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
+                .clone();
+
+            let name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.name.clone())
+                .unwrap_or_default();
+
+            // Notify the server to remove us from the group.
+            api.lock().await.leave_group(&group_id).await?;
+
+            // Delete local MLS group state.
+            if let Some(mls_mgr) = mls.as_ref() {
+                if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
+                    let _ = mls_mgr.delete_group_state(mls_group_id);
+                }
+            }
+
+            // Remove from local state.
+            state.group_mapping.remove(&group_id);
+            state.rooms.remove(&group_id);
+            state.active_room = None;
+            state.scroll_offset = 0;
+
+            if let Some(mls_mgr) = mls.as_ref() {
+                save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+            }
+
+            msgs.push(DisplayMessage::system(&format!("Left #{name}")));
+        }
+
         Command::Part => {
             if let Some(room_id) = state.active_room.take() {
                 let name = state
@@ -354,9 +449,187 @@ pub async fn execute(
                     .map(|r| r.name.clone())
                     .unwrap_or_default();
                 state.scroll_offset = 0;
-                msgs.push(DisplayMessage::system(&format!("Left #{name}")));
+                msgs.push(DisplayMessage::system(&format!(
+                    "Switched away from #{name} (use /leave to leave the group)"
+                )));
             } else {
                 msgs.push(DisplayMessage::system("No active room."));
+            }
+        }
+
+        Command::Rotate => {
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
+            let group_id = state
+                .active_room
+                .as_ref()
+                .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
+                .clone();
+
+            let mls_group_id = state
+                .group_mapping
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                .clone();
+
+            let (commit_bytes, group_info_bytes) = mls_mgr.rotate_keys(&mls_group_id)?;
+
+            api.lock()
+                .await
+                .upload_commit(
+                    &group_id,
+                    commit_bytes,
+                    std::collections::HashMap::new(),
+                    group_info_bytes,
+                )
+                .await?;
+
+            msgs.push(DisplayMessage::system(
+                "Keys rotated. Forward secrecy updated.",
+            ));
+        }
+
+        Command::Reset => {
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
+            let username = state
+                .username
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?
+                .clone();
+
+            // Collect groups to rejoin before wiping state.
+            let groups_to_rejoin: Vec<(String, String)> = state
+                .group_mapping
+                .iter()
+                .map(|(server_id, mls_id)| (server_id.clone(), mls_id.clone()))
+                .collect();
+
+            // Collect old leaf indices for each group before wiping.
+            let mut old_indices: HashMap<String, Option<u32>> = HashMap::new();
+            for (server_id, mls_id) in &groups_to_rejoin {
+                let index = mls_mgr.find_member_index(mls_id, &username).ok().flatten();
+                old_indices.insert(server_id.clone(), index);
+            }
+
+            // Notify server to clear our key packages.
+            api.lock().await.reset_account().await?;
+
+            // Wipe local MLS state.
+            mls_mgr.wipe_local_state()?;
+
+            // Regenerate identity.
+            *mls = Some(MlsManager::new(&config.data_dir, &username)?);
+            let mls_mgr = mls.as_ref().unwrap();
+
+            // Upload new key package.
+            let kp = mls_mgr.generate_key_package()?;
+            api.lock().await.upload_key_package(kp).await?;
+
+            // Rejoin each group via external commit.
+            state.group_mapping.clear();
+            let mut rejoin_count = 0;
+
+            for (server_id, _) in &groups_to_rejoin {
+                let group_info_resp = match api.lock().await.get_group_info(server_id).await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        msgs.push(DisplayMessage::system(&format!(
+                            "Failed to get group info for {server_id}: {e}"
+                        )));
+                        continue;
+                    }
+                };
+
+                let old_index = old_indices.get(server_id).copied().flatten();
+
+                match mls_mgr.external_rejoin_group(&group_info_resp.group_info, old_index) {
+                    Ok((new_mls_id, commit_bytes)) => {
+                        if let Err(e) = api
+                            .lock()
+                            .await
+                            .external_join(server_id, commit_bytes)
+                            .await
+                        {
+                            msgs.push(DisplayMessage::system(&format!(
+                                "Failed to rejoin {server_id}: {e}"
+                            )));
+                            continue;
+                        }
+                        state.group_mapping.insert(server_id.clone(), new_mls_id);
+                        rejoin_count += 1;
+                    }
+                    Err(e) => {
+                        msgs.push(DisplayMessage::system(&format!(
+                            "Failed external commit for {server_id}: {e}"
+                        )));
+                    }
+                }
+            }
+
+            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Account reset complete. Rejoined {rejoin_count}/{} groups.",
+                groups_to_rejoin.len()
+            )));
+        }
+
+        Command::Info => {
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
+            let group_id = state
+                .active_room
+                .as_ref()
+                .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
+                .clone();
+
+            let mls_group_id = state
+                .group_mapping
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                .clone();
+
+            let details = mls_mgr.group_info_details(&mls_group_id)?;
+
+            let room_name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.name.as_str())
+                .unwrap_or("unknown");
+
+            msgs.push(DisplayMessage::system(&format!("Group: #{room_name}")));
+            msgs.push(DisplayMessage::system(&format!("  Server ID: {group_id}")));
+            msgs.push(DisplayMessage::system(&format!(
+                "  MLS Group ID: {mls_group_id}"
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Epoch: {}",
+                details.epoch
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Cipher Suite: {}",
+                details.cipher_suite
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Members: {} (your index: {})",
+                details.member_count, details.own_index
+            )));
+            for (index, name) in &details.members {
+                let marker = if *index == details.own_index {
+                    " (you)"
+                } else {
+                    ""
+                };
+                msgs.push(DisplayMessage::system(&format!(
+                    "    [{index}] {name}{marker}"
+                )));
             }
         }
 
@@ -483,6 +756,32 @@ pub async fn execute(
             }
         }
 
+        Command::Logout => {
+            if !state.logged_in {
+                msgs.push(DisplayMessage::system("Not logged in."));
+                return Ok((msgs, start_sse));
+            }
+
+            // Revoke session on server.
+            let _ = api.lock().await.logout().await;
+
+            // Clear local session state.
+            api.lock().await.set_token(String::new());
+            state.logged_in = false;
+            state.username = None;
+            state.user_id = None;
+            state.active_room = None;
+            state.rooms.clear();
+            state.group_mapping.clear();
+            *mls = None;
+
+            // Delete saved session file.
+            let session_path = config.data_dir.join("session.toml");
+            let _ = std::fs::remove_file(session_path);
+
+            msgs.push(DisplayMessage::system("Logged out. Session revoked."));
+        }
+
         Command::Me => {
             let resp = api.lock().await.me().await?;
             msgs.push(DisplayMessage::system(&format!(
@@ -500,9 +799,15 @@ pub async fn execute(
                 "/join                         Accept pending invitations",
                 "/join <room>                  Switch to a room",
                 "/invite <user1,user2>         Invite to the active room",
-                "/part                         Leave the active room",
+                "/kick <username>              Remove a member from the room",
+                "/leave                        Leave the room (MLS removal)",
+                "/part                         Switch away without leaving",
+                "/rotate                       Rotate keys (forward secrecy)",
+                "/reset                        Reset account and rejoin groups",
+                "/info                         Show MLS group details",
                 "/rooms                        List your rooms",
                 "/unread                       Check rooms for new messages",
+                "/logout                       Logout and revoke session",
                 "/who                          List members of active room",
                 "/msg <room> <text>            Send to a room without switching",
                 "/me                           Show current user info",
@@ -589,12 +894,8 @@ pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Re
     Ok(())
 }
 
-fn user_data_dir(data_dir: &Path, username: &str) -> std::path::PathBuf {
-    data_dir.join("users").join(username)
-}
-
-pub fn load_group_mapping(user_dir: &Path) -> HashMap<String, String> {
-    let path = user_dir.join("group_mapping.toml");
+pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
+    let path = data_dir.join("group_mapping.toml");
     if path.exists() {
         let contents = std::fs::read_to_string(&path).unwrap_or_default();
         toml::from_str(&contents).unwrap_or_default()
@@ -603,9 +904,14 @@ pub fn load_group_mapping(user_dir: &Path) -> HashMap<String, String> {
     }
 }
 
-pub fn save_group_mapping(user_dir: &Path, mapping: &HashMap<String, String>) {
-    let path = user_dir.join("group_mapping.toml");
+pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
+    let path = data_dir.join("group_mapping.toml");
     if let Ok(contents) = toml::to_string_pretty(mapping) {
-        let _ = std::fs::write(path, contents);
+        let _ = std::fs::write(&path, contents);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 }

@@ -103,6 +103,33 @@ impl ApiClient {
         Ok(conclave_proto::LoginResponse::decode(bytes.as_slice())?)
     }
 
+    pub async fn logout(&self) -> Result<()> {
+        let url = format!("{}/api/v1/logout", self.base_url);
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf");
+
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let body = resp.bytes().await?;
+            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                err.message
+            } else {
+                String::from_utf8_lossy(&body).to_string()
+            };
+            return Err(Error::Server {
+                status: 500,
+                message: error_msg,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn me(&self) -> Result<conclave_proto::UserInfoResponse> {
         let bytes = self.get("/api/v1/me").await?;
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
@@ -209,6 +236,78 @@ impl ApiClient {
         Ok(conclave_proto::ListPendingWelcomesResponse::decode(
             bytes.as_slice(),
         )?)
+    }
+
+    // ── Member Management ──────────────────────────────────────────
+
+    pub async fn remove_member(
+        &self,
+        group_id: &str,
+        username: &str,
+        commit_message: Vec<u8>,
+        group_info: Vec<u8>,
+    ) -> Result<()> {
+        let req = conclave_proto::RemoveMemberRequest {
+            username: username.to_string(),
+            commit_message,
+            group_info,
+        };
+        self.post(&format!("/api/v1/groups/{group_id}/remove"), &req)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn leave_group(&self, group_id: &str) -> Result<()> {
+        let req = conclave_proto::LeaveGroupRequest {};
+        self.post(&format!("/api/v1/groups/{group_id}/leave"), &req)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_group_info(
+        &self,
+        group_id: &str,
+    ) -> Result<conclave_proto::GetGroupInfoResponse> {
+        let bytes = self
+            .get(&format!("/api/v1/groups/{group_id}/group-info"))
+            .await?;
+        Ok(conclave_proto::GetGroupInfoResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
+    pub async fn external_join(&self, group_id: &str, commit_message: Vec<u8>) -> Result<()> {
+        let req = conclave_proto::ExternalJoinRequest { commit_message };
+        self.post(&format!("/api/v1/groups/{group_id}/external-join"), &req)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn reset_account(&self) -> Result<()> {
+        let url = format!("{}/api/v1/reset-account", self.base_url);
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf");
+
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let body = resp.bytes().await?;
+            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                err.message
+            } else {
+                String::from_utf8_lossy(&body).to_string()
+            };
+            return Err(Error::Server {
+                status: 500,
+                message: error_msg,
+            });
+        }
+        Ok(())
     }
 
     // ── SSE ───────────────────────────────────────────────────────

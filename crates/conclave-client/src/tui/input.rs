@@ -94,10 +94,15 @@ impl InputLine {
     }
 
     /// Submit the current input. Returns the content and resets the buffer.
+    /// Commands containing credentials (/login, /register) are excluded from history.
     pub fn submit(&mut self) -> String {
         let text = self.content();
         if !text.is_empty() {
-            self.history.push(text.clone());
+            let lower = text.to_lowercase();
+            let has_credentials = lower.starts_with("/login ") || lower.starts_with("/register ");
+            if !has_credentials {
+                self.history.push(text.clone());
+            }
         }
         self.buffer.clear();
         self.cursor = 0;

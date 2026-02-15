@@ -48,12 +48,11 @@ pub async fn run(config: &ClientConfig) -> Result<()> {
 
         if let Some(username) = &session.username {
             mls = Some(MlsManager::new(&config.data_dir, username)?);
-            let udir = config.data_dir.join("users").join(username);
-            state.group_mapping = commands::load_group_mapping(&udir);
+            state.group_mapping = commands::load_group_mapping(&config.data_dir);
 
             // Open message store and restore persisted last_seen_seq values
             // *before* loading rooms so that load_rooms preserves them.
-            if let Ok(store) = MessageStore::open(&udir) {
+            if let Ok(store) = MessageStore::open(&config.data_dir) {
                 msg_store = Some(store);
             }
 
@@ -519,25 +518,29 @@ async fn fetch_missed_messages(
             let mls_group_id_clone = mls_group_id.clone();
             let mls_bytes = stored_msg.mls_message.clone();
 
-            let plaintext = match tokio::task::spawn_blocking(move || {
+            let decrypted = match tokio::task::spawn_blocking(move || {
                 let mls = MlsManager::new(&data_dir_owned, &username_clone)?;
                 mls.decrypt_message(&mls_group_id_clone, &mls_bytes)
             })
             .await
             {
-                Ok(Ok(Some(pt))) => pt,
+                Ok(Ok(d)) => d,
                 _ => continue,
             };
 
-            let text = String::from_utf8_lossy(&plaintext).to_string();
-            let msg = DisplayMessage::user(
-                &stored_msg.sender_username,
-                &text,
-                stored_msg.created_at as i64,
-            );
-
-            store.push_message(&group_id, &msg);
-            state.push_room_message(&group_id, msg);
+            match decrypted {
+                crate::mls::DecryptedMessage::Application(plaintext) => {
+                    let text = String::from_utf8_lossy(&plaintext).to_string();
+                    let msg = DisplayMessage::user(
+                        &stored_msg.sender_username,
+                        &text,
+                        stored_msg.created_at as i64,
+                    );
+                    store.push_message(&group_id, &msg);
+                    state.push_room_message(&group_id, msg);
+                }
+                _ => {}
+            }
 
             if let Some(room) = state.rooms.get_mut(&group_id) {
                 room.last_seen_seq = room.last_seen_seq.max(stored_msg.sequence_num);
