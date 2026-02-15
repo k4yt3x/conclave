@@ -30,10 +30,6 @@ Due to MLS's ratcheting, a sender cannot decrypt their own messages from the ser
 
 Each user has at most one key package on the server at a time. Uploading a new one replaces the old one, and fetching one consumes it. This means a user can only be added to one group before needing to upload a new key package. A production system should support multiple key packages per user (upload N, consume one at a time).
 
-#### No Member Removal
-
-The `commit_builder().remove_member()` API exists in mls-rs but is not wired up in the client or server. There is no endpoint for removing members from a group.
-
 #### No Message Ordering Guarantees
 
 The server assigns sequence numbers per group, but there is no mechanism to ensure clients process messages in order. Out-of-order MLS message processing is enabled via the `rfc_compliant` feature (which includes `out_of_order`), but the client fetches all messages from seq 0 each time, which may cause issues if messages are processed multiple times. A cursor/watermark per user per group would fix this.
@@ -48,10 +44,6 @@ The server currently listens on plain HTTP. For production, it should either:
 
 - Run behind a reverse proxy (Cloudflare, nginx) that terminates TLS.
 - Use `axum-server` with `rustls` for native TLS termination.
-
-#### REPL Limitations
-
-The REPL does not currently listen for SSE events in the background. It only fetches messages on demand via `/messages`. A production REPL should spawn a background task that listens to the SSE stream and displays incoming messages in real time.
 
 ### Architecture Notes for Future Sessions
 
@@ -153,9 +145,92 @@ The event loop includes a 5-second reconnection timer. When the SSE connection d
 ### What to Build Next
 
 1. **Multiple key packages**: Allow users to have N key packages so they can be added to multiple groups without re-uploading.
-2. **Member removal**: Wire up `commit_builder().remove_member()` with a `DELETE /api/v1/groups/{id}/members/{uid}` endpoint.
-3. **TLS support**: Add rustls-based TLS termination or document reverse proxy setup.
-4. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
-5. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
-6. **Tab completion**: Command and room name auto-completion in the TUI.
-7. **Unread indicators**: Show unread message counts for non-active rooms in the status line.
+2. **TLS support**: Add rustls-based TLS termination or document reverse proxy setup.
+3. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
+4. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
+5. **Tab completion**: Command and room name auto-completion in the TUI.
+
+## 2026-02-15: Comprehensive MLS Feature Implementation
+
+### What Was Built
+
+Implemented the full set of practical MLS group management features across server and client.
+
+#### Member Removal (`/kick`)
+- Server: `remove_group_member()` DB method, `POST /groups/{id}/remove` endpoint with SSE `MemberRemovedEvent` notification to both remaining and removed members.
+- Client MLS: `remove_member()` using `CommitBuilder::remove_member()`, `find_member_index()` to look up members by username in the MLS roster.
+- Client TUI: `/kick <username>` command.
+
+#### Leave Group (`/leave`)
+- Server: `POST /groups/{id}/leave` endpoint, removes user from DB and notifies remaining members via SSE.
+- Client: `/leave` command deletes local MLS group state and removes from local room list. `/part` now only switches the view without leaving.
+
+#### Key Rotation (`/rotate`)
+- Client MLS: `rotate_keys()` performs an empty commit to advance the epoch for forward secrecy / post-compromise security.
+- Client TUI: `/rotate` command uploads the commit to the server.
+
+#### Account Reset (`/reset`)
+- Server: `POST /reset-account` clears key packages, `GET /groups/{id}/group-info` serves stored GroupInfo, `POST /groups/{id}/external-join` processes external commits.
+- Client MLS: `external_rejoin_group()` uses `Client::external_commit_builder().with_removal()` to rejoin with a new identity. `wipe_local_state()` deletes identity and state files.
+- Client TUI: `/reset` command wipes local MLS state, regenerates identity, uploads new key package, and external-commits to rejoin all groups.
+
+#### Group Info Display (`/info`)
+- Client MLS: `group_info_details()` returns epoch, cipher suite, member count, own leaf index, and full member list.
+- Client TUI: `/info` command displays all MLS group details.
+
+#### Improved Commit Processing
+- `decrypt_message()` now returns `DecryptedMessage` enum (`Application`, `Commit`, `None`) instead of `Option<Vec<u8>>`.
+- `CommitInfo` struct extracts roster changes (members added/removed, self-removal detection) from `CommitEffect` and applied proposals.
+- TUI displays system messages: "X was added", "Y was removed", "Z updated their keys".
+- `MemberRemovedEvent` SSE handling cleans up local state when removed by another member.
+
+#### Server Changes
+- New `group_infos` table for storing GroupInfo blobs (needed for external commits).
+- `upload_commit` handler now stores GroupInfo via `store_group_info()`.
+- `group_info_message_allowing_ext_commit(true)` used instead of `group_info_message(true)` so GroupInfo supports external commits.
+- 5 new API endpoints: remove member, leave group, get group info, external join, reset account.
+
+#### Proto Changes
+- New message types: `RemoveMemberRequest`, `LeaveGroupRequest`, `GetGroupInfoResponse`, `ResetAccountResponse`, `ExternalJoinRequest`, `MemberRemovedEvent`.
+- `ServerEvent` oneof extended with `member_removed` variant.
+
+### Known Issues Resolved
+
+- **No Member Removal**: Now fully implemented via `/kick` and `/leave`.
+- **Unread indicators**: `/unread` command checks all rooms for new messages.
+
+### Remaining Limitations
+
+- **Leave group MLS-level**: `/leave` removes the user from the server DB and deletes local state, but the stale MLS leaf remains in the group tree until another member commits. This is acceptable — the user is fully removed from the server's perspective.
+- **External commit after reset**: Requires that GroupInfo was stored (via a prior commit upload). If no commit has been uploaded for a group, the reset cannot rejoin it.
+
+## 2026-02-15: Comprehensive Test Suite
+
+### What Was Built
+
+Added 182 tests across 8 test suites with both positive and negative cases for all features. Zero bugs found — all existing code behaved correctly.
+
+### Restructuring for Testability
+
+- **Server `lib.rs`**: Created `crates/conclave-server/src/lib.rs` re-exporting all modules (`pub mod api, auth, config, db, error, state`). `main.rs` changed from `mod` declarations to `use conclave_server::*`. This enables integration tests in `tests/` to access server internals.
+- **Ungated `open_in_memory()`**: Removed `#[cfg(test)]` from `Database::open_in_memory()` so integration tests can create in-memory databases.
+- **Dev-dependencies**: Added `tower` (util), `http-body-util`, `tokio` (macros) for server; `tempfile` for client.
+
+### Test Breakdown
+
+| Suite | File | Tests | Coverage |
+|-------|------|-------|----------|
+| Server DB | `db.rs` (inline) | 31 | All DB methods: users, sessions, key packages, groups, members, messages, welcomes, group info |
+| Server Auth | `auth.rs` (inline) | 6 | Password hashing/verification, token generation, invalid hash handling |
+| Server API | `tests/api_tests.rs` | 46 | All 18 HTTP endpoints via `tower::oneshot()`: registration, login, logout, key packages, groups, messages, invites, member removal, leave, group info, external join, reset, commits, welcomes |
+| Client MLS | `mls.rs` (inline) | 23 | Key package generation, group lifecycle, encrypt/decrypt roundtrip, commit processing, member removal, key rotation, external rejoin, identity persistence, state cleanup |
+| Client Commands | `commands.rs` (inline) | 33 | All 21 command variants parsed, missing args, unknown commands, edge cases |
+| Client InputLine | `input.rs` (inline) | 19 | Cursor movement, editing, history navigation, credential exclusion from history |
+| Client AppState | `state.rs` (inline) | 14 | Room management, message routing, room lookup (exact/prefix/case-insensitive) |
+| Client MessageStore | `store.rs` (inline) | 10 | SQLite message persistence, sequence tracking, group isolation |
+
+### Testing Patterns
+
+- **Server API tests**: Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener needed. Each test creates a fresh `Router` via `setup()`. Protobuf encoding/decoding for request/response bodies.
+- **MLS crypto tests**: Use `tempfile::TempDir` for isolated MLS state directories. Real cryptographic operations (no mocking) — tests verify actual encrypt/decrypt roundtrips, key rotation epoch advancement, and external commit rejoins.
+- **Negative tests**: Every critical feature has failure-path coverage (invalid inputs return errors, non-members get 401, missing resources get 404, etc.).

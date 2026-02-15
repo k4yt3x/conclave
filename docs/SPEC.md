@@ -33,6 +33,7 @@ Conclave uses a client-server architecture with MLS running on top of HTTP/2.
 ```
 conclave/
 ├── Cargo.toml                          # Workspace root (resolver = "3", edition 2024)
+├── AGENT.md                            # Agent directives for AI assistants
 ├── proto/
 │   └── conclave.proto                  # Protobuf wire format definitions
 ├── crates/
@@ -40,25 +41,35 @@ conclave/
 │   │   ├── Cargo.toml
 │   │   ├── build.rs                    # prost-build compilation
 │   │   └── src/lib.rs
-│   ├── conclave-server/                # Server binary
+│   ├── conclave-server/                # Server binary + library
 │   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── main.rs                 # Entry point, CLI, config loading, server startup
-│   │       ├── config.rs               # ServerConfig (TOML deserialization)
-│   │       ├── db.rs                   # SQLite database layer (all CRUD operations)
-│   │       ├── auth.rs                 # Argon2id hashing, token generation, AuthUser extractor
-│   │       ├── api.rs                  # axum router and all HTTP handlers
-│   │       ├── state.rs                # AppState, SSE broadcast channel
-│   │       └── error.rs                # Error enum with IntoResponse impl
+│   │   ├── src/
+│   │   │   ├── lib.rs                  # Re-exports all modules for integration testing
+│   │   │   ├── main.rs                 # Entry point, CLI, config loading, server startup
+│   │   │   ├── config.rs              # ServerConfig (TOML deserialization)
+│   │   │   ├── db.rs                  # SQLite database layer (all CRUD operations)
+│   │   │   ├── auth.rs                # Argon2id hashing, token generation, AuthUser extractor
+│   │   │   ├── api.rs                 # axum router and all HTTP handlers
+│   │   │   ├── state.rs               # AppState, SSE broadcast channel
+│   │   │   └── error.rs               # Error enum with IntoResponse impl
+│   │   └── tests/
+│   │       └── api_tests.rs           # Integration tests (tower::oneshot)
 │   └── conclave-client/                # Client binary
 │       ├── Cargo.toml
 │       └── src/
-│           ├── main.rs                 # Entry point, clap subcommands, one-shot execution
+│           ├── main.rs                 # Entry point, clap subcommands, one-shot + TUI
 │           ├── config.rs               # ClientConfig, SessionState persistence
 │           ├── api.rs                  # ApiClient (reqwest HTTP wrapper)
 │           ├── mls.rs                  # MlsManager (mls-rs operations with SQLite storage)
-│           ├── repl.rs                 # Interactive REPL mode (rustyline)
-│           └── error.rs                # Client error types
+│           ├── error.rs                # Client error types
+│           └── tui/
+│               ├── mod.rs             # Main event loop (crossterm + SSE + reconnection)
+│               ├── state.rs           # AppState, Room, DisplayMessage, ConnectionStatus
+│               ├── input.rs           # InputLine editor with cursor movement and history
+│               ├── render.rs          # Terminal drawing (messages, status line, input)
+│               ├── commands.rs        # IRC-style command parsing and execution
+│               ├── events.rs          # SSE event decoding and handling
+│               └── store.rs           # SQLite-backed message history persistence
 ```
 
 ### 2.2 Technology Stack
@@ -78,7 +89,7 @@ conclave/
 | Configuration          | TOML                            | `toml` (0.8), `serde`                         |
 | Logging                | tracing                         | `tracing` (0.1), `tracing-subscriber` (0.3)   |
 | CLI parsing            | clap (derive API)               | `clap` (4)                                    |
-| Interactive REPL       | rustyline                       | `rustyline` (15)                              |
+| Interactive TUI        | crossterm + SSE                 | `crossterm` (0.28), `reqwest-eventsource`     |
 | Async runtime          | tokio                           | `tokio` (1, full features)                    |
 
 ### 2.3 Design Rationale
@@ -166,6 +177,12 @@ CREATE TABLE pending_welcomes (
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX idx_pending_welcomes_user ON pending_welcomes(user_id);
+
+CREATE TABLE group_infos (
+    group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+    group_info_data BLOB NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 ```
 
 ### 3.3 Authentication
@@ -199,6 +216,11 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/groups/{id}/commit`      | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + welcome messages     |
 | POST   | `/api/v1/groups/{id}/messages`    | SendMessageRequest    | SendMessageResponse         | Send encrypted message                   |
 | GET    | `/api/v1/groups/{id}/messages`    | —  (`?after=&limit=`) | GetMessagesResponse         | Fetch messages (paginated by seq num)    |
+| POST   | `/api/v1/groups/{id}/remove`      | RemoveMemberRequest   | RemoveMemberResponse        | Remove a member from the group           |
+| POST   | `/api/v1/groups/{id}/leave`       | —                     | LeaveGroupResponse          | Leave a group                            |
+| GET    | `/api/v1/groups/{id}/group-info`  | —                     | GetGroupInfoResponse        | Get stored GroupInfo for external commit  |
+| POST   | `/api/v1/groups/{id}/external-join` | ExternalJoinRequest | ExternalJoinResponse        | Rejoin group via external commit         |
+| POST   | `/api/v1/reset-account`           | —                     | ResetAccountResponse        | Clear key packages for account reset     |
 | GET    | `/api/v1/welcomes`                | —                     | ListPendingWelcomesResponse | List pending group invitations           |
 | POST   | `/api/v1/welcomes/{id}/accept`    | —                     | 204 No Content              | Accept and delete a pending welcome      |
 | GET    | `/api/v1/events`                  | —                     | SSE stream                  | Real-time event notifications            |
@@ -211,6 +233,7 @@ Event types:
 - **NewMessageEvent**: New message in a group (group_id, sequence_num, sender_id).
 - **GroupUpdateEvent**: Group state changed, e.g., a commit was uploaded (group_id, update_type).
 - **WelcomeEvent**: User was invited to a group (group_id, group_name).
+- **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_username). Sent to both remaining members and the removed user.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
 
@@ -241,6 +264,7 @@ The client persists the following files in `data_dir`:
 | `mls_signing_key.bin` | Raw bytes     | `SignatureSecretKey` (private key material)                  |
 | `mls_state.db`        | SQLite        | mls-rs group state, key packages, PSKs (via mls-rs-provider-sqlite) |
 | `group_mapping.toml`  | TOML          | Map of server group UUID to MLS group ID (hex)              |
+| `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking    |
 
 ### 4.3 MLS Integration
 
@@ -259,6 +283,10 @@ The client persists the following files in `data_dir`:
 | Join group          | `client.join_group(None, &welcome_msg, None)`                     |
 | Encrypt message     | `group.encrypt_application_message(plaintext, auth_data)`         |
 | Decrypt message     | `group.process_incoming_message(msg)` → `ReceivedMessage`         |
+| Remove member       | `group.commit_builder().remove_member(index).build()`             |
+| Rotate keys         | `group.commit_builder().build()` (empty commit advances epoch)    |
+| External rejoin     | `client.external_commit_builder().with_removal(index).build(gi)`  |
+| Get group info      | `group.group_info_message_allowing_ext_commit(true)`              |
 | Persist state       | `group.write_to_storage()`                                        |
 | Load group          | `client.load_group(&group_id_bytes)`                              |
 
@@ -280,21 +308,32 @@ Commands:
   messages      -g <group_id>                     Fetch and decrypt messages
 ```
 
-#### Interactive REPL
+#### Interactive TUI
 
-Running `conclave-client` with no subcommand enters interactive mode. Commands are prefixed with `/`:
+Running `conclave-client` with no subcommand enters the IRC-style interactive TUI. Commands are prefixed with `/`; plain text sends to the active room.
 
 ```
-/register <username> <password>
-/login <username> <password>
-/me
-/keygen
-/create <group_name> <member1,member2,...>
-/groups
-/join
-/send <group_id> <message>
-/messages <group_id>
-/quit
+/register <user> <pass>       Register a new account
+/login <user> <pass>          Login to the server
+/keygen                       Generate and upload a key package
+/create <name> <user1,user2>  Create a room with members
+/join                         Accept pending invitations
+/join <room>                  Switch to a room
+/invite <user1,user2>         Invite to the active room
+/kick <username>              Remove a member from the room
+/leave                        Leave the room (MLS removal)
+/part                         Switch away without leaving
+/rotate                       Rotate keys (forward secrecy)
+/reset                        Reset account and rejoin groups
+/info                         Show MLS group details
+/rooms                        List your rooms
+/unread                       Check rooms for new messages
+/logout                       Logout and revoke session
+/who                          List members of active room
+/msg <room> <text>            Send to a room without switching
+/me                           Show current user info
+/help                         Show help
+/quit                         Exit
 ```
 
 ## 5. Protocol Flows
@@ -378,4 +417,4 @@ Alice                               Server                              Bob
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response`, `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `ListGroupsResponse`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome`, `ListPendingWelcomesResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response`, `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome`, `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response`, `LeaveGroupRequest/Response`, `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent`, `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.
