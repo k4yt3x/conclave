@@ -15,10 +15,17 @@ pub struct ServerConfig {
     /// Session token lifetime in seconds (default: 7 days).
     #[serde(default = "default_token_ttl")]
     pub token_ttl_seconds: i64,
+
+    /// Path to the TLS certificate file (PEM format).
+    /// If both `tls_cert_path` and `tls_key_path` are set, the server serves HTTPS.
+    pub tls_cert_path: Option<PathBuf>,
+
+    /// Path to the TLS private key file (PEM format).
+    pub tls_key_path: Option<PathBuf>,
 }
 
 fn default_bind_address() -> String {
-    "127.0.0.1:8443".to_string()
+    "0.0.0.0:8443".to_string()
 }
 
 fn default_db_path() -> PathBuf {
@@ -35,6 +42,8 @@ impl Default for ServerConfig {
             bind_address: default_bind_address(),
             database_path: default_db_path(),
             token_ttl_seconds: default_token_ttl(),
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }

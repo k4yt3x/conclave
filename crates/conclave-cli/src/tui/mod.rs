@@ -18,10 +18,9 @@ use futures_util::StreamExt;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 use tokio::sync::Mutex;
 
-use crate::api::ApiClient;
-use crate::config::{ClientConfig, SessionState};
-use crate::error::{Error, Result};
-use crate::mls::MlsManager;
+use conclave_lib::api::ApiClient;
+use conclave_lib::config::{ClientConfig, SessionState};
+use conclave_lib::mls::MlsManager;
 
 use self::commands::Command;
 use self::input::InputLine;
@@ -29,10 +28,14 @@ use self::state::{AppState, ConnectionStatus, DisplayMessage};
 use self::store::MessageStore;
 
 /// Run the interactive TUI.
-pub async fn run(config: &ClientConfig) -> Result<()> {
+pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
     // Load session state.
     let session = SessionState::load(&config.data_dir);
-    let api = Arc::new(Mutex::new(ApiClient::new(&config.server_url)));
+    let initial_url = session.server_url.as_deref().unwrap_or("");
+    let api = Arc::new(Mutex::new(ApiClient::new(
+        initial_url,
+        config.accept_invalid_certs,
+    )));
 
     let mut state = AppState::new();
     let mut input = InputLine::new();
@@ -47,7 +50,9 @@ pub async fn run(config: &ClientConfig) -> Result<()> {
         state.logged_in = true;
 
         if let Some(username) = &session.username {
-            mls = Some(MlsManager::new(&config.data_dir, username)?);
+            mls = Some(
+                MlsManager::new(&config.data_dir, username).map_err(crate::error::Error::Lib)?,
+            );
             state.group_mapping = commands::load_group_mapping(&config.data_dir);
 
             // Open message store and restore persisted last_seen_seq values
@@ -88,12 +93,13 @@ pub async fn run(config: &ClientConfig) -> Result<()> {
     }
 
     // Set up terminal.
-    terminal::enable_raw_mode().map_err(|e| Error::Terminal(e.to_string()))?;
+    terminal::enable_raw_mode().map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, cursor::Show)
-        .map_err(|e| Error::Terminal(e.to_string()))?;
+        .map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
 
-    let (cols, rows) = terminal::size().map_err(|e| Error::Terminal(e.to_string()))?;
+    let (cols, rows) =
+        terminal::size().map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
     state.terminal_cols = cols;
     state.terminal_rows = rows;
 
@@ -109,7 +115,8 @@ pub async fn run(config: &ClientConfig) -> Result<()> {
         ));
     }
 
-    render::render_full(&mut stdout, &state, &input).map_err(|e| Error::Terminal(e.to_string()))?;
+    render::render_full(&mut stdout, &state, &input)
+        .map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
 
     // Set up event streams.
     let mut term_events = EventStream::new();
@@ -166,7 +173,7 @@ async fn main_loop(
     term_events: &mut EventStream,
     sse_source: &mut Option<EventSource>,
     msg_store: &Option<MessageStore>,
-) -> Result<()> {
+) -> crate::error::Result<()> {
     loop {
         tokio::select! {
             // Terminal key events.
@@ -283,7 +290,7 @@ async fn handle_key_event(
     config: &ClientConfig,
     sse_source: &mut Option<EventSource>,
     msg_store: &Option<MessageStore>,
-) -> Result<LoopAction> {
+) -> crate::error::Result<LoopAction> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL)
         | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
@@ -297,7 +304,9 @@ async fn handle_key_event(
             let text = input.submit();
 
             match commands::parse(&text) {
-                Ok(Command::Quit) => return Ok(LoopAction::Quit),
+                Ok(Command::Quit) => {
+                    return Ok(LoopAction::Quit);
+                }
                 Ok(cmd) => {
                     match commands::execute(cmd, api, state, mls, config, msg_store).await {
                         Ok((msgs, should_start_sse)) => {
@@ -529,7 +538,7 @@ async fn fetch_missed_messages(
             };
 
             match decrypted {
-                crate::mls::DecryptedMessage::Application(plaintext) => {
+                conclave_lib::mls::DecryptedMessage::Application(plaintext) => {
                     let text = String::from_utf8_lossy(&plaintext).to_string();
                     let msg = DisplayMessage::user(
                         &stored_msg.sender_username,

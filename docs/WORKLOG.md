@@ -1,5 +1,98 @@
 # Conclave Work Log
 
+## 2026-02-15: Warning Cleanup and Dead Code Removal
+
+### What Changed
+
+Addressed all compiler warnings across the workspace.
+
+- **conclave-cli**: Removed unnecessary `mut` from 4 `api` bindings in CLI subcommand handlers.
+- **conclave-gui/app.rs**: Removed unused `CommitUploaded` message variant, `CommitInfo` struct, and `RegisterInfo.username` field.
+- **conclave-gui/subscription.rs**: Removed unused fields from `SseUpdate` variants — `seq`/`sender_id` from `NewMessage`, converted `Welcome` and `GroupUpdate` to fieldless variants.
+- **conclave-gui/theme**: Removed unused `accent` and `unread` fields from `Theme` struct, removed unused `text::accent()`, `container::surface()`, and `container::status_bar()` functions.
+- **conclave-gui/widget/message_view.rs**: Removed unused `view()` function (only `message_list()` is used).
+
+## 2026-02-15: URL Auto-Normalization and Error Message Improvements
+
+### What Changed
+
+- **URL normalization**: `ApiClient::new()` now auto-prepends `https://` when the server URL has no scheme. Users can type `example.com:8443` instead of `https://example.com:8443`.
+- **Error messages**: The `Error::Http` variant now walks the full reqwest error cause chain via `format_error_chain()`. Instead of the unhelpful "HTTP error: builder error", users see the complete error context (e.g., "HTTP error: error sending request: ... connection refused").
+
+## 2026-02-15: Login Rework — Server as Parameter
+
+### What Changed
+
+The server URL is no longer a configuration file setting. Instead, it is specified during login and registration as a command parameter.
+
+- **Command format**: `/login <server> <username> <password>` and `/register <server> <username> <password>`.
+- **CLI**: `conclave-cli login -s <server> -u <user> -p <pass>`.
+- **Session persistence**: `SessionState` now includes `server_url`. After login, the server URL is saved so subsequent commands and session restoration use it automatically.
+- **`ClientConfig`**: `server_url` field removed. Only `data_dir` and `accept_invalid_certs` remain.
+- **TUI**: `ApiClient` is created with an empty URL on startup (if no session) and replaced with a properly configured one on `/login`.
+- **GUI**: `Conclave` struct has a `server_url: Option<String>` field used by all async operations. The login screen pre-fills from the saved session URL.
+- **SSE subscription**: Now passes `accept_invalid_certs` to the reqwest client builder (previously ignored).
+
+## 2026-02-15: TLS Support
+
+### What Was Built
+
+Added optional native TLS support to the server and TLS certificate validation to clients.
+
+#### Server
+
+- Added `tls_cert_path` and `tls_key_path` fields to `ServerConfig`. When both are set, the server uses `axum-server` with `rustls` to serve HTTPS. When omitted, it falls back to plain HTTP (for use behind a reverse proxy).
+- New dependencies: `axum-server` (0.8, with `tls-rustls` feature), `rustls-pemfile` (2).
+
+#### Client
+
+- Added `accept_invalid_certs` field to `ClientConfig` (default: `false`). When `false`, `reqwest` validates the server's TLS certificate normally. When `true`, certificate validation is skipped (for development with self-signed certs).
+- `ApiClient::new()` now accepts the `accept_invalid_certs` flag and configures the `reqwest::Client` accordingly.
+- Both CLI and GUI clients pass the config flag through to `ApiClient`.
+
+## 2026-02-15: GUI Client (iced)
+
+### What Was Built
+
+Full graphical client using iced 0.14 with Elm-style architecture (model → update → view).
+
+#### Architecture
+
+- **`conclave-gui` crate**: New workspace member with `conclave-lib` as shared dependency.
+- **Screens**: Login (centered card with server URL, username, password, login/register toggle) and Dashboard (three-panel layout: sidebar with room list + unread counts, scrollable message area, chat input).
+- **Theme**: Custom dark theme (Ferra-inspired palette) implementing `iced::theme::Base` with per-widget `Catalog` styles for buttons, containers, text, text inputs, and scrollables.
+- **Subscriptions**: SSE event stream via `iced::Subscription::run_with()` keyed by auth token, plus a 1-second tick timer for connection status.
+- **Async**: All API calls via `Task::perform()`. MLS crypto (sync) wrapped in `tokio::task::spawn_blocking`.
+- **Commands**: All TUI `/` commands supported in the GUI text input.
+
+#### Bug Fixes
+
+- **Wrong server URL**: `LoginInfo` now carries the server URL from the login form so `ApiClient` connects to the correct server.
+- **Room list not refreshing**: Group creation, invite, and kick operations now trigger automatic room list reload.
+- **"group mapping not found"**: `create_group` now returns a `GroupCreated` message that updates `self.group_mapping` before switching to the new room.
+
+## 2026-02-15: Shared Library Extraction (`conclave-lib`)
+
+### What Was Built
+
+Extracted reusable client logic from `conclave-cli` into a new `conclave-lib` library crate so both the CLI/TUI and GUI can share it.
+
+#### Modules Moved
+
+| Module | From | To |
+|--------|------|----|
+| `api.rs` | `conclave-cli/src/` | `conclave-lib/src/api.rs` |
+| `mls.rs` | `conclave-cli/src/` | `conclave-lib/src/mls.rs` |
+| `config.rs` | `conclave-cli/src/` | `conclave-lib/src/config.rs` |
+| `error.rs` | `conclave-cli/src/` | `conclave-lib/src/error.rs` (removed `Terminal` variant) |
+| `Room`, `DisplayMessage`, `ConnectionStatus` | `conclave-cli/src/tui/state.rs` | `conclave-lib/src/state.rs` |
+| `MessageStore` | `conclave-cli/src/tui/store.rs` | `conclave-lib/src/store.rs` |
+| `Command` enum + `parse()` | `conclave-cli/src/tui/commands.rs` | `conclave-lib/src/command.rs` |
+
+#### Crate Rename
+
+`conclave-client` was renamed to `conclave-cli` to clarify that it is a CLI/TUI application binary, not a library. All workspace references, docs, and AGENT.md were updated.
+
 ## 2026-02-15: Initial Implementation
 
 ### What Was Built
@@ -8,7 +101,7 @@ Complete server and client implementation from scratch:
 
 - **conclave-proto**: Protobuf schema with 20+ message types, prost code generation.
 - **conclave-server**: Full axum HTTP server with SQLite storage, Argon2id auth, opaque token sessions, 11 API endpoints, SSE real-time push.
-- **conclave-client**: CLI client with MLS E2EE (mls-rs + OpenSSL), SQLite-persisted MLS state, one-shot commands, and interactive REPL.
+- **conclave-cli**: CLI/TUI client with MLS E2EE (mls-rs + OpenSSL), SQLite-persisted MLS state, one-shot commands, and interactive TUI.
 
 End-to-end encryption verified: two users can register, create an MLS group, exchange encrypted messages, and decrypt them.
 
@@ -38,12 +131,9 @@ The server assigns sequence numbers per group, but there is no mechanism to ensu
 
 The MLS identity uses `BasicCredential` with `BasicIdentityProvider`, which accepts any credential without validation. This is fine for a closed community where the server is trusted to enforce usernames, but provides no cryptographic identity binding. Upgrading to X.509 credentials would add stronger identity assurance.
 
-#### No TLS
+#### ~~No TLS~~ (Resolved)
 
-The server currently listens on plain HTTP. For production, it should either:
-
-- Run behind a reverse proxy (Cloudflare, nginx) that terminates TLS.
-- Use `axum-server` with `rustls` for native TLS termination.
+The server now supports optional native TLS via `axum-server` with `rustls`. Set `tls_cert_path` and `tls_key_path` in the server config. Alternatively, run behind a TLS-terminating reverse proxy with plain HTTP mode. Clients validate TLS certificates by default (`accept_invalid_certs = false`).
 
 ### Architecture Notes for Future Sessions
 
@@ -145,10 +235,9 @@ The event loop includes a 5-second reconnection timer. When the SSE connection d
 ### What to Build Next
 
 1. **Multiple key packages**: Allow users to have N key packages so they can be added to multiple groups without re-uploading.
-2. **TLS support**: Add rustls-based TLS termination or document reverse proxy setup.
-3. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
-4. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
-5. **Tab completion**: Command and room name auto-completion in the TUI.
+2. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
+3. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
+4. **Tab completion**: Command and room name auto-completion in the TUI.
 
 ## 2026-02-15: Comprehensive MLS Feature Implementation
 

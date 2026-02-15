@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
-use super::state::DisplayMessage;
+use crate::state::DisplayMessage;
 
 /// Set restrictive permissions on a file (Unix only).
 #[cfg(unix)]
@@ -142,7 +142,6 @@ impl MessageStore {
 
 #[cfg(test)]
 mod tests {
-    use super::super::state::DisplayMessage;
     use super::*;
     use tempfile::TempDir;
 

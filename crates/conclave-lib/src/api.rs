@@ -12,9 +12,24 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, accept_invalid_certs: bool) -> Self {
+        let client = Client::builder()
+            .danger_accept_invalid_certs(accept_invalid_certs)
+            .build()
+            .expect("failed to build HTTP client");
+
+        // Auto-prepend https:// if no scheme is present
+        let base_url = if !base_url.is_empty()
+            && !base_url.starts_with("http://")
+            && !base_url.starts_with("https://")
+        {
+            format!("https://{base_url}")
+        } else {
+            base_url.to_string()
+        };
+
         Self {
-            client: Client::new(),
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
             token: None,
         }

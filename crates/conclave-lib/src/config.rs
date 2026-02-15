@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 /// Client configuration stored in a TOML file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientConfig {
-    /// Server base URL (e.g., "http://127.0.0.1:8443").
-    pub server_url: String,
-
     /// Path to the client's local data directory (SQLite DBs, keys, etc.).
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+
+    /// Accept invalid TLS certificates (e.g., self-signed). Default: false.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -30,8 +31,8 @@ fn default_data_dir() -> PathBuf {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            server_url: "http://127.0.0.1:8443".to_string(),
             data_dir: default_data_dir(),
+            accept_invalid_certs: false,
         }
     }
 }
@@ -39,6 +40,7 @@ impl Default for ClientConfig {
 /// Session state persisted between client invocations.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionState {
+    pub server_url: Option<String>,
     pub token: Option<String>,
     pub user_id: Option<u64>,
     pub username: Option<String>,

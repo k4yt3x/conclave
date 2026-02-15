@@ -4,9 +4,9 @@ use std::sync::Arc;
 use prost::Message;
 use tokio::sync::Mutex;
 
-use crate::api::ApiClient;
-use crate::error::{Error, Result};
-use crate::mls::{DecryptedMessage, MlsManager};
+use conclave_lib::api::ApiClient;
+use conclave_lib::error::{Error, Result};
+use conclave_lib::mls::{DecryptedMessage, MlsManager};
 
 use super::commands;
 use super::state::{AppState, DisplayMessage};

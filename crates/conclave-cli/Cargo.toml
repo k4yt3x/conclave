@@ -1,14 +1,15 @@
 [package]
-name = "conclave-client"
+name = "conclave-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "conclave-client"
+name = "conclave-cli"
 path = "src/main.rs"
 
 [dependencies]
+conclave-lib = { path = "../conclave-lib" }
 conclave-proto = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
@@ -24,14 +25,4 @@ reqwest-eventsource = "0.6"
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-directories = "6"
 anyhow = "1"
-mls-rs = { version = "0.53", features = ["sqlite-bundled"] }
-mls-rs-core = "0.25"
-mls-rs-codec = "0.7"
-mls-rs-crypto-openssl = "0.19"
-mls-rs-provider-sqlite = { version = "0.21", features = ["sqlite-bundled"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
-
-[dev-dependencies]
-tempfile = "3"

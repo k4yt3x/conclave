@@ -40,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
     let database = db::Database::open(&config.database_path)?;
 
     let bind_address = config.bind_address.clone();
+    let tls_cert_path = config.tls_cert_path.clone();
+    let tls_key_path = config.tls_key_path.clone();
     let app_state = Arc::new(state::AppState::new(database, config));
 
     let app = api::router().with_state(app_state.clone());
@@ -61,10 +63,27 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let listener = tokio::net::TcpListener::bind(&bind_address).await?;
-    info!("listening on {bind_address}");
-
-    axum::serve(listener, app).await?;
+    match (&tls_cert_path, &tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await?;
+            let addr: std::net::SocketAddr = bind_address.parse()?;
+            info!("listening on {bind_address} (TLS)");
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        (None, None) => {
+            let listener = tokio::net::TcpListener::bind(&bind_address).await?;
+            info!("listening on {bind_address} (plain HTTP)");
+            axum::serve(listener, app).await?;
+        }
+        _ => {
+            anyhow::bail!(
+                "both tls_cert_path and tls_key_path must be set for TLS, or neither for plain HTTP"
+            );
+        }
+    }
 
     Ok(())
 }

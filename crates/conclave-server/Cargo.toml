@@ -26,6 +26,7 @@ sha2 = "0.10"
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 anyhow = "1"
 
 [dev-dependencies]
