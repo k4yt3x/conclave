@@ -1,4 +1,4 @@
-use iced::{Subscription, Task};
+use iced::{Subscription, Task, keyboard};
 use std::collections::HashMap;
 
 use conclave_lib::api::ApiClient;
@@ -54,6 +54,8 @@ pub enum Message {
     GroupCreated(Result<GroupCreatedInfo, String>),
     /// A group operation completed that requires a room refresh.
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
+    /// Quit the application (e.g. Ctrl+Q).
+    Quit,
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +231,7 @@ impl Conclave {
                 }
                 Task::none()
             }
+            Message::Quit => iced::exit(),
             Message::GroupCreated(result) => self.handle_group_created(result),
             Message::RefreshRooms(result) => {
                 match result {
@@ -272,15 +275,25 @@ impl Conclave {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let kbd = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(c),
+                modifiers,
+                ..
+            }) if modifiers.command() && c.as_ref() == "q" => Some(Message::Quit),
+            _ => None,
+        });
+
         if let Some(token) = &self.token {
-            subscription::sse(
+            let sse = subscription::sse(
                 self.server_url.clone().unwrap_or_default(),
                 token.clone(),
                 self.config.accept_invalid_certs,
             )
-            .map(Message::SseEvent)
+            .map(Message::SseEvent);
+            Subscription::batch([sse, kbd])
         } else {
-            Subscription::none()
+            kbd
         }
     }
 
@@ -544,13 +557,31 @@ impl Conclave {
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
+                let active_room = self.active_room.clone();
                 Task::perform(
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
-                        load_rooms_async(&api).await
+                        let rooms = load_rooms_async(&api).await.map_err(|e| e.to_string())?;
+                        if rooms.is_empty() {
+                            return Ok(vec![DisplayMessage::system("No rooms.")]);
+                        }
+                        let mut msgs = vec![DisplayMessage::system("Rooms:")];
+                        for r in &rooms {
+                            let active = if active_room.as_deref() == Some(&r.group_id) {
+                                " (active)"
+                            } else {
+                                ""
+                            };
+                            msgs.push(DisplayMessage::system(&format!(
+                                "  #{} [{}]{active}",
+                                r.name,
+                                r.members.join(", "),
+                            )));
+                        }
+                        Ok(msgs)
                     },
-                    Message::RoomsLoaded,
+                    Message::RefreshRooms,
                 )
             }
             Ok(Command::Join { target: None }) => self.accept_welcomes(),
@@ -659,6 +690,10 @@ impl Conclave {
         match update {
             SseUpdate::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
+                Task::none()
+            }
+            SseUpdate::Connecting => {
+                self.connection_status = ConnectionStatus::Connecting;
                 Task::none()
             }
             SseUpdate::Disconnected => {

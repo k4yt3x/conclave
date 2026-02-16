@@ -1,14 +1,18 @@
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use iced::Subscription;
 use prost::Message;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
 /// SSE event updates from the server.
 #[derive(Debug, Clone)]
 pub enum SseUpdate {
     Connected,
+    Connecting,
     Disconnected,
     NewMessage { group_id: String },
     Welcome,
@@ -66,36 +70,42 @@ fn sse_stream(
             .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
             .expect("failed to build HTTP client");
-        let builder = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"));
 
-        let mut es = match EventSource::new(builder) {
-            Ok(es) => es,
-            Err(_) => {
-                yield SseUpdate::Disconnected;
-                return;
-            }
-        };
+        loop {
+            yield SseUpdate::Connecting;
 
-        while let Some(event) = es.next().await {
-            match event {
-                Ok(EsEvent::Open) => {
-                    yield SseUpdate::Connected;
-                }
-                Ok(EsEvent::Message(msg)) => {
-                    if let Some(update) = decode_sse_event(&msg.data) {
-                        yield update;
-                    }
-                }
+            let builder = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"));
+
+            let mut es = match EventSource::new(builder) {
+                Ok(es) => es,
                 Err(_) => {
                     yield SseUpdate::Disconnected;
-                    return;
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                    continue;
+                }
+            };
+
+            while let Some(event) = es.next().await {
+                match event {
+                    Ok(EsEvent::Open) => {
+                        yield SseUpdate::Connected;
+                    }
+                    Ok(EsEvent::Message(msg)) => {
+                        if let Some(update) = decode_sse_event(&msg.data) {
+                            yield update;
+                        }
+                    }
+                    Err(_) => {
+                        yield SseUpdate::Disconnected;
+                        break;
+                    }
                 }
             }
-        }
 
-        yield SseUpdate::Disconnected;
+            tokio::time::sleep(RECONNECT_DELAY).await;
+        }
     }
 }
 
