@@ -320,7 +320,7 @@ The client persists the following files in `data_dir`:
 
 ### 4.3 MLS Integration
 
-- **Cipher suite**: `CURVE25519_AES128` (MLS cipher suite 1)
+- **Cipher suite**: `CURVE448_CHACHA` (MLS cipher suite 6 — X448, ChaCha20-Poly1305, SHA-512, Ed448, 256-bit security)
 - **Crypto backend**: OpenSSL via `mls-rs-crypto-openssl`
 - **Identity**: `BasicCredential` with username bytes (suitable for the current trust model; X.509 can be added later)
 - **Storage**: SQLite-backed via `mls-rs-provider-sqlite` with `FileConnectionStrategy`

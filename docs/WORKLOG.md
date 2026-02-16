@@ -1,5 +1,35 @@
 # Conclave Work Log
 
+## 2026-02-15: Cipher Suite Upgrade to CURVE448_CHACHA
+
+### What Changed
+
+Upgraded the MLS cipher suite from `CURVE25519_AES128` (suite 1, 128-bit security) to `CURVE448_CHACHA` (suite 6, 256-bit security).
+
+- **`conclave-lib/src/mls.rs`**: Changed the `CIPHERSUITE` constant from `CipherSuite::CURVE25519_AES128` to `CipherSuite::CURVE448_CHACHA`.
+- **New primitives**: X448 (KEM), ChaCha20-Poly1305 (AEAD), SHA-512 (hash), Ed448 (signatures).
+- **Breaking change**: Existing MLS state is incompatible. Clients must `/reset` and re-create groups.
+
+## 2026-02-15: GUI Ctrl+Q Keybinding
+
+### What Changed
+
+- **`conclave-gui/src/app.rs`**: Added `Message::Quit` variant. `subscription()` now uses `iced::event::listen_with` to capture Ctrl+Q (Cmd+Q on macOS) globally, even when the text input has focus. Batched with the SSE subscription via `Subscription::batch`.
+
+## 2026-02-15: GUI `/rooms` Empty State
+
+### What Changed
+
+- **`conclave-gui/src/app.rs`**: The `/rooms` command now displays system messages listing all rooms (with member lists and active indicator), or "No rooms." when the user has no rooms. Previously it produced no visible output.
+
+## 2026-02-15: GUI SSE Auto-Reconnect
+
+### What Changed
+
+- **`conclave-gui/src/subscription.rs`**: `sse_stream()` now loops on error instead of terminating. On disconnect, it yields `Disconnected`, sleeps 5 seconds, then retries. Added `SseUpdate::Connecting` variant. The `reqwest::Client` is reused across reconnections.
+- **`conclave-gui/src/app.rs`**: Added `SseUpdate::Connecting` handler to set `ConnectionStatus::Connecting`.
+- The TUI already had 5-second auto-reconnect via `tokio::select!`.
+
 ## 2026-02-15: Warning Cleanup and Dead Code Removal
 
 ### What Changed

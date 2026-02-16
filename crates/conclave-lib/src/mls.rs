@@ -6,16 +6,16 @@ use std::path::Path;
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::group::proposal::Proposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
-use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::identity::SigningIdentity;
+use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, MlsMessage};
 use mls_rs_crypto_openssl::OpensslCryptoProvider;
-use mls_rs_provider_sqlite::connection_strategy::FileConnectionStrategy;
 use mls_rs_provider_sqlite::SqLiteDataStorageEngine;
+use mls_rs_provider_sqlite::connection_strategy::FileConnectionStrategy;
 
 use crate::error::{Error, Result};
 
-const CIPHERSUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
+const CIPHERSUITE: CipherSuite = CipherSuite::CURVE448_CHACHA;
 
 /// Result of decrypting an incoming MLS message.
 pub enum DecryptedMessage {
