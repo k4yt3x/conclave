@@ -31,6 +31,7 @@ pub struct Conclave {
     group_mapping: HashMap<String, String>,
     connection_status: ConnectionStatus,
     msg_store: Option<MessageStore>,
+    rooms_loaded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +147,7 @@ impl Conclave {
             group_mapping: HashMap::new(),
             connection_status: ConnectionStatus::Disconnected,
             msg_store: None,
+            rooms_loaded: false,
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -313,7 +315,7 @@ impl Conclave {
             _ => None,
         });
 
-        if let Some(token) = &self.token {
+        if let (Some(token), true) = (&self.token, self.rooms_loaded) {
             let sse = subscription::sse(
                 self.server_url.clone().unwrap_or_default(),
                 token.clone(),
@@ -933,7 +935,60 @@ impl Conclave {
             }
         }
 
-        Task::none()
+        // On the very first load (startup catch-up), fetch missed messages
+        // for all rooms. Subsequent calls (from /rooms, invite, kick, etc.)
+        // skip this since SSE is already connected and last_seen_seq is
+        // up to date.
+        let was_loaded = self.rooms_loaded;
+        self.rooms_loaded = true;
+
+        if was_loaded || self.rooms.is_empty() {
+            return Task::none();
+        }
+
+        // Fetch missed messages for all rooms
+        let tasks: Vec<_> = self
+            .rooms
+            .keys()
+            .filter_map(|group_id| {
+                let mls_group_id = self.group_mapping.get(group_id)?;
+                let server_url = self.server_url.clone().unwrap_or_default();
+                let accept_invalid_certs = self.config.accept_invalid_certs;
+                let token = self.token.clone().unwrap_or_default();
+                let last_seq = self
+                    .rooms
+                    .get(group_id)
+                    .map(|r| r.last_seen_seq)
+                    .unwrap_or(0);
+                let mls_group_id = Some(mls_group_id.clone());
+                let username = self.username.clone();
+                let data_dir = self.config.data_dir.clone();
+                let group_id = group_id.clone();
+
+                Some(Task::perform(
+                    async move {
+                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                        api.set_token(token);
+                        fetch_and_decrypt(
+                            &api,
+                            &group_id,
+                            last_seq,
+                            mls_group_id.as_deref(),
+                            username.as_deref(),
+                            &data_dir,
+                        )
+                        .await
+                    },
+                    Message::MessagesFetched,
+                ))
+            })
+            .collect();
+
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
     }
 
     fn handle_messages_fetched(
@@ -1656,6 +1711,7 @@ impl Conclave {
         self.room_messages.clear();
         self.system_messages.clear();
         self.msg_store = None;
+        self.rooms_loaded = false;
         self.connection_status = ConnectionStatus::Disconnected;
 
         // Delete session file
@@ -1712,13 +1768,16 @@ async fn fetch_and_decrypt(
         let mls_group_id = mls_group_id.clone();
         let mls_bytes = stored_msg.mls_message.clone();
 
-        let decrypted = tokio::task::spawn_blocking(move || {
+        let decrypted = match tokio::task::spawn_blocking(move || {
             let mls = MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
             mls.decrypt_message(&mls_group_id, &mls_bytes)
                 .map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| e.to_string())??;
+        {
+            Ok(Ok(d)) => d,
+            _ => continue,
+        };
 
         match decrypted {
             conclave_lib::mls::DecryptedMessage::Application(plaintext) => {
