@@ -120,17 +120,21 @@ pub struct GroupCreatedInfo {
 
 impl Conclave {
     pub fn new() -> (Self, Task<Message>) {
-        let config = ClientConfig::default();
+        let config = ClientConfig::load();
 
         // Try to restore session
         let session = SessionState::load(&config.data_dir);
         let initial_server_url = session.server_url.clone();
 
+        // Load theme with user overrides from config.toml [theme] section
+        let theme_config = crate::theme::config::ThemeConfig::load(&config.config_dir);
+        let theme = theme_config.apply(crate::theme::Theme::default());
+
         let mut app = Self {
             screen: screen::Screen::Login(screen::Login::new(
                 initial_server_url.clone().unwrap_or_default(),
             )),
-            theme: crate::theme::Theme::default(),
+            theme,
             config,
             server_url: initial_server_url,
             api: None,

@@ -1,5 +1,48 @@
 # Conclave Work Log
 
+## 2026-02-17: Configurable GUI Theme and XDG Compliance
+
+### What Changed
+
+Made the GUI theme fully configurable via a config file and separated config from data directories per the XDG Base Directory Specification.
+
+#### Configurable Theme
+
+- **`conclave-gui/src/theme/config.rs`** (new): `ThemeConfig` struct with 12 optional `#rrggbb` hex color fields (`background`, `surface`, `surface_bright`, `primary`, `text`, `text_secondary`, `text_muted`, `error`, `success`, `border`, `scrollbar`, `selection`). `HexColor` newtype with custom `Deserialize` for hex parsing. `ThemeConfig::load(config_dir)` reads the `[theme]` section from `config.toml`. `ThemeConfig::apply(base)` overlays user overrides onto the default Ferra palette — unspecified colors keep their defaults.
+- **`conclave-gui/src/theme/mod.rs`**: Registered `pub mod config;`.
+- **`conclave-gui/src/app.rs`**: `Conclave::new()` loads theme overrides from `<config_dir>/config.toml` and applies them to the default theme at startup.
+
+#### XDG Config/Data Separation
+
+Previously all files (config, session, MLS keys, messages) were stored in a single `data_dir` (`~/.local/share/conclave`). Now config and data are separated per XDG:
+
+- **Config** (`~/.config/conclave/`): `config.toml` (user-edited settings and theme overrides). Respects `$XDG_CONFIG_HOME` and `$CONCLAVE_CONFIG_DIR`.
+- **Data** (`~/.local/share/conclave/`): `session.toml`, `group_mapping.toml`, `message_history.db`, MLS cryptographic state. Unchanged.
+
+Changes:
+- **`conclave-lib/src/config.rs`**: Added `config_dir: PathBuf` field to `ClientConfig` with `default_config_dir()` (mirrors `default_data_dir()` pattern: env var → XDG config dir → `.conclave` fallback). `ClientConfig::load()` now reads from `<config_dir>/config.toml` instead of `<data_dir>/config.toml`.
+- **`conclave-cli/src/main.rs`**: Default config path changed from `conclave-cli.toml` in cwd to `ClientConfig::load()` (XDG config dir). The `-c` flag still accepts an explicit path.
+
+#### Preset Themes
+
+Three preset theme files shipped in `themes/` at the project root:
+- **`themes/ferra.toml`**: Default Ferra dark palette (warm peach/brown tones).
+- **`themes/navy.toml`**: Navy/gold palette derived via CIE L\*a\*b\* lightness matching from the Ferra structure. Deep navy (#1C2635) background, gold (#F0D074) primary, with all intermediate colors computed to preserve the original perceptual contrast hierarchy.
+- **`themes/greyscale.toml`**: Pure greyscale (R=G=B) with L\*-matched grey values for each role. Error and success retain slight red/green tints for semantic distinction.
+
+Users copy a preset's `[theme]` section into `~/.config/conclave/config.toml` to apply it.
+
+## 2026-02-17: GUI Offline Message Fetch (WIP)
+
+### What Changed
+
+Addressing the race condition where the GUI fails to show messages sent while it was offline. Three changes in `conclave-gui/src/app.rs`:
+
+1. **`rooms_loaded: bool` flag**: Added to `Conclave` struct. Gates SSE subscription in `subscription()` — SSE won't start until rooms are populated, preventing the `Connected` handler from iterating an empty room list.
+2. **Initial fetch in `handle_rooms_loaded()`**: On the first load (startup catch-up), fetches missed messages for all rooms using `Task::batch`. Uses `was_loaded` pattern to skip on subsequent calls (from `/rooms`, invite, kick, etc.).
+3. **Error-resilient `fetch_and_decrypt()`**: Changed per-message decryption from `??` (abort entire batch on first error) to `match`/`continue` (skip failed message, continue with rest). Matches the TUI's approach.
+4. **Reset on logout**: `rooms_loaded` reset to `false` in `perform_logout()`.
+
 ## 2026-02-17: RFC 9420-Compliant Key Package Lifecycle
 
 ### What Changed
@@ -148,7 +191,7 @@ The server URL is no longer a configuration file setting. Instead, it is specifi
 - **Command format**: `/login <server> <username> <password>` and `/register <server> <username> <password>`.
 - **CLI**: `conclave-cli login -s <server> -u <user> -p <pass>`.
 - **Session persistence**: `SessionState` now includes `server_url`. After login, the server URL is saved so subsequent commands and session restoration use it automatically.
-- **`ClientConfig`**: `server_url` field removed. Only `data_dir` and `accept_invalid_certs` remain.
+- **`ClientConfig`**: `server_url` field removed. Remaining fields: `data_dir`, `config_dir`, and `accept_invalid_certs`.
 - **TUI**: `ApiClient` is created with an empty URL on startup (if no session) and replaced with a properly configured one on `/login`.
 - **GUI**: `Conclave` struct has a `server_url: Option<String>` field used by all async operations. The login screen pre-fills from the saved session URL.
 - **SSE subscription**: Now passes `accept_invalid_certs` to the reqwest client builder (previously ignored).

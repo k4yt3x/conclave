@@ -1,0 +1,13 @@
+[theme]
+background = "#1C2635"
+surface = "#181F2A"
+surface_bright = "#202D40"
+primary = "#F0D074"
+text = "#FFE184"
+text_secondary = "#C5B182"
+text_muted = "#736C60"
+error = "#D96868"
+success = "#C3C094"
+border = "#455D7F"
+scrollbar = "#202D40"
+selection = "#283C56"

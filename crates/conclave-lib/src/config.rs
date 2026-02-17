@@ -11,6 +11,10 @@ pub struct ClientConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
 
+    /// Path to the client's configuration directory (config.toml, etc.).
+    #[serde(default = "default_config_dir")]
+    pub config_dir: PathBuf,
+
     /// Accept invalid TLS certificates (e.g., self-signed). Default: false.
     #[serde(default)]
     pub accept_invalid_certs: bool,
@@ -28,12 +32,43 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".conclave"))
 }
 
+fn default_config_dir() -> PathBuf {
+    // $CONCLAVE_CONFIG_DIR takes top priority.
+    if let Ok(dir) = std::env::var("CONCLAVE_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    // Fall back to XDG config directory (respects $XDG_CONFIG_HOME).
+    directories::ProjectDirs::from("", "", "conclave")
+        .map(|dirs| dirs.config_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".conclave"))
+}
+
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             data_dir: default_data_dir(),
+            config_dir: default_config_dir(),
             accept_invalid_certs: false,
         }
+    }
+}
+
+impl ClientConfig {
+    /// Load configuration from `<config_dir>/config.toml`.
+    ///
+    /// Falls back to defaults if the file is missing or malformed.
+    pub fn load() -> Self {
+        let config_dir = default_config_dir();
+        let path = config_dir.join("config.toml");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(config) = toml::from_str::<Self>(&contents) {
+                    return config;
+                }
+            }
+        }
+        Self::default()
     }
 }
 

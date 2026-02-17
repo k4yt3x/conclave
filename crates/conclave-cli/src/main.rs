@@ -14,8 +14,8 @@ use conclave_lib::mls::MlsManager;
 #[command(name = "conclave-cli", about = "Conclave E2EE messaging client")]
 struct Cli {
     /// Path to the client configuration file.
-    #[arg(short, long, default_value = "conclave-cli.toml")]
-    config: PathBuf,
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 
     /// Override the data directory (default: $CONCLAVE_DATA_DIR or XDG data dir).
     #[arg(short, long)]
@@ -92,11 +92,11 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let mut config: ClientConfig = if cli.config.exists() {
-        let contents = std::fs::read_to_string(&cli.config)?;
+    let mut config: ClientConfig = if let Some(config_path) = &cli.config {
+        let contents = std::fs::read_to_string(config_path)?;
         toml::from_str(&contents)?
     } else {
-        ClientConfig::default()
+        ClientConfig::load()
     };
 
     // CLI --data-dir overrides config file and env var.
