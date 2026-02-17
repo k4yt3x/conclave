@@ -92,6 +92,31 @@ async fn create_group_for(app: &Router, token: &str, name: &str, members: Vec<St
 async fn upload_key_package_for(app: &Router, token: &str, data: &[u8]) {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: data.to_vec(),
+        entries: vec![],
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/key-packages")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+async fn upload_key_packages_batch(
+    app: &Router,
+    token: &str,
+    entries: Vec<conclave_proto::KeyPackageEntry>,
+) {
+    let req_body = conclave_proto::UploadKeyPackageRequest {
+        key_package_data: vec![],
+        entries,
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -407,6 +432,7 @@ async fn test_upload_key_package_empty() {
 
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
+        entries: vec![],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -432,6 +458,7 @@ async fn test_upload_key_package_too_large() {
     let large_data = vec![0u8; 16 * 1024 + 1]; // 16 KiB + 1 byte
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: large_data,
+        entries: vec![],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1420,4 +1447,125 @@ async fn test_accept_welcome_not_found() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ── Batch Key Package Tests (47-49) ───────────────────────────────
+
+#[tokio::test]
+async fn test_batch_upload_and_ordered_consumption() {
+    let app = setup();
+    let user_id = register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    // Upload 3 regular key packages in a batch.
+    upload_key_packages_batch(
+        &app,
+        &token,
+        vec![
+            conclave_proto::KeyPackageEntry {
+                data: b"kp1".to_vec(),
+                is_last_resort: false,
+            },
+            conclave_proto::KeyPackageEntry {
+                data: b"kp2".to_vec(),
+                is_last_resort: false,
+            },
+            conclave_proto::KeyPackageEntry {
+                data: b"kp3".to_vec(),
+                is_last_resort: false,
+            },
+        ],
+    )
+    .await;
+
+    // Consume them in FIFO order.
+    for expected in [b"kp1".as_slice(), b"kp2", b"kp3"] {
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/key-packages/{user_id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
+        assert_eq!(resp.key_package_data, expected);
+    }
+
+    // All consumed.
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/key-packages/{user_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_last_resort_not_deleted_on_consumption() {
+    let app = setup();
+    let user_id = register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    // Upload 1 last-resort + 1 regular.
+    upload_key_packages_batch(
+        &app,
+        &token,
+        vec![
+            conclave_proto::KeyPackageEntry {
+                data: b"last_resort".to_vec(),
+                is_last_resort: true,
+            },
+            conclave_proto::KeyPackageEntry {
+                data: b"regular".to_vec(),
+                is_last_resort: false,
+            },
+        ],
+    )
+    .await;
+
+    // First consume should return the regular one (deleted).
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/key-packages/{user_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.key_package_data, b"regular");
+
+    // Second consume should return last-resort (NOT deleted).
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/key-packages/{user_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.key_package_data, b"last_resort");
+
+    // Third consume should STILL return last-resort.
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/key-packages/{user_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.key_package_data, b"last_resort");
 }

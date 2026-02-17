@@ -189,19 +189,34 @@ async fn upload_key_package(
 ) -> Result<impl IntoResponse> {
     let req = decode_proto::<conclave_proto::UploadKeyPackageRequest>(&body)?;
 
-    if req.key_package_data.is_empty() {
+    if !req.entries.is_empty() {
+        // Batch upload path.
+        for entry in &req.entries {
+            if entry.data.is_empty() {
+                return Err(Error::BadRequest("key package data is required".into()));
+            }
+            if entry.data.len() > 16 * 1024 {
+                return Err(Error::BadRequest(
+                    "key_package_data must be 16 KiB or smaller".into(),
+                ));
+            }
+            state
+                .db
+                .store_key_package(auth.user_id, &entry.data, entry.is_last_resort)?;
+        }
+    } else if !req.key_package_data.is_empty() {
+        // Legacy single-upload path (regular key package).
+        if req.key_package_data.len() > 16 * 1024 {
+            return Err(Error::BadRequest(
+                "key_package_data must be 16 KiB or smaller".into(),
+            ));
+        }
+        state
+            .db
+            .store_key_package(auth.user_id, &req.key_package_data, false)?;
+    } else {
         return Err(Error::BadRequest("key_package_data is required".into()));
     }
-
-    if req.key_package_data.len() > 16 * 1024 {
-        return Err(Error::BadRequest(
-            "key_package_data must be 16 KiB or smaller".into(),
-        ));
-    }
-
-    state
-        .db
-        .store_key_package(auth.user_id, &req.key_package_data)?;
 
     Ok(proto_response(
         StatusCode::OK,

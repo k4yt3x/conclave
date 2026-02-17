@@ -53,6 +53,26 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
             mls = Some(
                 MlsManager::new(&config.data_dir, username).map_err(crate::error::Error::Lib)?,
             );
+
+            // Upload key packages so other users can invite us:
+            // 1 last-resort (permanent fallback) + 5 regular (single-use).
+            if let Some(mls_mgr) = &mls {
+                match generate_initial_key_packages(mls_mgr) {
+                    Ok(entries) => {
+                        if let Err(e) = api.lock().await.upload_key_packages(entries).await {
+                            state.system_messages.push(DisplayMessage::system(&format!(
+                                "Warning: failed to upload key packages: {e}"
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        state.system_messages.push(DisplayMessage::system(&format!(
+                            "Warning: failed to generate key packages: {e}"
+                        )));
+                    }
+                }
+            }
+
             state.group_mapping = commands::load_group_mapping(&config.data_dir);
 
             // Open message store and restore persisted last_seen_seq values
@@ -146,7 +166,7 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
         config,
         &mut term_events,
         &mut sse_source,
-        &msg_store,
+        &mut msg_store,
     )
     .await;
 
@@ -172,7 +192,7 @@ async fn main_loop(
     config: &ClientConfig,
     term_events: &mut EventStream,
     sse_source: &mut Option<EventSource>,
-    msg_store: &Option<MessageStore>,
+    msg_store: &mut Option<MessageStore>,
 ) -> crate::error::Result<()> {
     loop {
         tokio::select! {
@@ -212,12 +232,24 @@ async fn main_loop(
                 match sse_event {
                     Ok(EsEvent::Open) => {
                         state.connection_status = ConnectionStatus::Connected;
-                        let _ = render::render_status_line(
-                            stdout, state, state.terminal_rows.saturating_sub(2),
-                        );
-                        let _ = render::render_input_line(
-                            stdout, state, input, state.terminal_rows.saturating_sub(1),
-                        );
+
+                        // Fetch messages missed while disconnected.
+                        if let Some(store) = msg_store {
+                            fetch_missed_messages(
+                                api, state, mls, &config.data_dir, store,
+                            ).await;
+
+                            // Persist updated last_read_seq if the user is
+                            // viewing a room (auto-mark as read).
+                            if let Some(gid) = &state.active_room {
+                                if let Some(room) = state.rooms.get_mut(gid) {
+                                    room.last_read_seq = room.last_seen_seq;
+                                    store.set_last_read_seq(gid, room.last_read_seq);
+                                }
+                            }
+                        }
+
+                        let _ = render::render_full(stdout, state, input);
                     }
                     Ok(EsEvent::Message(msg)) => {
                         match events::handle_sse_message(
@@ -289,7 +321,7 @@ async fn handle_key_event(
     mls: &mut Option<MlsManager>,
     config: &ClientConfig,
     sse_source: &mut Option<EventSource>,
-    msg_store: &Option<MessageStore>,
+    msg_store: &mut Option<MessageStore>,
 ) -> crate::error::Result<LoopAction> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -313,10 +345,19 @@ async fn handle_key_event(
                             for msg in msgs {
                                 add_and_render_message(stdout, state, input, None, msg, msg_store);
                             }
-                            if should_start_sse && sse_source.is_none() {
-                                if let Ok(es) = api.lock().await.connect_sse() {
-                                    *sse_source = Some(es);
-                                    state.connection_status = ConnectionStatus::Connecting;
+                            if should_start_sse {
+                                // Open the message store after a fresh /login
+                                // so messages and seq values are persisted.
+                                if msg_store.is_none() {
+                                    if let Ok(store) = MessageStore::open(&config.data_dir) {
+                                        *msg_store = Some(store);
+                                    }
+                                }
+                                if sse_source.is_none() {
+                                    if let Ok(es) = api.lock().await.connect_sse() {
+                                        *sse_source = Some(es);
+                                        state.connection_status = ConnectionStatus::Connecting;
+                                    }
                                 }
                             }
                         }
@@ -561,4 +602,18 @@ async fn fetch_missed_messages(
             store.set_last_seen_seq(&group_id, room.last_seen_seq);
         }
     }
+}
+
+/// Generate initial key packages: 1 last-resort + 5 regular.
+/// Returns entries suitable for `api.upload_key_packages()`.
+fn generate_initial_key_packages(
+    mls: &MlsManager,
+) -> conclave_lib::error::Result<Vec<(Vec<u8>, bool)>> {
+    let mut entries = Vec::with_capacity(6);
+    let last_resort = mls.generate_last_resort_key_package()?;
+    entries.push((last_resort, true));
+    for kp in mls.generate_key_packages(5)? {
+        entries.push((kp, false));
+    }
+    Ok(entries)
 }

@@ -1,5 +1,95 @@
 # Conclave Work Log
 
+## 2026-02-17: RFC 9420-Compliant Key Package Lifecycle
+
+### What Changed
+
+Full RFC 9420 key package lifecycle overhaul: multiple key packages per user, last-resort key packages, explicit lifetime, and batch upload. This resolves the "Single Key Package" limitation from the initial implementation.
+
+#### Problem
+
+The original implementation stored at most 1 key package per user and deleted it on consumption. This caused three issues:
+1. **Concurrent group invitations fail**: If two users try to invite a third simultaneously, only one gets the key package.
+2. **Lost key package on failure**: If a group creation fails mid-flight after consuming the key package, it's gone.
+3. **No fallback**: When all key packages are consumed, the user is unreachable until they manually run `/keygen`.
+
+RFC 9420 §16.8 requires key packages to never be reused and recommends pre-publishing multiple packages. §7.2/§7.3 require explicit `not_before`/`not_after` lifetime fields.
+
+#### Design
+
+1. **Multiple key packages per user**: Pre-publish 5 regular packages + 1 last-resort. Regular packages are consumed FIFO (oldest first). Server enforces a cap of 10 regular packages per user.
+2. **Last-resort key package** (RFC 9420 §16.6): A permanently-stored fallback that is never deleted on consumption. When all regular packages are exhausted, the server returns the last-resort package without deleting it, so the user is always reachable. Uploading a new last-resort replaces the previous one (max 1).
+3. **Explicit key package lifetime**: 90-day `not_before`/`not_after` via `.key_package_lifetime(Duration::from_secs(90 * 24 * 3600))` on the mls-rs client builder.
+4. **Batch upload**: New `UploadKeyPackageRequest.entries` field carries multiple `KeyPackageEntry { data, is_last_resort }` in a single request. Legacy single-upload path preserved for backward compatibility.
+5. **Auto-replenishment**: After consuming a key package (welcome processing), clients upload 1 regular replacement. On session restore, login, `/keygen`, and `/reset`, clients upload the full batch (1 last-resort + 5 regular).
+
+#### Changes
+
+**Proto** (`proto/conclave/v1/conclave.proto`):
+- Added `KeyPackageEntry` message with `data` and `is_last_resort` fields.
+- Added `repeated KeyPackageEntry entries` field to `UploadKeyPackageRequest`.
+
+**Server DB** (`conclave-server/src/db.rs`):
+- Added `is_last_resort INTEGER NOT NULL DEFAULT 0` column to `key_packages` table with idempotent `ALTER TABLE` migration.
+- `store_key_package(user_id, data, is_last_resort)`: Accumulates regular packages up to cap (10), replaces last-resort (max 1).
+- `consume_key_package(user_id)`: Prefers regular packages (FIFO), falls back to last-resort WITHOUT deleting.
+- Added `count_key_packages(user_id) -> (regular, last_resort)` helper.
+- New tests: `test_key_package_accumulate`, `test_last_resort_key_package`, `test_key_package_cap`, `test_last_resort_replacement`.
+
+**Server API** (`conclave-server/src/api.rs`):
+- `upload_key_package` handler supports batch path (`req.entries` non-empty) and legacy single-upload path.
+- New integration tests: `test_batch_upload_and_ordered_consumption`, `test_last_resort_not_deleted_on_consumption`.
+
+**Client library** (`conclave-lib`):
+- Enabled `last_resort_key_package_ext` feature in mls-rs dependency.
+- Added `generate_last_resort_key_package()` using `LastResortKeyPackageExt` extension.
+- Added `generate_key_packages(count)` batch method.
+- Added `.key_package_lifetime(Duration::from_secs(90 * 24 * 3600))` to client builder.
+- Added `upload_key_packages(entries)` batch API method.
+- New tests: `test_generate_last_resort_key_package`, `test_generate_key_packages_batch`.
+
+**TUI** (`conclave-cli/src/tui/`):
+- Session restore: uploads 1 last-resort + 5 regular via `generate_initial_key_packages()` helper.
+- `/keygen`: batch upload with count message.
+- `/join` (welcome accept) and SSE welcome handler: upload 1 regular replacement.
+- `/reset`: batch upload after identity regen.
+
+**GUI** (`conclave-gui/src/app.rs`):
+- `KeygenDone` payload changed from `Result<Vec<u8>>` to `Result<Vec<(Vec<u8>, bool)>>`.
+- Session restore and login keygen tasks use `generate_initial_key_packages()`.
+- `/keygen` command uses batch generation.
+- `accept_welcomes` uploads 1 regular replacement via batch API.
+
+**CLI one-shot** (`conclave-cli/src/main.rs`):
+- `Keygen` command: generates 1 last-resort + 5 regular, batch upload.
+- `Join` command: uploads 1 regular replacement via batch API.
+
+## 2026-02-17: TUI SSE Reconnect — Missed Messages and Unread Counts
+
+### What Changed
+
+- **`conclave-cli/src/tui/mod.rs`**: The SSE `Open` handler now calls `fetch_missed_messages()` on reconnect, fetching and decrypting all messages that arrived while the client was disconnected. Previously, reconnection only updated the connection status indicator — messages sent during the offline period were lost until a new SSE event triggered a fetch for that specific room. After fetching, the screen is fully redrawn so the user sees the caught-up messages immediately. If the user is viewing a room, `last_read_seq` is updated to match `last_seen_seq` so the unread count correctly reflects only messages the user hasn't seen.
+
+## 2026-02-17: GUI Bug Fixes
+
+### What Changed
+
+Four GUI bugs fixed in `conclave-gui`.
+
+#### Offline Message Loss on Reconnect
+- **`conclave-gui/src/app.rs`**: `SseUpdate::Connected` handler now fetches missed messages for all rooms on SSE reconnect. Previously it only updated the connection status without catching up on messages sent while the client was offline.
+
+#### Tab Key Navigation on Login Screen
+- **`conclave-gui/src/screen/login.rs`**: Added `FocusUsername` and `FocusPassword` message variants. Server URL input submits to focus username, username input submits to focus password, password input submits the form. Added `.id()` to all three inputs for programmatic focus.
+- **`conclave-gui/src/app.rs`**: Added `TabPressed` message variant. `subscription()` now intercepts Tab key presses globally. On the login screen, Tab cycles focus between fields via `iced::widget::operation::focus_next()`. Enter on each field advances to the next field (or submits on the password field) via `iced::widget::operation::focus()`.
+
+#### Login/Register Button Text Color
+- **`conclave-gui/src/theme/text.rs`**: Added `on_primary()` text style that uses `theme.surface` (dark) color for text displayed on primary-colored backgrounds.
+- **`conclave-gui/src/screen/login.rs`**: Submit button text now uses the `on_primary` text class, ensuring dark text on the light peach primary button background.
+
+#### Commands Not Displaying Output in Rooms
+- **`conclave-gui/src/app.rs`**: `show_help()`, `show_group_info()`, and `show_unread()` now use `push_system_message()` instead of pushing directly to `self.system_messages`. This routes output to the active room's message list when a room is selected, making commands like `/help`, `/info`, and `/unread` visible while viewing a room.
+
 ## 2026-02-15: Cipher Suite Upgrade to CURVE448_CHACHA
 
 ### What Changed
@@ -149,9 +239,9 @@ When a user fetches messages, the list includes MLS commit messages (e.g., the i
 
 Due to MLS's ratcheting, a sender cannot decrypt their own messages from the server. The encrypted ciphertext was produced with a key that has since been ratcheted forward. In a production client, sent messages should be stored locally in plaintext alongside their sequence number so they can be displayed in the message history. The current implementation does not do this.
 
-#### Single Key Package
+#### ~~Single Key Package~~ (Resolved)
 
-Each user has at most one key package on the server at a time. Uploading a new one replaces the old one, and fetching one consumes it. This means a user can only be added to one group before needing to upload a new key package. A production system should support multiple key packages per user (upload N, consume one at a time).
+Each user now pre-publishes multiple key packages (1 last-resort + 5 regular). Regular packages are consumed FIFO; the last-resort package is never deleted on consumption, ensuring the user is always reachable. Server enforces a cap of 10 regular packages. Clients auto-replenish after consumption and upload a full batch on login/keygen/reset. See the "RFC 9420-Compliant Key Package Lifecycle" entry above.
 
 #### No Message Ordering Guarantees
 
@@ -264,7 +354,7 @@ The event loop includes a 5-second reconnection timer. When the SSE connection d
 
 ### What to Build Next
 
-1. **Multiple key packages**: Allow users to have N key packages so they can be added to multiple groups without re-uploading.
+1. ~~**Multiple key packages**~~: Resolved — see "RFC 9420-Compliant Key Package Lifecycle" entry.
 2. **Message types in DB**: Add a `message_type` column (commit, application, proposal) to help clients filter.
 3. **X.509 credentials**: Upgrade from BasicCredential for stronger identity assurance.
 4. **Tab completion**: Command and room name auto-completion in the TUI.
@@ -327,7 +417,7 @@ Implemented the full set of practical MLS group management features across serve
 
 ### What Was Built
 
-Added 182 tests across 8 test suites with both positive and negative cases for all features. Zero bugs found — all existing code behaved correctly.
+Added 189 tests across 8 test suites with both positive and negative cases for all features. Zero bugs found — all existing code behaved correctly.
 
 ### Restructuring for Testability
 
@@ -339,10 +429,10 @@ Added 182 tests across 8 test suites with both positive and negative cases for a
 
 | Suite | File | Tests | Coverage |
 |-------|------|-------|----------|
-| Server DB | `db.rs` (inline) | 31 | All DB methods: users, sessions, key packages, groups, members, messages, welcomes, group info |
-| Server Auth | `auth.rs` (inline) | 6 | Password hashing/verification, token generation, invalid hash handling |
-| Server API | `tests/api_tests.rs` | 46 | All 18 HTTP endpoints via `tower::oneshot()`: registration, login, logout, key packages, groups, messages, invites, member removal, leave, group info, external join, reset, commits, welcomes |
-| Client MLS | `mls.rs` (inline) | 23 | Key package generation, group lifecycle, encrypt/decrypt roundtrip, commit processing, member removal, key rotation, external rejoin, identity persistence, state cleanup |
+| Server DB | `db.rs` (inline) | 35 | All DB methods: users, sessions, key packages (accumulate, cap, last-resort), groups, members, messages, welcomes, group info |
+| Server Auth | `auth.rs` (inline) | 5 | Password hashing/verification, token generation, invalid hash handling |
+| Server API | `tests/api_tests.rs` | 48 | All 18 HTTP endpoints via `tower::oneshot()`: registration, login, logout, key packages (batch upload, ordered consumption, last-resort), groups, messages, invites, member removal, leave, group info, external join, reset, commits, welcomes |
+| Client MLS | `mls.rs` (inline) | 25 | Key package generation (regular, last-resort, batch), group lifecycle, encrypt/decrypt roundtrip, commit processing, member removal, key rotation, external rejoin, identity persistence, state cleanup |
 | Client Commands | `commands.rs` (inline) | 33 | All 21 command variants parsed, missing args, unknown commands, edge cases |
 | Client InputLine | `input.rs` (inline) | 19 | Cursor movement, editing, history navigation, credential exclusion from history |
 | Client AppState | `state.rs` (inline) | 14 | Room management, message routing, room lookup (exact/prefix/case-insensitive) |

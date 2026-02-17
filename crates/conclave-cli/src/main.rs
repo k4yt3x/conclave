@@ -173,9 +173,20 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
                 conclave_lib::error::Error::Other("not logged in — run login first".into())
             })?;
             let mls = MlsManager::new(&config.data_dir, username)?;
-            let kp = mls.generate_key_package()?;
-            api.upload_key_package(kp).await?;
-            println!("Key package generated and uploaded.");
+
+            // Generate 1 last-resort + 5 regular key packages.
+            let mut entries = Vec::with_capacity(6);
+            let last_resort = mls.generate_last_resort_key_package()?;
+            entries.push((last_resort, true));
+            for kp in mls.generate_key_packages(5)? {
+                entries.push((kp, false));
+            }
+            let count = entries.len();
+            api.upload_key_packages(entries).await?;
+            println!(
+                "{count} key packages generated and uploaded (1 last-resort + {} regular).",
+                count - 1
+            );
         }
 
         Commands::CreateGroup { name, members } => {
@@ -292,6 +303,11 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             }
 
             save_group_mapping(&config.data_dir, &mapping);
+
+            // Key packages are single-use (RFC 9420 §10); upload a fresh
+            // replacement so we remain available for future group invitations.
+            let kp = mls.generate_key_package()?;
+            api.upload_key_packages(vec![(kp, false)]).await?;
         }
 
         Commands::Send { group, message } => {

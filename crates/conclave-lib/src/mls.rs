@@ -2,8 +2,10 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::Duration;
 
 use mls_rs::client_builder::MlsConfig;
+use mls_rs::extension::recommended::LastResortKeyPackageExt;
 use mls_rs::group::proposal::Proposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::identity::SigningIdentity;
@@ -127,6 +129,7 @@ impl MlsManager {
         let client = Client::builder()
             .crypto_provider(OpensslCryptoProvider::default())
             .identity_provider(BasicIdentityProvider)
+            .key_package_lifetime(Duration::from_secs(90 * 24 * 3600)) // 90 days
             .key_package_repo(
                 storage
                     .key_package_storage()
@@ -158,6 +161,41 @@ impl MlsManager {
             .to_bytes()
             .map_err(|e| Error::Mls(format!("key package serialization failed: {e}")))?;
         Ok(bytes)
+    }
+
+    /// Generate a last-resort key package (RFC 9420 §16.8 best practice).
+    ///
+    /// A last-resort key package carries the `LastResortKeyPackageExt` extension,
+    /// signalling that it should not be deleted from the server after consumption.
+    pub fn generate_last_resort_key_package(&self) -> Result<Vec<u8>> {
+        let client = self.build_client()?;
+        let mut exts = ExtensionList::new();
+        exts.set_from(LastResortKeyPackageExt)
+            .map_err(|e| Error::Mls(format!("set extension failed: {e}")))?;
+
+        let kp_msg = client
+            .generate_key_package_message(exts, Default::default(), None)
+            .map_err(|e| Error::Mls(format!("last resort key package generation failed: {e}")))?;
+        let bytes = kp_msg
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("key package serialization failed: {e}")))?;
+        Ok(bytes)
+    }
+
+    /// Generate N regular key packages for batch upload.
+    pub fn generate_key_packages(&self, count: usize) -> Result<Vec<Vec<u8>>> {
+        let client = self.build_client()?;
+        let mut packages = Vec::with_capacity(count);
+        for _ in 0..count {
+            let kp_msg = client
+                .generate_key_package_message(Default::default(), Default::default(), None)
+                .map_err(|e| Error::Mls(format!("key package generation failed: {e}")))?;
+            let bytes = kp_msg
+                .to_bytes()
+                .map_err(|e| Error::Mls(format!("key package serialization failed: {e}")))?;
+            packages.push(bytes);
+        }
+        Ok(packages)
     }
 
     /// Create a new MLS group, add members from their key packages.
@@ -690,6 +728,32 @@ mod tests {
         let (_dir, mgr) = create_manager("alice");
         let kp = mgr.generate_key_package().unwrap();
         assert!(!kp.is_empty(), "key package bytes must not be empty");
+    }
+
+    #[test]
+    fn test_generate_last_resort_key_package() {
+        let (_dir, mgr) = create_manager("alice");
+        let kp = mgr.generate_last_resort_key_package().unwrap();
+        assert!(
+            !kp.is_empty(),
+            "last resort key package bytes must not be empty"
+        );
+    }
+
+    #[test]
+    fn test_generate_key_packages_batch() {
+        let (_dir, mgr) = create_manager("alice");
+        let packages = mgr.generate_key_packages(5).unwrap();
+        assert_eq!(packages.len(), 5);
+        for kp in &packages {
+            assert!(!kp.is_empty());
+        }
+        // Each key package should be unique.
+        for i in 0..packages.len() {
+            for j in (i + 1)..packages.len() {
+                assert_ne!(packages[i], packages[j], "key packages must be unique");
+            }
+        }
     }
 
     #[test]

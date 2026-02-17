@@ -62,6 +62,7 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 key_package_data BLOB NOT NULL,
+                is_last_resort INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
@@ -107,6 +108,12 @@ impl Database {
             );
             ",
         )?;
+
+        // Migration: add is_last_resort column if upgrading from an older schema.
+        let _ = conn.execute_batch(
+            "ALTER TABLE key_packages ADD COLUMN is_last_resort INTEGER NOT NULL DEFAULT 0;",
+        );
+
         Ok(())
     }
 
@@ -201,34 +208,92 @@ impl Database {
 
     // ── Key Packages ───────────────────────────────────────────────
 
-    pub fn store_key_package(&self, user_id: i64, data: &[u8]) -> Result<()> {
+    /// Maximum number of regular (non-last-resort) key packages per user.
+    const MAX_KEY_PACKAGES_PER_USER: i64 = 10;
+
+    /// Store a key package for a user.
+    ///
+    /// If `is_last_resort` is true, any existing last-resort package for this
+    /// user is replaced (at most one last-resort package per user).  Regular
+    /// packages accumulate up to [`MAX_KEY_PACKAGES_PER_USER`](Self::MAX_KEY_PACKAGES_PER_USER).
+    pub fn store_key_package(&self, user_id: i64, data: &[u8], is_last_resort: bool) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // Replace any existing key package for this user (one active at a time).
+
+        if is_last_resort {
+            // At most one last-resort key package per user — replace the old one.
+            conn.execute(
+                "DELETE FROM key_packages WHERE user_id = ?1 AND is_last_resort = 1",
+                params![user_id],
+            )?;
+        } else {
+            // Enforce cap on regular key packages — silently skip if at capacity.
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 0",
+                params![user_id],
+                |row| row.get(0),
+            )?;
+            if count >= Self::MAX_KEY_PACKAGES_PER_USER {
+                return Ok(());
+            }
+        }
+
         conn.execute(
-            "DELETE FROM key_packages WHERE user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "INSERT INTO key_packages (user_id, key_package_data) VALUES (?1, ?2)",
-            params![user_id, data],
+            "INSERT INTO key_packages (user_id, key_package_data, is_last_resort) \
+             VALUES (?1, ?2, ?3)",
+            params![user_id, data, is_last_resort as i32],
         )?;
         Ok(())
     }
 
-    /// Consume (fetch and delete) a key package for the given user.
+    /// Consume a key package for the given user.
+    ///
+    /// Prefers regular (non-last-resort) packages and deletes them on consumption.
+    /// Falls back to the last-resort package if no regular ones remain — the
+    /// last-resort package is returned but **not** deleted.
     pub fn consume_key_package(&self, user_id: i64) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn
-            .prepare("SELECT id, key_package_data FROM key_packages WHERE user_id = ?1 LIMIT 1")?;
-        let result: Option<(i64, Vec<u8>)> = stmt
+
+        // Try a regular key package first (FIFO by created_at).
+        let mut stmt = conn.prepare(
+            "SELECT id, key_package_data FROM key_packages \
+             WHERE user_id = ?1 AND is_last_resort = 0 \
+             ORDER BY created_at ASC LIMIT 1",
+        )?;
+        let regular: Option<(i64, Vec<u8>)> = stmt
             .query_row(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .optional()?;
-        if let Some((id, data)) = result {
+
+        if let Some((id, data)) = regular {
             conn.execute("DELETE FROM key_packages WHERE id = ?1", params![id])?;
-            Ok(Some(data))
-        } else {
-            Ok(None)
+            return Ok(Some(data));
         }
+
+        // Fall back to the last-resort package (do NOT delete it).
+        let mut stmt = conn.prepare(
+            "SELECT key_package_data FROM key_packages \
+             WHERE user_id = ?1 AND is_last_resort = 1 LIMIT 1",
+        )?;
+        let last_resort: Option<Vec<u8>> = stmt
+            .query_row(params![user_id], |row| row.get(0))
+            .optional()?;
+
+        Ok(last_resort)
+    }
+
+    /// Count key packages for a user: (regular, last_resort).
+    pub fn count_key_packages(&self, user_id: i64) -> Result<(i64, i64)> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let regular: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 0",
+            params![user_id],
+            |row| row.get(0),
+        )?;
+        let last_resort: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 1",
+            params![user_id],
+            |row| row.get(0),
+        )?;
+        Ok((regular, last_resort))
     }
 
     // ── Groups ─────────────────────────────────────────────────────
@@ -463,7 +528,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let uid = db.create_user("bob", "hash").unwrap();
 
-        db.store_key_package(uid, b"kp_data").unwrap();
+        db.store_key_package(uid, b"kp_data", false).unwrap();
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"kp_data");
 
@@ -611,15 +676,79 @@ mod tests {
     }
 
     #[test]
-    fn test_key_package_replace() {
+    fn test_key_package_accumulate() {
         let db = Database::open_in_memory().unwrap();
         let uid = db.create_user("alice", "hash").unwrap();
 
-        db.store_key_package(uid, b"kp1").unwrap();
-        db.store_key_package(uid, b"kp2").unwrap();
+        db.store_key_package(uid, b"kp1", false).unwrap();
+        db.store_key_package(uid, b"kp2", false).unwrap();
+
+        // Should consume oldest first (FIFO).
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"kp1");
 
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"kp2");
+
+        // Both consumed.
+        assert!(db.consume_key_package(uid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_last_resort_key_package() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        db.store_key_package(uid, b"last_resort", true).unwrap();
+        db.store_key_package(uid, b"regular1", false).unwrap();
+
+        // Should consume the regular one first.
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"regular1");
+
+        // Now only last-resort remains; returned but NOT deleted.
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"last_resort");
+
+        // Still there on second consume.
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"last_resort");
+    }
+
+    #[test]
+    fn test_key_package_cap() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        for i in 0..Database::MAX_KEY_PACKAGES_PER_USER {
+            db.store_key_package(uid, format!("kp{i}").as_bytes(), false)
+                .unwrap();
+        }
+
+        // Next regular package should be silently skipped (not stored).
+        db.store_key_package(uid, b"kp_overflow", false).unwrap();
+        let (regular, _) = db.count_key_packages(uid).unwrap();
+        assert_eq!(regular, Database::MAX_KEY_PACKAGES_PER_USER);
+
+        // But a last-resort should still work (separate limit).
+        db.store_key_package(uid, b"last_resort", true).unwrap();
+    }
+
+    #[test]
+    fn test_last_resort_replacement() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        db.store_key_package(uid, b"lr1", true).unwrap();
+        db.store_key_package(uid, b"lr2", true).unwrap();
+
+        // Only the most recent last-resort should exist.
+        let (regular_count, lr_count) = db.count_key_packages(uid).unwrap();
+        assert_eq!(regular_count, 0);
+        assert_eq!(lr_count, 1);
+
+        let kp = db.consume_key_package(uid).unwrap().unwrap();
+        assert_eq!(kp, b"lr2");
     }
 
     #[test]
@@ -823,7 +952,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let uid = db.create_user("alice", "hash").unwrap();
 
-        db.store_key_package(uid, b"kp_data").unwrap();
+        db.store_key_package(uid, b"kp_data", false).unwrap();
+        db.store_key_package(uid, b"last_resort", true).unwrap();
         db.delete_key_packages(uid).unwrap();
 
         let result = db.consume_key_package(uid).unwrap();

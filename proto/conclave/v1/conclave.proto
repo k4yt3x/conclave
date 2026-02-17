@@ -31,6 +31,12 @@ message LoginResponse {
 
 message UploadKeyPackageRequest {
   bytes key_package_data = 1;
+  repeated KeyPackageEntry entries = 2;
+}
+
+message KeyPackageEntry {
+  bytes data = 1;
+  bool is_last_resort = 2;
 }
 
 message UploadKeyPackageResponse {}

@@ -89,11 +89,13 @@ pub async fn execute(
             let mls_mgr = mls
                 .as_ref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
-            let kp = mls_mgr.generate_key_package()?;
-            api.lock().await.upload_key_package(kp).await?;
-            msgs.push(DisplayMessage::system(
-                "Key package generated and uploaded.",
-            ));
+            let entries = super::generate_initial_key_packages(mls_mgr)?;
+            let count = entries.len();
+            api.lock().await.upload_key_packages(entries).await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "{count} key packages generated and uploaded (1 last-resort + {} regular).",
+                count - 1
+            )));
         }
 
         Command::Create { name, members } => {
@@ -164,6 +166,14 @@ pub async fn execute(
             }
 
             save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+
+            // Key packages are single-use (RFC 9420 §10); upload a fresh
+            // replacement so we remain available for future group invitations.
+            let kp = mls_mgr.generate_key_package()?;
+            api.lock()
+                .await
+                .upload_key_packages(vec![(kp, false)])
+                .await?;
 
             // Refresh rooms and auto-switch to the last joined room.
             load_rooms(api, state).await?;
@@ -406,9 +416,9 @@ pub async fn execute(
             *mls = Some(MlsManager::new(&config.data_dir, &username)?);
             let mls_mgr = mls.as_ref().unwrap();
 
-            // Upload new key package.
-            let kp = mls_mgr.generate_key_package()?;
-            api.lock().await.upload_key_package(kp).await?;
+            // Upload new key packages (1 last-resort + 5 regular).
+            let entries = super::generate_initial_key_packages(mls_mgr)?;
+            api.lock().await.upload_key_packages(entries).await?;
 
             // Rejoin each group via external commit.
             state.group_mapping.clear();

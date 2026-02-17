@@ -1,3 +1,4 @@
+use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
 use std::collections::HashMap;
 
@@ -43,7 +44,7 @@ pub enum Message {
     RoomsLoaded(Result<Vec<RoomInfo>, String>),
     MessageSent(Result<MessageSentInfo, String>),
     MessagesFetched(Result<FetchedMessages, String>),
-    KeygenDone(Result<Vec<u8>, String>),
+    KeygenDone(Result<Vec<(Vec<u8>, bool)>, String>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<WelcomeResult>, String>),
     // SSE
@@ -54,6 +55,8 @@ pub enum Message {
     GroupCreated(Result<GroupCreatedInfo, String>),
     /// A group operation completed that requires a room refresh.
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
+    /// Tab key pressed (for login field navigation).
+    TabPressed,
     /// Quit the application (e.g. Ctrl+Q).
     Quit,
 }
@@ -175,20 +178,35 @@ impl Conclave {
             // Transition to dashboard
             app.screen = screen::Screen::Dashboard(screen::Dashboard::new());
 
-            // Load rooms from server
+            // Generate key packages and load rooms from server
             let accept_invalid_certs = app.config.accept_invalid_certs;
             let token = app.token.clone().unwrap_or_default();
-            return (
-                app,
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                ),
+
+            let data_dir = app.config.data_dir.clone();
+            let keygen_username = username.clone();
+            let keygen_task = Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mls = MlsManager::new(&data_dir, &keygen_username)
+                            .map_err(|e| e.to_string())?;
+                        generate_initial_key_packages(&mls)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::KeygenDone,
             );
+
+            let rooms_task = Task::perform(
+                async move {
+                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                    api.set_token(token);
+                    load_rooms_async(&api).await
+                },
+                Message::RoomsLoaded,
+            );
+
+            return (app, Task::batch([keygen_task, rooms_task]));
         }
 
         (app, Task::none())
@@ -230,6 +248,13 @@ impl Conclave {
                     Err(e) => self.push_system_message(&format!("Error: {e}")),
                 }
                 Task::none()
+            }
+            Message::TabPressed => {
+                if matches!(self.screen, screen::Screen::Login(_)) {
+                    focus_next()
+                } else {
+                    Task::none()
+                }
             }
             Message::Quit => iced::exit(),
             Message::GroupCreated(result) => self.handle_group_created(result),
@@ -281,6 +306,10 @@ impl Conclave {
                 modifiers,
                 ..
             }) if modifiers.command() && c.as_ref() == "q" => Some(Message::Quit),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                ..
+            }) => Some(Message::TabPressed),
             _ => None,
         });
 
@@ -317,6 +346,8 @@ impl Conclave {
                 login.password = pw;
                 Task::none()
             }
+            screen::login::Message::FocusUsername => focus("login_username"),
+            screen::login::Message::FocusPassword => focus("login_password"),
             screen::login::Message::ToggleMode => {
                 login.mode = match login.mode {
                     screen::login::Mode::Login => screen::login::Mode::Register,
@@ -419,7 +450,7 @@ impl Conclave {
                     info.username, info.user_id
                 ))];
 
-                // Generate key package and load rooms
+                // Generate key packages and load rooms
                 let data_dir = self.config.data_dir.clone();
                 let username = info.username;
                 let keygen_task = Task::perform(
@@ -427,7 +458,7 @@ impl Conclave {
                         tokio::task::spawn_blocking(move || {
                             let mls =
                                 MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            mls.generate_key_package().map_err(|e| e.to_string())
+                            generate_initial_key_packages(&mls)
                         })
                         .await
                         .map_err(|e| e.to_string())?
@@ -476,9 +507,12 @@ impl Conclave {
         Task::none()
     }
 
-    fn handle_keygen_done(&mut self, result: Result<Vec<u8>, String>) -> Task<Message> {
+    fn handle_keygen_done(
+        &mut self,
+        result: Result<Vec<(Vec<u8>, bool)>, String>,
+    ) -> Task<Message> {
         match result {
-            Ok(kp_data) => {
+            Ok(entries) => {
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
@@ -486,7 +520,7 @@ impl Conclave {
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
-                        api.upload_key_package(kp_data)
+                        api.upload_key_packages(entries)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -668,7 +702,7 @@ impl Conclave {
                         tokio::task::spawn_blocking(move || {
                             let mls =
                                 MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            mls.generate_key_package().map_err(|e| e.to_string())
+                            generate_initial_key_packages(&mls)
                         })
                         .await
                         .map_err(|e| e.to_string())?
@@ -690,7 +724,45 @@ impl Conclave {
         match update {
             SseUpdate::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
-                Task::none()
+
+                // Fetch missed messages for all rooms on reconnect
+                let tasks: Vec<_> = self
+                    .rooms
+                    .keys()
+                    .map(|group_id| {
+                        let server_url = self.server_url.clone().unwrap_or_default();
+                        let accept_invalid_certs = self.config.accept_invalid_certs;
+                        let token = self.token.clone().unwrap_or_default();
+                        let last_seq = self
+                            .rooms
+                            .get(group_id)
+                            .map(|r| r.last_seen_seq)
+                            .unwrap_or(0);
+                        let mls_group_id = self.group_mapping.get(group_id).cloned();
+                        let username = self.username.clone();
+                        let data_dir = self.config.data_dir.clone();
+                        let group_id = group_id.clone();
+
+                        Task::perform(
+                            async move {
+                                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                                api.set_token(token);
+                                fetch_and_decrypt(
+                                    &api,
+                                    &group_id,
+                                    last_seq,
+                                    mls_group_id.as_deref(),
+                                    username.as_deref(),
+                                    &data_dir,
+                                )
+                                .await
+                            },
+                            Message::MessagesFetched,
+                        )
+                    })
+                    .collect();
+
+                Task::batch(tasks)
             }
             SseUpdate::Connecting => {
                 self.connection_status = ConnectionStatus::Connecting;
@@ -857,8 +929,10 @@ impl Conclave {
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to load rooms: {e}"));
+                return Task::none();
             }
         }
+
         Task::none()
     }
 
@@ -1359,6 +1433,23 @@ impl Conclave {
                     });
                 }
 
+                // Key packages are single-use (RFC 9420 §10); upload a fresh
+                // replacement so we remain available for future group invitations.
+                let kp = tokio::task::spawn_blocking({
+                    let data_dir = data_dir.clone();
+                    let username = username.clone();
+                    move || {
+                        let mls =
+                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                        mls.generate_key_package().map_err(|e| e.to_string())
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                api.upload_key_packages(vec![(kp, false)])
+                    .await
+                    .map_err(|e| e.to_string())?;
+
                 Ok(results)
             },
             Message::WelcomesProcessed,
@@ -1465,7 +1556,7 @@ impl Conclave {
             "Type text without / to send a message to the active room.",
         ];
         for line in help {
-            self.system_messages.push(DisplayMessage::system(line));
+            self.push_system_message(line);
         }
     }
 
@@ -1495,34 +1586,22 @@ impl Conclave {
         if let Some(mls) = &self.mls {
             match mls.group_info_details(&mls_group_id) {
                 Ok(details) => {
-                    self.system_messages
-                        .push(DisplayMessage::system(&format!("Group: #{room_name}")));
-                    self.system_messages
-                        .push(DisplayMessage::system(&format!("  Server ID: {group_id}")));
-                    self.system_messages.push(DisplayMessage::system(&format!(
-                        "  MLS Group ID: {mls_group_id}"
-                    )));
-                    self.system_messages.push(DisplayMessage::system(&format!(
-                        "  Epoch: {}",
-                        details.epoch
-                    )));
-                    self.system_messages.push(DisplayMessage::system(&format!(
-                        "  Cipher Suite: {}",
-                        details.cipher_suite
-                    )));
-                    self.system_messages.push(DisplayMessage::system(&format!(
+                    self.push_system_message(&format!("Group: #{room_name}"));
+                    self.push_system_message(&format!("  Server ID: {group_id}"));
+                    self.push_system_message(&format!("  MLS Group ID: {mls_group_id}"));
+                    self.push_system_message(&format!("  Epoch: {}", details.epoch));
+                    self.push_system_message(&format!("  Cipher Suite: {}", details.cipher_suite));
+                    self.push_system_message(&format!(
                         "  Members: {} (your index: {})",
                         details.member_count, details.own_index
-                    )));
+                    ));
                     for (index, name) in &details.members {
                         let marker = if *index == details.own_index {
                             " (you)"
                         } else {
                             ""
                         };
-                        self.system_messages.push(DisplayMessage::system(&format!(
-                            "    [{index}] {name}{marker}"
-                        )));
+                        self.push_system_message(&format!("    [{index}] {name}{marker}"));
                     }
                 }
                 Err(e) => {
@@ -1538,21 +1617,29 @@ impl Conclave {
             return;
         }
 
-        let mut any = false;
-        for room in self.rooms.values() {
-            let unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
-            if unread > 0 {
-                any = true;
-                self.system_messages.push(DisplayMessage::system(&format!(
-                    "  #{}: {unread} new message{}",
-                    room.name,
-                    if unread == 1 { "" } else { "s" },
-                )));
+        let unread_lines: Vec<_> = self
+            .rooms
+            .values()
+            .filter_map(|room| {
+                let unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
+                if unread > 0 {
+                    Some(format!(
+                        "  #{}: {unread} new message{}",
+                        room.name,
+                        if unread == 1 { "" } else { "s" },
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if unread_lines.is_empty() {
+            self.push_system_message("No unread messages.");
+        } else {
+            for line in unread_lines {
+                self.push_system_message(&line);
             }
-        }
-        if !any {
-            self.system_messages
-                .push(DisplayMessage::system("No unread messages."));
         }
     }
 
@@ -1684,6 +1771,19 @@ async fn fetch_and_decrypt(
         group_id: group_id.to_string(),
         messages,
     })
+}
+
+/// Generate initial key packages: 1 last-resort + 5 regular.
+fn generate_initial_key_packages(mls: &MlsManager) -> Result<Vec<(Vec<u8>, bool)>, String> {
+    let mut entries = Vec::with_capacity(6);
+    let last_resort = mls
+        .generate_last_resort_key_package()
+        .map_err(|e| e.to_string())?;
+    entries.push((last_resort, true));
+    for kp in mls.generate_key_packages(5).map_err(|e| e.to_string())? {
+        entries.push((kp, false));
+    }
+    Ok(entries)
 }
 
 fn load_group_mapping(data_dir: &std::path::Path) -> HashMap<String, String> {

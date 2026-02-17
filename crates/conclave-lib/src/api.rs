@@ -153,7 +153,27 @@ impl ApiClient {
     // ── Key Packages ──────────────────────────────────────────────
 
     pub async fn upload_key_package(&self, key_package_data: Vec<u8>) -> Result<()> {
-        let req = conclave_proto::UploadKeyPackageRequest { key_package_data };
+        let req = conclave_proto::UploadKeyPackageRequest {
+            key_package_data,
+            entries: vec![],
+        };
+        self.post("/api/v1/key-packages", &req).await?;
+        Ok(())
+    }
+
+    /// Upload multiple key packages in a single request, with last-resort flag support.
+    pub async fn upload_key_packages(&self, entries: Vec<(Vec<u8>, bool)>) -> Result<()> {
+        let proto_entries = entries
+            .into_iter()
+            .map(|(data, is_last_resort)| conclave_proto::KeyPackageEntry {
+                data,
+                is_last_resort,
+            })
+            .collect();
+        let req = conclave_proto::UploadKeyPackageRequest {
+            key_package_data: vec![],
+            entries: proto_entries,
+        };
         self.post("/api/v1/key-packages", &req).await?;
         Ok(())
     }

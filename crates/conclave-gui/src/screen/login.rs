@@ -26,6 +26,8 @@ pub enum Message {
     PasswordChanged(String),
     Submit,
     ToggleMode,
+    FocusUsername,
+    FocusPassword,
 }
 
 pub struct Login {
@@ -57,16 +59,21 @@ impl Login {
             .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>);
 
         let server_input = text_input("Server URL", &self.server_url)
+            .id("login_server_url")
             .on_input(Message::ServerUrlChanged)
+            .on_submit(Message::FocusUsername)
             .padding(10)
             .size(14);
 
         let username_input = text_input("Username", &self.username)
+            .id("login_username")
             .on_input(Message::UsernameChanged)
+            .on_submit(Message::FocusPassword)
             .padding(10)
             .size(14);
 
         let password_input = text_input("Password", &self.password)
+            .id("login_password")
             .on_input(Message::PasswordChanged)
             .on_submit(Message::Submit)
             .secure(true)
@@ -86,7 +93,8 @@ impl Login {
             text(submit_label)
                 .size(14)
                 .align_x(Horizontal::Center)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .class(Box::new(theme::text::on_primary) as Box<dyn Fn(&theme::Theme) -> _>),
         )
         .width(Length::Fill)
         .padding(10)

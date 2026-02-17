@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::state::DisplayMessage;
 
@@ -113,7 +113,7 @@ impl MessageStore {
     /// Update the last seen sequence number for a room.
     pub fn set_last_seen_seq(&self, group_id: &str, seq: u64) {
         let _ = self.conn.execute(
-            "INSERT INTO room_state (group_id, last_seen_seq) VALUES (?1, ?2)
+            "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, ?2, 0)
              ON CONFLICT(group_id) DO UPDATE SET last_seen_seq = excluded.last_seen_seq",
             params![group_id, seq],
         );
@@ -133,7 +133,7 @@ impl MessageStore {
     /// Update the last read sequence number for a room.
     pub fn set_last_read_seq(&self, group_id: &str, seq: u64) {
         let _ = self.conn.execute(
-            "INSERT INTO room_state (group_id, last_read_seq) VALUES (?1, ?2)
+            "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, 0, ?2)
              ON CONFLICT(group_id) DO UPDATE SET last_read_seq = excluded.last_read_seq",
             params![group_id, seq],
         );
@@ -225,6 +225,26 @@ mod tests {
         store.set_last_seen_seq("g1", 5);
         store.set_last_seen_seq("g1", 10);
         assert_eq!(store.get_last_seen_seq("g1"), 10);
+    }
+
+    #[test]
+    fn test_set_last_read_seq_does_not_clobber_last_seen_seq() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 42);
+        store.set_last_read_seq("g1", 10);
+        assert_eq!(store.get_last_seen_seq("g1"), 42);
+        assert_eq!(store.get_last_read_seq("g1"), 10);
+    }
+
+    #[test]
+    fn test_set_last_seen_seq_does_not_clobber_last_read_seq() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_read_seq("g1", 10);
+        store.set_last_seen_seq("g1", 42);
+        assert_eq!(store.get_last_read_seq("g1"), 10);
+        assert_eq!(store.get_last_seen_seq("g1"), 42);
     }
 
     #[test]

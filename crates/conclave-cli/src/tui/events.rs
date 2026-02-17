@@ -175,6 +175,23 @@ async fn handle_welcome(
         // Save updated mapping.
         commands::save_group_mapping(data_dir, &state.group_mapping);
 
+        // Key packages are single-use (RFC 9420 §10); upload a fresh
+        // replacement so we remain available for future group invitations.
+        {
+            let data_dir_clone = data_dir.clone();
+            let username_clone = username.clone();
+            let kp = tokio::task::spawn_blocking(move || {
+                let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+                mls.generate_key_package()
+            })
+            .await
+            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+            api.lock()
+                .await
+                .upload_key_packages(vec![(kp, false)])
+                .await?;
+        }
+
         // Refresh rooms.
         commands::load_rooms(api, state).await?;
 
