@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod screen;
 mod subscription;
@@ -14,11 +16,19 @@ fn main() -> iced::Result {
         )
         .init();
 
+    let icon =
+        iced::window::icon::from_file_data(include_bytes!("../../../assets/conclave.png"), None)
+            .expect("failed to load application icon");
+
     iced::application(Conclave::new, Conclave::update, Conclave::view)
         .title(Conclave::title)
         .theme(Conclave::theme)
         .subscription(Conclave::subscription)
-        .window_size((900.0, 600.0))
+        .window(iced::window::Settings {
+            icon: Some(icon),
+            size: iced::Size::new(900.0, 600.0),
+            ..Default::default()
+        })
         .default_font(iced::Font::MONOSPACE)
         .run()
 }
