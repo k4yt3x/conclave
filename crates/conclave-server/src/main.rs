@@ -68,14 +68,14 @@ async fn main() -> anyhow::Result<()> {
             let tls_config =
                 axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await?;
             let addr: std::net::SocketAddr = bind_address.parse()?;
-            info!("listening on {bind_address} (TLS)");
+            info!("listening on https://{bind_address}");
             axum_server::bind_rustls(addr, tls_config)
                 .serve(app.into_make_service())
                 .await?;
         }
         (None, None) => {
             let listener = tokio::net::TcpListener::bind(&bind_address).await?;
-            info!("listening on {bind_address} (plain HTTP)");
+            info!("listening on http://{bind_address}");
             axum::serve(listener, app).await?;
         }
         _ => {
