@@ -152,7 +152,10 @@ message RemoveMemberRequest {
 
 message RemoveMemberResponse {}
 
-message LeaveGroupRequest {}
+message LeaveGroupRequest {
+  bytes commit_message = 1;
+  bytes group_info = 2;
+}
 
 message LeaveGroupResponse {}
 

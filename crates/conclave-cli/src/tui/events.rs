@@ -5,6 +5,7 @@ use prost::Message;
 use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
+use conclave_lib::config::save_group_mapping;
 use conclave_lib::error::{Error, Result};
 use conclave_lib::mls::{DecryptedMessage, MlsManager};
 
@@ -34,7 +35,7 @@ pub async fn handle_sse_message(
             handle_group_update(update_event, state).await
         }
         Some(conclave_proto::server_event::Event::MemberRemoved(removed_event)) => {
-            handle_member_removed(removed_event, state, data_dir).await
+            handle_member_removed(removed_event, api, state, data_dir).await
         }
         None => Ok(vec![]),
     }
@@ -178,14 +179,16 @@ async fn handle_welcome(
         .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
         // Delete the welcome from the server so it is not re-processed.
-        let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
+        if let Err(error) = api.lock().await.accept_welcome(welcome.welcome_id).await {
+            tracing::warn!(%error, "failed to acknowledge welcome");
+        }
 
         state
             .group_mapping
             .insert(welcome.group_id.clone(), mls_group_id);
 
         // Save updated mapping.
-        commands::save_group_mapping(data_dir, &state.group_mapping);
+        save_group_mapping(data_dir, &state.group_mapping);
 
         // Key packages are single-use (RFC 9420 §10); upload a fresh
         // replacement so we remain available for future group invitations.
@@ -242,6 +245,7 @@ async fn handle_group_update(
 
 async fn handle_member_removed(
     event: conclave_proto::MemberRemovedEvent,
+    api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &PathBuf,
 ) -> Result<Vec<(String, DisplayMessage)>> {
@@ -265,18 +269,26 @@ async fn handle_member_removed(
                 let data_dir_clone = data_dir.clone();
                 let username_clone = username.clone();
                 let mls_group_id_clone = mls_group_id.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    if let Ok(mls) = MlsManager::new(&data_dir_clone, &username_clone) {
-                        let _ = mls.delete_group_state(&mls_group_id_clone);
-                    }
+                match tokio::task::spawn_blocking(move || {
+                    let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+                    mls.delete_group_state(&mls_group_id_clone)
                 })
-                .await;
+                .await
+                {
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "failed to delete MLS group state");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "MLS group state deletion task panicked");
+                    }
+                    Ok(Ok(())) => {}
+                }
             }
         }
 
         // Remove from local state.
         state.group_mapping.remove(group_id);
-        commands::save_group_mapping(data_dir, &state.group_mapping);
+        save_group_mapping(data_dir, &state.group_mapping);
         state.rooms.remove(group_id);
         if state.active_room.as_deref() == Some(group_id) {
             state.active_room = None;
@@ -287,7 +299,67 @@ async fn handle_member_removed(
             DisplayMessage::system(&format!("You were removed from #{room_name}")),
         ));
     } else {
-        // Someone else was removed.
+        // Someone else was removed — fetch the leave commit so our MLS
+        // state advances the epoch and excludes the departed member.
+        let last_seq = state
+            .rooms
+            .get(group_id)
+            .map(|r| r.last_seen_seq)
+            .unwrap_or(0);
+
+        if let Ok(resp) = api
+            .lock()
+            .await
+            .get_messages(group_id, last_seq as i64)
+            .await
+        {
+            if let Some(mls_group_id) = state.group_mapping.get(group_id) {
+                if let Some(username) = &state.username {
+                    for stored_msg in &resp.messages {
+                        let data_dir_clone = data_dir.clone();
+                        let username_clone = username.clone();
+                        let mls_group_id_clone = mls_group_id.clone();
+                        let mls_bytes = stored_msg.mls_message.clone();
+
+                        let decrypted = tokio::task::spawn_blocking(move || {
+                            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+                            mls.decrypt_message(&mls_group_id_clone, &mls_bytes)
+                        })
+                        .await
+                        .map_err(|e| Error::Other(format!("task join error: {e}")))?;
+
+                        match decrypted {
+                            Ok(DecryptedMessage::Commit(_)) | Ok(DecryptedMessage::None) => {}
+                            Ok(DecryptedMessage::Application(plaintext)) => {
+                                let text = String::from_utf8_lossy(&plaintext).to_string();
+                                results.push((
+                                    group_id.clone(),
+                                    DisplayMessage::user(
+                                        &stored_msg.sender_username,
+                                        &text,
+                                        stored_msg.created_at as i64,
+                                    ),
+                                ));
+                            }
+                            Ok(DecryptedMessage::Failed(error)) => {
+                                tracing::warn!(error, "decryption failed during member removal");
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to decrypt message during member removal");
+                            }
+                        }
+                    }
+                }
+
+                // Update last seen sequence.
+                if let Some(last) = resp.messages.last() {
+                    if let Some(room) = state.rooms.get_mut(group_id) {
+                        room.last_seen_seq = last.sequence_num as u64;
+                    }
+                }
+            }
+        }
+
         results.push((
             group_id.clone(),
             DisplayMessage::system(&format!("{removed} was removed from the group")),

@@ -10,7 +10,10 @@ use mls_rs::group::proposal::Proposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
-use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, MlsMessage};
+use mls_rs::{
+    CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, KeyPackageRef,
+    MlsMessage,
+};
 use mls_rs_crypto_openssl::OpensslCryptoProvider;
 use mls_rs_provider_sqlite::SqLiteDataStorageEngine;
 use mls_rs_provider_sqlite::connection_strategy::FileConnectionStrategy;
@@ -221,17 +224,27 @@ impl MlsManager {
             .create_group(ExtensionList::default(), Default::default(), None)
             .map_err(|e| Error::Mls(format!("create group failed: {e}")))?;
 
-        // Add all members.
+        // Add all members, tracking each key package reference for
+        // welcome matching (RFC 9420 §12.4.3).
+        let cipher_suite = OpensslCryptoProvider::default()
+            .cipher_suite_provider(CIPHERSUITE)
+            .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
+
         let mut builder = group.commit_builder();
-        let mut username_order: Vec<String> = Vec::new();
+        let mut kp_ref_to_username: HashMap<KeyPackageRef, String> = HashMap::new();
 
         for (username, kp_bytes) in member_key_packages {
             let kp_msg = MlsMessage::from_bytes(kp_bytes)
                 .map_err(|e| Error::Mls(format!("invalid key package from '{username}': {e}")))?;
+            if let Some(kp_ref) = kp_msg
+                .key_package_reference(&cipher_suite)
+                .map_err(|e| Error::Mls(format!("key package ref for '{username}': {e}")))?
+            {
+                kp_ref_to_username.insert(kp_ref, username.clone());
+            }
             builder = builder
                 .add_member(kp_msg)
                 .map_err(|e| Error::Mls(format!("add member '{username}' failed: {e}")))?;
-            username_order.push(username.clone());
         }
 
         let commit_output = builder
@@ -242,14 +255,17 @@ impl MlsManager {
             .apply_pending_commit()
             .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
 
-        // Map welcome messages to usernames.
+        // Match each welcome message to its recipient by KeyPackage
+        // reference rather than relying on array index ordering.
         let mut welcome_map = HashMap::new();
-        for (i, username) in username_order.iter().enumerate() {
-            if let Some(welcome_msg) = commit_output.welcome_messages.get(i) {
-                let welcome_bytes = welcome_msg
-                    .to_bytes()
-                    .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
-                welcome_map.insert(username.clone(), welcome_bytes);
+        for welcome_msg in &commit_output.welcome_messages {
+            let welcome_bytes = welcome_msg
+                .to_bytes()
+                .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
+            for kp_ref in welcome_msg.welcome_key_package_references() {
+                if let Some(username) = kp_ref_to_username.get(kp_ref) {
+                    welcome_map.insert(username.clone(), welcome_bytes.clone());
+                }
             }
         }
 
@@ -290,16 +306,25 @@ impl MlsManager {
             .load_group(&group_id_bytes)
             .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
 
+        let cipher_suite = OpensslCryptoProvider::default()
+            .cipher_suite_provider(CIPHERSUITE)
+            .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
+
         let mut builder = group.commit_builder();
-        let mut username_order: Vec<String> = Vec::new();
+        let mut kp_ref_to_username: HashMap<KeyPackageRef, String> = HashMap::new();
 
         for (username, kp_bytes) in member_key_packages {
             let kp_msg = MlsMessage::from_bytes(kp_bytes)
                 .map_err(|e| Error::Mls(format!("invalid key package from '{username}': {e}")))?;
+            if let Some(kp_ref) = kp_msg
+                .key_package_reference(&cipher_suite)
+                .map_err(|e| Error::Mls(format!("key package ref for '{username}': {e}")))?
+            {
+                kp_ref_to_username.insert(kp_ref, username.clone());
+            }
             builder = builder
                 .add_member(kp_msg)
                 .map_err(|e| Error::Mls(format!("add member '{username}' failed: {e}")))?;
-            username_order.push(username.clone());
         }
 
         let commit_output = builder
@@ -311,12 +336,14 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
 
         let mut welcome_map = HashMap::new();
-        for (i, username) in username_order.iter().enumerate() {
-            if let Some(welcome_msg) = commit_output.welcome_messages.get(i) {
-                let welcome_bytes = welcome_msg
-                    .to_bytes()
-                    .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
-                welcome_map.insert(username.clone(), welcome_bytes);
+        for welcome_msg in &commit_output.welcome_messages {
+            let welcome_bytes = welcome_msg
+                .to_bytes()
+                .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
+            for kp_ref in welcome_msg.welcome_key_package_references() {
+                if let Some(username) = kp_ref_to_username.get(kp_ref) {
+                    welcome_map.insert(username.clone(), welcome_bytes.clone());
+                }
             }
         }
 
@@ -510,6 +537,56 @@ impl MlsManager {
         Ok((commit_bytes, group_info_bytes))
     }
 
+    /// Leave a group by producing a Remove commit for our own member index.
+    ///
+    /// Returns `Ok(Some((commit_bytes, group_info_bytes)))` if the self-remove
+    /// commit succeeds, or `Ok(None)` if mls-rs does not support committing
+    /// our own removal (in which case a remaining member must remove us).
+    pub fn leave_group(&self, mls_group_id: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+
+        let mut group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+
+        let own_index = group.current_member_index();
+
+        let commit_output = match group
+            .commit_builder()
+            .remove_member(own_index)
+            .and_then(|builder| builder.build())
+        {
+            Ok(output) => output,
+            Err(_) => return Ok(None),
+        };
+
+        if group.apply_pending_commit().is_err() {
+            return Ok(None);
+        }
+
+        let commit_bytes = commit_output
+            .commit_message
+            .to_bytes()
+            .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
+
+        // Generate group info before we delete our state. This may fail if the
+        // committer has been removed from the resulting state.
+        let group_info_bytes = match group.group_info_message_allowing_ext_commit(true) {
+            Ok(gi) => gi
+                .to_bytes()
+                .map_err(|e| Error::Mls(format!("group info serialization failed: {e}")))?,
+            Err(_) => Vec::new(),
+        };
+
+        group
+            .write_to_storage()
+            .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+
+        Ok(Some((commit_bytes, group_info_bytes)))
+    }
+
     /// Find a member's leaf index by their identity (username).
     pub fn find_member_index(&self, mls_group_id: &str, username: &str) -> Result<Option<u32>> {
         let client = self.build_client()?;
@@ -637,17 +714,20 @@ impl MlsManager {
 
     /// Delete local group state (for when we've been removed or left).
     pub fn delete_group_state(&self, mls_group_id: &str) -> Result<()> {
-        let client = self.build_client()?;
         let group_id_bytes =
             hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
 
-        // Load and delete from storage by overwriting with a cleared state.
-        // The simplest approach: just try to load and ignore if it doesn't exist.
-        if let Ok(mut group) = client.load_group(&group_id_bytes) {
-            group
-                .write_to_storage()
-                .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
-        }
+        let db_path = self.data_dir.join("mls_state.db");
+        let storage = SqLiteDataStorageEngine::new(FileConnectionStrategy::new(&db_path))
+            .map_err(|e| Error::Mls(format!("SQLite storage init failed: {e}")))?;
+
+        let group_state = storage
+            .group_state_storage()
+            .map_err(|e| Error::Mls(format!("group state storage: {e}")))?;
+
+        group_state
+            .delete_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("delete group state failed: {e}")))?;
 
         Ok(())
     }
@@ -659,12 +739,19 @@ impl MlsManager {
         let signing_key_path = self.data_dir.join("mls_signing_key.bin");
         let state_db_path = self.data_dir.join("mls_state.db");
 
-        let _ = std::fs::remove_file(identity_path);
-        let _ = std::fs::remove_file(signing_key_path);
-        let _ = std::fs::remove_file(state_db_path);
-        // Also remove WAL/SHM files if they exist.
-        let _ = std::fs::remove_file(self.data_dir.join("mls_state.db-wal"));
-        let _ = std::fs::remove_file(self.data_dir.join("mls_state.db-shm"));
+        for path in [
+            identity_path,
+            signing_key_path,
+            state_db_path,
+            self.data_dir.join("mls_state.db-wal"),
+            self.data_dir.join("mls_state.db-shm"),
+        ] {
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(?path, %error, "failed to remove MLS state file");
+                }
+            }
+        }
 
         Ok(())
     }

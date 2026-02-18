@@ -82,13 +82,13 @@ impl Dashboard {
                 Box::new(theme::button::sidebar)
             };
 
-            let btn = button(text(label).size(13).width(Length::Fill))
+            let room_button = button(text(label).size(13).width(Length::Fill))
                 .width(Length::Fill)
                 .padding([6, 10])
                 .class(style)
                 .on_press(Message::RoomSelected(room.server_group_id.clone()));
 
-            room_list = room_list.push(btn);
+            room_list = room_list.push(room_button);
         }
 
         let status_indicator = {

@@ -69,7 +69,7 @@ fn sse_stream(
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
-            .expect("failed to build HTTP client");
+            .unwrap_or_default();
 
         loop {
             yield SseUpdate::Connecting;

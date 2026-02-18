@@ -57,7 +57,9 @@ impl IntoResponse for Error {
         };
 
         let mut body = Vec::new();
-        error_resp.encode(&mut body).unwrap();
+        if let Err(error) = error_resp.encode(&mut body) {
+            tracing::error!(%error, "failed to encode error response");
+        }
 
         (
             status,

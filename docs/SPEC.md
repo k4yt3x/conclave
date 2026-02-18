@@ -60,7 +60,7 @@ conclave/
 │   │       ├── lib.rs                  # Re-exports all modules
 │   │       ├── api.rs                  # ApiClient (reqwest HTTP wrapper, TLS config)
 │   │       ├── mls.rs                  # MlsManager (mls-rs operations with SQLite storage)
-│   │       ├── config.rs              # ClientConfig, SessionState persistence
+│   │       ├── config.rs              # ClientConfig, SessionState, group mapping I/O, key package generation
 │   │       ├── error.rs                # Client error types
 │   │       ├── state.rs               # Room, DisplayMessage, ConnectionStatus
 │   │       ├── store.rs               # SQLite-backed message history persistence
@@ -186,6 +186,7 @@ CREATE TABLE key_packages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     key_package_data BLOB NOT NULL,
+    is_last_resort INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -208,9 +209,9 @@ CREATE TABLE messages (
     sender_id INTEGER NOT NULL REFERENCES users(id),
     mls_message BLOB NOT NULL,
     sequence_num INTEGER NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(group_id, sequence_num)
 );
-CREATE INDEX idx_messages_group_seq ON messages(group_id, sequence_num);
 
 CREATE TABLE pending_welcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,10 +232,11 @@ CREATE TABLE group_infos (
 
 ### 3.3 Authentication
 
-- **Registration**: Client sends username + password. Server hashes with Argon2id and stores.
-- **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it.
+- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. Password is hashed with Argon2id and stored.
+- **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it. To prevent username enumeration via timing analysis, the server runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist, ensuring both code paths have equivalent computational profiles.
 - **Authenticated requests**: Client sends `Authorization: Bearer <token>` header. Server validates against the `sessions` table, checking expiry. An `AuthUser` axum extractor handles this transparently for all protected endpoints.
-- **Key packages**: One active key package per user. Uploading a new one replaces the old one. Key packages are consumed (deleted) when fetched by another user for group creation.
+- **Key packages**: Each user maintains up to 10 regular key packages plus 1 last-resort package. Regular packages are consumed FIFO (oldest first) and deleted on consumption. The last-resort package is returned but never deleted when all regular packages are exhausted, ensuring the user is always reachable (RFC 9420 Section 16.6). Uploading a new last-resort package replaces the previous one. Clients pre-publish 5 regular + 1 last-resort on registration/login/reset and replenish after each consumption. The server validates key package uploads by checking the MLS wire format header (version must be MLS 1.0, wire format must be `mls_key_package`) per RFC 9420 Section 6.
+- **Rate limiting**: The `GET /api/v1/key-packages/{user_id}` endpoint is rate-limited to 10 requests per minute per target user to prevent key package exhaustion attacks.
 
 ### 3.4 API Endpoints
 
@@ -254,7 +256,7 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/logout`                    | —                     | —                           | Revoke session token                     |
 | GET    | `/api/v1/me`                        | —                     | UserInfoResponse            | Get current user info                    |
 | GET    | `/api/v1/users/{username}`          | —                     | UserInfoResponse            | Look up user by username                 |
-| POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package                   |
+| POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
 | POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group, get member key packages    |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
@@ -271,6 +273,14 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/welcomes/{id}/accept`      | —                     | 204 No Content              | Accept and delete a pending welcome      |
 | GET    | `/api/v1/events`                    | —                     | SSE stream                  | Real-time event notifications            |
 
+#### Endpoint Behavior Notes
+
+- **`POST /api/v1/key-packages`**: Supports both single-upload (via `key_package_data` field) and batch-upload (via `entries` repeated field with `KeyPackageEntry` messages containing `data` and `is_last_resort` flag). All uploads are validated for MLS wire format correctness (version 0x0001, wire format 0x0003 for `mls_key_package`). Uploading a last-resort package replaces any existing last-resort package for that user.
+- **`GET /api/v1/key-packages/{user_id}`**: Rate-limited to 10 requests per minute per target user. Consumes the oldest regular key package (FIFO). Falls back to the last-resort package (without deleting it) when no regular packages remain.
+- **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`.
+- **`POST /api/v1/groups/{id}/leave`**: Accepts an optional `commit_message` and `group_info` in the request body. If a commit message is provided, it is stored as a group message so remaining members can process the MLS removal and advance their epoch. If group info is provided, it is stored for potential external rejoin. The user is then removed from the server's group membership, and remaining members are notified via `MemberRemovedEvent`.
+- **`POST /api/v1/groups/{id}/external-join`**: Requires the group to exist and have a stored `GroupInfo` (set by prior `upload_commit` or `remove` operations). This prevents arbitrary users from joining groups they were never associated with — only groups whose authorized members have published a GroupInfo can be externally joined. The external commit is stored as a group message and existing members receive a `GroupUpdateEvent`.
+
 ### 3.5 SSE Events
 
 The `/api/v1/events` endpoint provides a Server-Sent Events stream. Events are hex-encoded protobuf `ServerEvent` messages. Each event is targeted at specific user IDs; the server filters so clients only receive their own events.
@@ -280,6 +290,7 @@ Event types:
 - **GroupUpdateEvent**: Group state changed, e.g., a commit was uploaded (group_id, update_type).
 - **WelcomeEvent**: User was invited to a group (group_id, group_name).
 - **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_username). Sent to both remaining members and the removed user.
+- **lagged** (transport-level): Sent when the client's SSE stream falls behind the broadcast channel buffer. The `event` field is `"lagged"` and the `data` field contains the number of dropped events as a string. Clients should treat this as a signal to re-fetch group state. This is not a protobuf `ServerEvent` — it is a raw SSE event emitted by the transport layer.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
 
@@ -492,10 +503,16 @@ Alice                               Server                              Bob
 - **Password storage**: Argon2id with random salts. No plaintext passwords stored.
 - **Token security**: 256-bit cryptographically random tokens from `OsRng`. Tokens have configurable expiry.
 - **MLS identity keys**: Stored locally on the client filesystem. The `mls_signing_key.bin` file contains the private key and must be protected by filesystem permissions.
+- **Username validation**: Usernames are restricted to ASCII alphanumeric characters, underscores, hyphens, and periods (`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`). This prevents control characters, Unicode homoglyphs, and whitespace-only usernames that could be used for impersonation or display attacks.
+- **Timing attack mitigation**: The login endpoint runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist. This ensures both the valid-user and invalid-user code paths have equivalent computational profiles, preventing username enumeration via timing analysis.
+- **Key package validation**: The server validates all uploaded key packages for MLS wire format correctness (MLS version 1.0 header, `mls_key_package` wire format type) per RFC 9420 Section 6. This prevents malformed or non-MLS data from being stored and later causing failures during group creation or invitation on the inviter's client.
+- **Key package exhaustion protection**: The `GET /api/v1/key-packages/{user_id}` endpoint is rate-limited to prevent an attacker from draining a user's regular key packages, which would force fallback to the reusable last-resort package (with associated reuse risks per RFC 9420 Section 16.8).
+- **External join authorization**: The external join endpoint requires a stored `GroupInfo` to exist for the target group. Since `GroupInfo` is only stored by authorized members via `upload_commit` or `remove` operations, this prevents arbitrary users from joining groups they have no association with.
+- **Transactional integrity**: The `upload_commit` endpoint performs all database mutations (member additions, welcome storage, group info updates, message storage) within a single SQLite savepoint transaction. This ensures atomicity — a crash mid-operation cannot leave the database in an inconsistent state.
 - **Trust model**: Currently uses `BasicCredential` with `BasicIdentityProvider`, which does not validate identities. This is suitable for closed communities. X.509 credentials can be added for stronger identity assurance.
 
 ## 7. Protobuf Schema
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response`, `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome`, `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response`, `LeaveGroupRequest/Response`, `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent`, `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome`, `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent`, `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.

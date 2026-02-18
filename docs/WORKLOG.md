@@ -1,5 +1,115 @@
 # Conclave Work Log
 
+## 2026-02-18: Comprehensive Codebase Audit & Remediation
+
+### What Changed
+
+Full codebase audit covering RFC 9420 compliance, security vulnerabilities, Rust coding guideline adherence, and code quality. 22 issues identified (6 CRITICAL, 5 HIGH, 4 MEDIUM, 7 LOW) and remediated across 5 phases. All 190 tests pass after fixes.
+
+### Phase 1: Critical Security & RFC 9420 Fixes
+
+#### C1. `external_join` authorization check (`conclave-server/src/api.rs`)
+- `external_join()` previously allowed any authenticated user to join any group. Added checks: group must exist (`group_exists()`), and a stored GroupInfo must be present (only set by authorized members via `upload_commit` or `remove_group_member`). Without GroupInfo, the endpoint returns 400.
+- Added `group_exists()` method to `conclave-server/src/db.rs`.
+
+#### H1. Key package exhaustion DoS (`conclave-server/src/api.rs`)
+- Any user could drain another user's key packages by repeatedly calling `GET /api/v1/key-packages/{user_id}`. Added per-user rate limiting via an in-memory token bucket (`KeyPackageRateLimiter`) that allows 10 requests per minute per target user.
+
+#### H5. Username character validation (`conclave-server/src/api.rs`)
+- Registration only checked non-empty and max 64 chars. Added regex validation: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`. Rejects control characters, Unicode homoglyphs, whitespace-only strings, and names starting with punctuation.
+
+#### C2. `leave_group` MLS commit (`conclave-server/src/api.rs`, `conclave-lib/src/mls.rs`, TUI/GUI)
+- Leaving a group previously only removed the user from the server DB without producing an MLS commit. Remaining members' MLS state still included the departed member (RFC 9420 Section 12.3 violation).
+- `MlsManager::leave_group()` now produces a self-remove proposal+commit and returns `(commit_message, group_info)`.
+- `LeaveGroupRequest` protobuf updated with `commit_message` and `group_info` fields.
+- Server `leave_group` endpoint stores the commit as a message and updates group_info.
+- TUI/GUI `MemberRemovedEvent` handlers fetch and process the leave commit to advance MLS epoch.
+
+#### C3. `delete_group_state` actually deletes (`conclave-lib/src/mls.rs`)
+- `delete_group_state()` was a no-op (loaded group state and wrote it back unchanged). Now calls `SqLiteDataStorageEngine::delete_group()` to properly remove MLS cryptographic material.
+
+#### C4. Key package replenishment (`conclave-cli/src/tui/commands.rs`, `conclave-gui/src/app.rs`)
+- After accepting welcomes, only 1 replacement key package was uploaded regardless of how many were consumed. Now uploads N replacements (one per welcome consumed) to maintain the 5 regular + 1 last-resort pool.
+
+#### C5. Server-side key package validation (`conclave-server/src/api.rs`)
+- `upload_key_package` accepted any non-empty blob under 16 KiB. Added `validate_key_package_wire_format()` that checks the MLS 1.0 version header (0x0001) and mls_key_package wire format (0x0003) per RFC 9420 Section 6.
+
+#### C6. Welcome-to-username mapping (`conclave-lib/src/mls.rs`)
+- `create_group()` and `invite_to_group()` assumed `commit_output.welcome_messages[i]` corresponded to `username_order[i]`, relying on mls-rs producing welcomes in add-order (not guaranteed).
+- Now uses `key_package_reference()` and `welcome_key_package_references()` to match each welcome to its recipient by KeyPackage reference (RFC 9420 Section 12.4.3).
+
+### Phase 2: High-Priority Security Fixes
+
+#### H2. Atomic `upload_commit` (`conclave-server/src/api.rs`, `conclave-server/src/db.rs`)
+- Multiple DB operations in `upload_commit` (add members, store welcomes, store group info, store message) were sequential without a transaction. Added `Database::process_commit()` that wraps all operations in a SQLite savepoint. SSE notifications are sent only after the transaction commits.
+
+#### H3. Login timing equalization (`conclave-server/src/api.rs`, `conclave-server/src/auth.rs`)
+- Non-existent user path called `hash_password()` (different computational profile from `verify_password()`), enabling username enumeration via timing. Now both paths call `verify_password()` — the non-existent path uses a precomputed `DUMMY_HASH` (`LazyLock<String>`) generated at startup.
+
+#### H4. GUI logout token revocation (`conclave-gui/src/app.rs`)
+- `perform_logout()` cleared local state but never called `api.logout()` to revoke the server-side session. Now fires an async `api.logout()` task before clearing local state.
+
+#### L6. New members excluded from commit notifications (`conclave-server/src/api.rs`)
+- `upload_commit` sent `GroupUpdateEvent` to all members including newly added ones who should process their Welcome first. Now tracks `new_member_ids` during welcome processing and excludes them from the commit notification.
+
+### Phase 3: Protocol Robustness
+
+#### L4. SSE lagged clients (`conclave-server/src/api.rs`)
+- The SSE stream's `_ => None` catch-all silently dropped `BroadcastStream::Lagged` errors. Now matches `Lagged` explicitly and sends a special "lagged" SSE event so clients know to re-sync.
+
+#### L5. Sequence number uniqueness (`conclave-server/src/db.rs`)
+- `SELECT MAX + INSERT` for sequence numbers was not atomic. Added `UNIQUE(group_id, sequence_num)` constraint to the messages table schema.
+
+#### L7. `fetching_groups` not cleared on error (`conclave-gui/src/app.rs`)
+- On fetch error, the `group_id` was not removed from `fetching_groups`, permanently blocking future fetches. Changed `MessagesFetched` error type from `String` to `(String, String)` carrying the group_id so it's always cleared.
+
+### Phase 4: Error Handling & Async Correctness
+
+#### M1. `unwrap()`/`expect()` removal (10 instances across 4 crates)
+- `proto_response()`: returns HTTP 500 fallback on encode failure.
+- `unix_now()`: uses `unwrap_or_default()`.
+- 6 SSE event encoding `unwrap()`s: replaced with `if let Err` + tracing.
+- `error.rs` encode `unwrap()`: replaced with `if let Err` + tracing.
+- Client `Client::builder().build().expect()`: replaced with `unwrap_or_default()`.
+- Client `body.encode().unwrap()`: replaced with `?` propagation.
+- GUI icon loading `expect()`: replaced with `.ok()`.
+- GUI subscription `expect()`: replaced with `unwrap_or_default()`.
+
+#### M2. `let _ =` on fallible operations (~25 instances)
+- `wipe_local_state` file deletions: now logs non-`NotFound` errors at warn level.
+- Server/client DB migrations: check specifically for "duplicate column" error, propagate others.
+- Store operations (`push_message`, `set_last_seen_seq`, `set_last_read_seq`): trace-level logging.
+- `accept_welcome` calls: warn-level logging.
+- TUI logout/session file removal: warn-level logging with `NotFound` check.
+
+#### L3. TUI async correctness (`conclave-cli/src/tui/commands.rs`)
+- `encrypt_message` MLS calls blocked the tokio runtime thread. Wrapped in `tokio::task::spawn_blocking` for both `Command::Msg` and `Command::Message` paths.
+
+### Phase 5: Code Quality Cleanup
+
+#### L1/L2. Deduplicated shared functions (`conclave-lib/src/config.rs`)
+- `load_group_mapping()`, `save_group_mapping()`, and `generate_initial_key_packages()` were duplicated across `conclave-gui/src/app.rs`, `conclave-cli/src/main.rs`, and `conclave-cli/src/tui/commands.rs`.
+- Moved all three to `conclave-lib/src/config.rs` as public functions. Updated all call sites. The `save_group_mapping` in `conclave-cli/src/main.rs` was missing the Unix `0o600` permission setting — now fixed by using the centralized version.
+
+#### M4. Section divider comments removed
+- Removed 54 `// ──` section divider comments across 6 files per CLAUDE.md guideline: "Do not write organizational or comments that summarize the code."
+
+#### M3. Abbreviated variable names renamed
+- `req` → `request` in `conclave-server/src/api.rs` (50+ occurrences) and `conclave-lib/src/api.rs`.
+- `resp` → `response` in `conclave-lib/src/api.rs`.
+- `kp_data` → `key_package_data` in `conclave-server/src/api.rs`.
+- `seq` → `sequence_number` in `conclave-server/src/api.rs` and `conclave-lib/src/store.rs`.
+- `mls_msg` → `mls_message` in `conclave-server/src/api.rs`.
+- `gid` → `id` (tuple destructuring) in `conclave-server/src/api.rs`.
+- `btn` → `room_button` in `conclave-gui/src/screen/dashboard.rs`.
+- `col` → `messages_column`, `msg` → `message`, `row_el` → `row_element` in `conclave-gui/src/widget/message_view.rs`.
+
+### Test Fixes
+
+- Updated all 9 failing API integration tests to use `fake_key_package()` helper that prepends the MLS wire format header (version=1, wire_format=3) to test data, satisfying the new C5 validation.
+- Updated `test_external_join_success` to store GroupInfo before the external join, satisfying the new C1 authorization check.
+- All assertions updated to compare against the full key package bytes (header + payload).
+
 ## 2026-02-18: Startup Welcome Processing
 
 ### What Changed

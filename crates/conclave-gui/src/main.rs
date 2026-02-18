@@ -18,14 +18,14 @@ fn main() -> iced::Result {
 
     let icon =
         iced::window::icon::from_file_data(include_bytes!("../../../assets/conclave.png"), None)
-            .expect("failed to load application icon");
+            .ok();
 
     iced::application(Conclave::new, Conclave::update, Conclave::view)
         .title(Conclave::title)
         .theme(Conclave::theme)
         .subscription(Conclave::subscription)
         .window(iced::window::Settings {
-            icon: Some(icon),
+            icon,
             size: iced::Size::new(900.0, 600.0),
             ..Default::default()
         })

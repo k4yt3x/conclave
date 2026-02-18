@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
 pub use conclave_lib::command::Command;
-use conclave_lib::config::{ClientConfig, SessionState};
+use conclave_lib::config::{
+    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
+    save_group_mapping,
+};
 use conclave_lib::mls::MlsManager;
 
 pub use conclave_lib::command::parse;
@@ -74,7 +76,7 @@ pub async fn execute(
 
             // Auto-generate and upload key packages (1 last-resort + 5 regular).
             if let Some(mls_mgr) = &*mls {
-                match super::generate_initial_key_packages(mls_mgr) {
+                match generate_initial_key_packages(mls_mgr) {
                     Ok(entries) => {
                         let count = entries.len();
                         if let Err(e) = api.lock().await.upload_key_packages(entries).await {
@@ -166,7 +168,9 @@ pub async fn execute(
                 let mls_group_id = mls_mgr.join_group(&welcome.welcome_message)?;
 
                 // Delete the welcome from the server so it is not re-processed.
-                let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
+                if let Err(error) = api.lock().await.accept_welcome(welcome.welcome_id).await {
+                    tracing::warn!(%error, "failed to acknowledge welcome");
+                }
 
                 state
                     .group_mapping
@@ -182,13 +186,17 @@ pub async fn execute(
 
             save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
 
-            // Key packages are single-use (RFC 9420 §10); upload a fresh
-            // replacement so we remain available for future group invitations.
-            let kp = mls_mgr.generate_key_package()?;
-            api.lock()
-                .await
-                .upload_key_packages(vec![(kp, false)])
-                .await?;
+            // Key packages are single-use (RFC 9420 §10); replenish one
+            // replacement per welcome consumed to maintain 5 regular packages.
+            let consumed_count = joined_group_ids.len();
+            let replacements = mls_mgr
+                .generate_key_packages(consumed_count)?
+                .into_iter()
+                .map(|kp| (kp, false))
+                .collect::<Vec<_>>();
+            if !replacements.is_empty() {
+                api.lock().await.upload_key_packages(replacements).await?;
+            }
 
             // Refresh rooms and auto-switch to the last joined room.
             load_rooms(api, state).await?;
@@ -332,19 +340,39 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
                 .clone();
 
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
             let name = state
                 .rooms
                 .get(&group_id)
                 .map(|r| r.name.clone())
                 .unwrap_or_default();
 
-            // Notify the server to remove us from the group.
-            api.lock().await.leave_group(&group_id).await?;
+            // Produce an MLS self-remove commit so remaining members can
+            // advance their epoch and exclude us from future messages.
+            let (commit_bytes, group_info_bytes) =
+                if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
+                    match mls_mgr.leave_group(mls_group_id)? {
+                        Some(data) => data,
+                        None => (Vec::new(), Vec::new()),
+                    }
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+
+            // Notify the server with the commit so remaining members can
+            // process the MLS removal.
+            api.lock()
+                .await
+                .leave_group(&group_id, commit_bytes, group_info_bytes)
+                .await?;
 
             // Delete local MLS group state.
-            if let Some(mls_mgr) = mls.as_ref() {
-                if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
-                    let _ = mls_mgr.delete_group_state(mls_group_id);
+            if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
+                if let Err(error) = mls_mgr.delete_group_state(mls_group_id) {
+                    tracing::warn!(%error, "failed to delete MLS group state");
                 }
             }
 
@@ -354,9 +382,7 @@ pub async fn execute(
             state.active_room = None;
             state.scroll_offset = 0;
 
-            if let Some(mls_mgr) = mls.as_ref() {
-                save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
-            }
+            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
 
             msgs.push(DisplayMessage::system(&format!("Left #{name}")));
         }
@@ -447,7 +473,7 @@ pub async fn execute(
             let mls_mgr = mls.as_ref().unwrap();
 
             // Upload new key packages (1 last-resort + 5 regular).
-            let entries = super::generate_initial_key_packages(mls_mgr)?;
+            let entries = generate_initial_key_packages(mls_mgr)?;
             api.lock().await.upload_key_packages(entries).await?;
 
             // Rejoin each group via external commit.
@@ -609,7 +635,16 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let encrypted = mls_mgr.encrypt_message(&mls_group_id, text.as_bytes())?;
+            let data_dir = mls_mgr.data_dir().to_path_buf();
+            let username = state.username.clone().unwrap_or_default();
+            let text_bytes = text.as_bytes().to_vec();
+            let mls_gid = mls_group_id.clone();
+            let encrypted = tokio::task::spawn_blocking(move || {
+                let mls = MlsManager::new(&data_dir, &username)?;
+                mls.encrypt_message(&mls_gid, &text_bytes)
+            })
+            .await
+            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
             let resp = api.lock().await.send_message(&group_id, encrypted).await?;
 
             // Show in the target room's messages.
@@ -683,7 +718,9 @@ pub async fn execute(
             }
 
             // Revoke session on server.
-            let _ = api.lock().await.logout().await;
+            if let Err(error) = api.lock().await.logout().await {
+                tracing::warn!(%error, "server-side session revocation failed");
+            }
 
             // Clear local session state.
             api.lock().await.set_token(String::new());
@@ -697,7 +734,11 @@ pub async fn execute(
 
             // Delete saved session file.
             let session_path = config.data_dir.join("session.toml");
-            let _ = std::fs::remove_file(session_path);
+            if let Err(error) = std::fs::remove_file(&session_path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(%error, "failed to remove session file");
+                }
+            }
 
             msgs.push(DisplayMessage::system("Logged out. Session revoked."));
         }
@@ -761,7 +802,16 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let encrypted = mls_mgr.encrypt_message(&mls_group_id, text.as_bytes())?;
+            let data_dir = mls_mgr.data_dir().to_path_buf();
+            let username = state.username.clone().unwrap_or_default();
+            let text_bytes = text.as_bytes().to_vec();
+            let mls_gid = mls_group_id.clone();
+            let encrypted = tokio::task::spawn_blocking(move || {
+                let mls = MlsManager::new(&data_dir, &username)?;
+                mls.encrypt_message(&mls_gid, &text_bytes)
+            })
+            .await
+            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
             let resp = api.lock().await.send_message(&group_id, encrypted).await?;
 
             // Show our own message locally.
@@ -811,26 +861,4 @@ pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Re
     }
 
     Ok(())
-}
-
-pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
-    let path = data_dir.join("group_mapping.toml");
-    if path.exists() {
-        let contents = std::fs::read_to_string(&path).unwrap_or_default();
-        toml::from_str(&contents).unwrap_or_default()
-    } else {
-        HashMap::new()
-    }
-}
-
-pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
-    let path = data_dir.join("group_mapping.toml");
-    if let Ok(contents) = toml::to_string_pretty(mapping) {
-        let _ = std::fs::write(&path, contents);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-    }
 }

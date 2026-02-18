@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::mls::MlsManager;
 
 /// Client configuration stored in a TOML file.
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,4 +107,37 @@ impl SessionState {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
+}
+
+pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
+    let path = data_dir.join("group_mapping.toml");
+    if path.exists() {
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        toml::from_str(&contents).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
+    let path = data_dir.join("group_mapping.toml");
+    if let Ok(contents) = toml::to_string_pretty(mapping) {
+        let _ = std::fs::write(&path, contents);
+        #[cfg(unix)]
+        {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+pub fn generate_initial_key_packages(
+    mls: &MlsManager,
+) -> crate::error::Result<Vec<(Vec<u8>, bool)>> {
+    let mut entries = Vec::with_capacity(6);
+    let last_resort = mls.generate_last_resort_key_package()?;
+    entries.push((last_resort, true));
+    for key_package in mls.generate_key_packages(5)? {
+        entries.push((key_package, false));
+    }
+    Ok(entries)
 }

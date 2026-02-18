@@ -85,10 +85,9 @@ impl Database {
                 sender_id INTEGER NOT NULL REFERENCES users(id),
                 mls_message BLOB NOT NULL,
                 sequence_num INTEGER NOT NULL,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                UNIQUE(group_id, sequence_num)
             );
-            CREATE INDEX IF NOT EXISTS idx_messages_group_seq
-                ON messages(group_id, sequence_num);
 
             CREATE TABLE IF NOT EXISTS pending_welcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,9 +109,14 @@ impl Database {
         )?;
 
         // Migration: add is_last_resort column if upgrading from an older schema.
-        let _ = conn.execute_batch(
+        if let Err(error) = conn.execute_batch(
             "ALTER TABLE key_packages ADD COLUMN is_last_resort INTEGER NOT NULL DEFAULT 0;",
-        );
+        ) {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(error.into());
+            }
+        }
 
         Ok(())
     }
@@ -298,6 +302,15 @@ impl Database {
 
     // ── Groups ─────────────────────────────────────────────────────
 
+    pub fn group_exists(&self, group_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT 1 FROM groups WHERE id = ?1")?;
+        let exists: Option<i64> = stmt
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?;
+        Ok(exists.is_some())
+    }
+
     pub fn create_group(&self, group_id: &str, name: &str, creator_id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
@@ -476,6 +489,79 @@ impl Database {
             params![group_id, group_info_data],
         )?;
         Ok(())
+    }
+
+    /// Process a commit upload atomically: add new members, store welcomes,
+    /// store group info, and store the commit message. Returns a list of
+    /// (user_id, username) pairs for newly added members and the stored
+    /// message sequence number (if any), for SSE notification after commit.
+    pub fn process_commit(
+        &self,
+        group_id: &str,
+        group_name: &str,
+        sender_id: i64,
+        welcome_messages: &std::collections::HashMap<String, Vec<u8>>,
+        group_info: &[u8],
+        commit_message: &[u8],
+    ) -> Result<(Vec<(i64, String)>, Option<i64>)> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = conn.savepoint()?;
+
+        let mut new_members = Vec::new();
+
+        for (username, welcome_data) in welcome_messages {
+            let user_id: Option<i64> = transaction
+                .prepare("SELECT id FROM users WHERE username = ?1")?
+                .query_row(params![username], |row| row.get(0))
+                .optional()?;
+            let user_id =
+                user_id.ok_or_else(|| Error::NotFound(format!("user '{username}' not found")))?;
+
+            transaction.execute(
+                "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
+                params![group_id, user_id],
+            )?;
+
+            transaction.execute(
+                "INSERT INTO pending_welcomes (group_id, group_name, user_id, welcome_data, created_at)
+                 VALUES (?1, ?2, ?3, ?4, unixepoch())",
+                params![group_id, group_name, user_id, welcome_data],
+            )?;
+
+            new_members.push((user_id, username.clone()));
+        }
+
+        if !group_info.is_empty() {
+            transaction.execute(
+                "INSERT INTO group_infos (group_id, group_info_data, updated_at)
+                 VALUES (?1, ?2, unixepoch())
+                 ON CONFLICT(group_id) DO UPDATE SET
+                     group_info_data = excluded.group_info_data,
+                     updated_at = excluded.updated_at",
+                params![group_id, group_info],
+            )?;
+        }
+
+        let sequence_number = if !commit_message.is_empty() {
+            let max_seq: Option<i64> = transaction
+                .prepare("SELECT MAX(sequence_num) FROM messages WHERE group_id = ?1")?
+                .query_row(params![group_id], |row| row.get(0))
+                .optional()?
+                .flatten();
+            let next_seq = max_seq.unwrap_or(0) + 1;
+
+            transaction.execute(
+                "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num, created_at)
+                 VALUES (?1, ?2, ?3, ?4, unixepoch())",
+                params![group_id, sender_id, commit_message, next_seq],
+            )?;
+            Some(next_seq)
+        } else {
+            None
+        };
+
+        transaction.commit()?;
+        Ok((new_members, sequence_number))
     }
 
     pub fn get_group_info(&self, group_id: &str) -> Result<Option<Vec<u8>>> {

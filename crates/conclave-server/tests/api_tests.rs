@@ -12,6 +12,13 @@ use conclave_server::{api, config, db, state};
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+fn fake_key_package(label: &[u8]) -> Vec<u8> {
+    // MLS 1.0 version (0x0001) + mls_key_package wire format (0x0003) + arbitrary payload.
+    let mut data = vec![0x00, 0x01, 0x00, 0x03];
+    data.extend_from_slice(label);
+    data
+}
+
 fn setup() -> Router {
     let database = db::Database::open_in_memory().unwrap();
     let config = config::ServerConfig::default();
@@ -421,7 +428,7 @@ async fn test_upload_key_package_success() {
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    upload_key_package_for(&app, &token, b"dummy_key_package").await;
+    upload_key_package_for(&app, &token, &fake_key_package(b"dummy_key_package")).await;
 }
 
 #[tokio::test]
@@ -481,7 +488,7 @@ async fn test_get_key_package_success() {
     let user_id = register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    upload_key_package_for(&app, &token, b"my_key_package_data").await;
+    upload_key_package_for(&app, &token, &fake_key_package(b"my_key_package_data")).await;
 
     let request = Request::builder()
         .method("GET")
@@ -495,7 +502,10 @@ async fn test_get_key_package_success() {
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
-    assert_eq!(resp.key_package_data, b"my_key_package_data");
+    assert_eq!(
+        resp.key_package_data,
+        fake_key_package(b"my_key_package_data")
+    );
 }
 
 #[tokio::test]
@@ -860,7 +870,7 @@ async fn test_remove_member_success() {
     // Register bob and upload a key package for him
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
-    upload_key_package_for(&app, &bob_token, b"bob_key_package").await;
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_key_package")).await;
 
     // Create group with bob as a member
     let group_id = create_group_for(&app, &alice_token, "rm-group", vec!["bob".to_string()]).await;
@@ -1025,7 +1035,7 @@ async fn test_leave_group_success() {
     // Register bob and upload a key package
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
-    upload_key_package_for(&app, &bob_token, b"bob_kp").await;
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     // Create group with bob
     let group_id =
@@ -1197,6 +1207,24 @@ async fn test_external_join_success() {
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "ext-group", vec![]).await;
 
+    // Alice uploads a commit with group_info so external join is possible.
+    let commit_body = conclave_proto::UploadCommitRequest {
+        commit_message: vec![],
+        welcome_messages: std::collections::HashMap::new(),
+        group_info: b"fake_group_info".to_vec(),
+    };
+    let mut cbody = Vec::new();
+    commit_body.encode(&mut cbody).unwrap();
+    let commit_request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/commit"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(cbody))
+        .unwrap();
+    let response = app.clone().oneshot(commit_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
     // Bob performs an external join
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -1246,7 +1274,7 @@ async fn test_reset_account_success() {
     let token = login_user(&app, "alice", "password123").await;
 
     // Upload a key package
-    upload_key_package_for(&app, &token, b"my_key_package").await;
+    upload_key_package_for(&app, &token, &fake_key_package(b"my_key_package")).await;
 
     // Reset account
     let request = Request::builder()
@@ -1356,7 +1384,7 @@ async fn test_accept_welcome_success() {
 
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
-    upload_key_package_for(&app, &bob_token, b"bob_kp").await;
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     // Create group with bob as member
     let group_id =
@@ -1463,15 +1491,15 @@ async fn test_batch_upload_and_ordered_consumption() {
         &token,
         vec![
             conclave_proto::KeyPackageEntry {
-                data: b"kp1".to_vec(),
+                data: fake_key_package(b"kp1"),
                 is_last_resort: false,
             },
             conclave_proto::KeyPackageEntry {
-                data: b"kp2".to_vec(),
+                data: fake_key_package(b"kp2"),
                 is_last_resort: false,
             },
             conclave_proto::KeyPackageEntry {
-                data: b"kp3".to_vec(),
+                data: fake_key_package(b"kp3"),
                 is_last_resort: false,
             },
         ],
@@ -1479,7 +1507,12 @@ async fn test_batch_upload_and_ordered_consumption() {
     .await;
 
     // Consume them in FIFO order.
-    for expected in [b"kp1".as_slice(), b"kp2", b"kp3"] {
+    let expected_packages = [
+        fake_key_package(b"kp1"),
+        fake_key_package(b"kp2"),
+        fake_key_package(b"kp3"),
+    ];
+    for expected in expected_packages {
         let request = Request::builder()
             .method("GET")
             .uri(format!("/api/v1/key-packages/{user_id}"))
@@ -1519,11 +1552,11 @@ async fn test_last_resort_not_deleted_on_consumption() {
         &token,
         vec![
             conclave_proto::KeyPackageEntry {
-                data: b"last_resort".to_vec(),
+                data: fake_key_package(b"last_resort"),
                 is_last_resort: true,
             },
             conclave_proto::KeyPackageEntry {
-                data: b"regular".to_vec(),
+                data: fake_key_package(b"regular"),
                 is_last_resort: false,
             },
         ],
@@ -1541,7 +1574,7 @@ async fn test_last_resort_not_deleted_on_consumption() {
     let response = app.clone().oneshot(request).await.unwrap();
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
-    assert_eq!(resp.key_package_data, b"regular");
+    assert_eq!(resp.key_package_data, fake_key_package(b"regular"));
 
     // Second consume should return last-resort (NOT deleted).
     let request = Request::builder()
@@ -1554,7 +1587,7 @@ async fn test_last_resort_not_deleted_on_consumption() {
     let response = app.clone().oneshot(request).await.unwrap();
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
-    assert_eq!(resp.key_package_data, b"last_resort");
+    assert_eq!(resp.key_package_data, fake_key_package(b"last_resort"));
 
     // Third consume should STILL return last-resort.
     let request = Request::builder()
@@ -1567,5 +1600,5 @@ async fn test_last_resort_not_deleted_on_consumption() {
     let response = app.clone().oneshot(request).await.unwrap();
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::GetKeyPackageResponse::decode(body_bytes).unwrap();
-    assert_eq!(resp.key_package_data, b"last_resort");
+    assert_eq!(resp.key_package_data, fake_key_package(b"last_resort"));
 }

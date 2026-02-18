@@ -56,7 +56,14 @@ pub fn router() -> Router<Arc<AppState>> {
 /// Helper to encode a protobuf message into a response body.
 fn proto_response<M: Message>(status: StatusCode, msg: &M) -> impl IntoResponse + use<M> {
     let mut body = Vec::new();
-    msg.encode(&mut body).unwrap();
+    if let Err(error) = msg.encode(&mut body) {
+        tracing::error!(%error, "failed to encode protobuf response");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE, "application/x-protobuf")],
+            Vec::new(),
+        );
+    }
     (
         status,
         [(header::CONTENT_TYPE, "application/x-protobuf")],
@@ -69,38 +76,80 @@ fn decode_proto<M: Message + Default>(body: &Bytes) -> Result<M> {
     M::decode(body.as_ref()).map_err(Error::ProtobufDecode)
 }
 
+/// Validate that a key package blob is a structurally valid MLS KeyPackage
+/// message per RFC 9420 Section 6. Checks the version (must be MLS 1.0 = 1)
+/// and wire format (must be mls_key_package = 3). Full cryptographic
+/// validation is left to the consuming client.
+fn validate_key_package_wire_format(data: &[u8]) -> Result<()> {
+    if data.len() < 4 {
+        return Err(Error::BadRequest(
+            "key package too short to be a valid MLS message".into(),
+        ));
+    }
+    let version = u16::from_be_bytes([data[0], data[1]]);
+    let wire_format = u16::from_be_bytes([data[2], data[3]]);
+    if version != 1 {
+        return Err(Error::BadRequest(format!(
+            "unsupported MLS version {version}, expected 1"
+        )));
+    }
+    // RFC 9420 Section 6: WireFormat mls_key_package = 3
+    if wire_format != 3 {
+        return Err(Error::BadRequest(format!(
+            "expected MLS wire format mls_key_package (3), got {wire_format}"
+        )));
+    }
+    Ok(())
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64
 }
 
 // ── Public Endpoints ──────────────────────────────────────────────
 
 async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::RegisterRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::RegisterRequest>(&body)?;
 
-    if req.username.is_empty() || req.password.is_empty() {
+    if request.username.is_empty() || request.password.is_empty() {
         return Err(Error::BadRequest(
             "username and password are required".into(),
         ));
     }
 
-    if req.username.len() > 64 {
+    if request.username.len() > 64 {
         return Err(Error::BadRequest(
             "username must be 64 characters or fewer".into(),
         ));
     }
 
-    if req.password.len() < 8 {
+    // Restrict to safe ASCII characters to prevent homoglyph impersonation,
+    // control character injection, and display issues. Must start with an
+    // alphanumeric character.
+    if !request
+        .username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        || !request
+            .username
+            .starts_with(|c: char| c.is_ascii_alphanumeric())
+    {
+        return Err(Error::BadRequest(
+            "username must start with a letter or digit and contain only ASCII letters, digits, underscores, hyphens, or dots".into(),
+        ));
+    }
+
+    if request.password.len() < 8 {
         return Err(Error::BadRequest(
             "password must be at least 8 characters".into(),
         ));
     }
 
-    let password_hash = auth::hash_password(&req.password)?;
-    let user_id = state.db.create_user(&req.username, &password_hash)?;
+    let password_hash = auth::hash_password(&request.password)?;
+    let user_id = state.db.create_user(&request.username, &password_hash)?;
 
     Ok(proto_response(
         StatusCode::CREATED,
@@ -111,20 +160,22 @@ async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<imp
 }
 
 async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::LoginRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::LoginRequest>(&body)?;
 
-    let user_record = state.db.get_user_by_username(&req.username)?;
+    let user_record = state.db.get_user_by_username(&request.username)?;
 
     let (user_id, _username, password_hash) = match user_record {
         Some(record) => record,
         None => {
-            // Hash a dummy password to equalize timing and prevent username enumeration.
-            let _ = auth::hash_password("dummy_timing_equalization");
+            // Verify against a precomputed hash to equalize timing and
+            // prevent username enumeration. Both paths now execute
+            // verify_password with identical computational cost.
+            let _ = auth::verify_password("dummy", auth::dummy_hash());
             return Err(Error::Unauthorized("invalid username or password".into()));
         }
     };
 
-    if !auth::verify_password(&req.password, &password_hash)? {
+    if !auth::verify_password(&request.password, &password_hash)? {
         return Err(Error::Unauthorized("invalid username or password".into()));
     }
 
@@ -187,11 +238,11 @@ async fn upload_key_package(
     auth: AuthUser,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::UploadKeyPackageRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::UploadKeyPackageRequest>(&body)?;
 
-    if !req.entries.is_empty() {
+    if !request.entries.is_empty() {
         // Batch upload path.
-        for entry in &req.entries {
+        for entry in &request.entries {
             if entry.data.is_empty() {
                 return Err(Error::BadRequest("key package data is required".into()));
             }
@@ -200,20 +251,22 @@ async fn upload_key_package(
                     "key_package_data must be 16 KiB or smaller".into(),
                 ));
             }
+            validate_key_package_wire_format(&entry.data)?;
             state
                 .db
                 .store_key_package(auth.user_id, &entry.data, entry.is_last_resort)?;
         }
-    } else if !req.key_package_data.is_empty() {
+    } else if !request.key_package_data.is_empty() {
         // Legacy single-upload path (regular key package).
-        if req.key_package_data.len() > 16 * 1024 {
+        if request.key_package_data.len() > 16 * 1024 {
             return Err(Error::BadRequest(
                 "key_package_data must be 16 KiB or smaller".into(),
             ));
         }
+        validate_key_package_wire_format(&request.key_package_data)?;
         state
             .db
-            .store_key_package(auth.user_id, &req.key_package_data, false)?;
+            .store_key_package(auth.user_id, &request.key_package_data, false)?;
     } else {
         return Err(Error::BadRequest("key_package_data is required".into()));
     }
@@ -247,13 +300,13 @@ async fn create_group(
     auth: AuthUser,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::CreateGroupRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::CreateGroupRequest>(&body)?;
 
-    if req.name.is_empty() {
+    if request.name.is_empty() {
         return Err(Error::BadRequest("group name is required".into()));
     }
 
-    if req.name.len() > 128 {
+    if request.name.len() > 128 {
         return Err(Error::BadRequest(
             "group name must be 128 characters or fewer".into(),
         ));
@@ -263,7 +316,7 @@ async fn create_group(
 
     // Collect key packages for all requested members (skip the creator).
     let mut member_key_packages = std::collections::HashMap::new();
-    for username in &req.member_usernames {
+    for username in &request.member_usernames {
         let member_id = state
             .db
             .get_user_id_by_username(username)?
@@ -273,15 +326,17 @@ async fn create_group(
             continue;
         }
 
-        let kp_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
+        let key_package_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
             Error::NotFound(format!("no key package available for user '{username}'"))
         })?;
 
-        member_key_packages.insert(username.clone(), kp_data);
+        member_key_packages.insert(username.clone(), key_package_data);
     }
 
     // Create the group in the database.
-    state.db.create_group(&group_id, &req.name, auth.user_id)?;
+    state
+        .db
+        .create_group(&group_id, &request.name, auth.user_id)?;
 
     Ok(proto_response(
         StatusCode::CREATED,
@@ -332,9 +387,9 @@ async fn invite_to_group(
     Path(group_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::InviteToGroupRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::InviteToGroupRequest>(&body)?;
 
-    if req.usernames.is_empty() {
+    if request.usernames.is_empty() {
         return Err(Error::BadRequest(
             "at least one username is required".into(),
         ));
@@ -347,7 +402,7 @@ async fn invite_to_group(
 
     // Collect key packages for the invitees.
     let mut member_key_packages = std::collections::HashMap::new();
-    for username in &req.usernames {
+    for username in &request.usernames {
         let member_id = state
             .db
             .get_user_id_by_username(username)?
@@ -363,11 +418,11 @@ async fn invite_to_group(
             )));
         }
 
-        let kp_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
+        let key_package_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
             Error::NotFound(format!("no key package available for user '{username}'"))
         })?;
 
-        member_key_packages.insert(username.clone(), kp_data);
+        member_key_packages.insert(username.clone(), key_package_data);
     }
 
     Ok(proto_response(
@@ -384,7 +439,7 @@ async fn upload_commit(
     Path(group_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::UploadCommitRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::UploadCommitRequest>(&body)?;
 
     // Verify the sender is a group member.
     if !state.db.is_group_member(&group_id, auth.user_id)? {
@@ -395,26 +450,22 @@ async fn upload_commit(
     let groups = state.db.list_user_groups(auth.user_id)?;
     let group_name = groups
         .iter()
-        .find(|(gid, _, _, _)| gid == &group_id)
+        .find(|(id, _, _, _)| id == &group_id)
         .map(|(_, name, _, _)| name.clone())
         .unwrap_or_default();
 
-    // Store welcome messages for each recipient.
-    for (username, welcome_data) in &req.welcome_messages {
-        let user_id = state
-            .db
-            .get_user_id_by_username(username)?
-            .ok_or_else(|| Error::NotFound(format!("user '{username}' not found")))?;
+    // Perform all DB operations atomically in a single transaction.
+    let (new_members, _sequence_number) = state.db.process_commit(
+        &group_id,
+        &group_name,
+        auth.user_id,
+        &request.welcome_messages,
+        &request.group_info,
+        &request.commit_message,
+    )?;
 
-        // Add the user as a group member.
-        state.db.add_group_member(&group_id, user_id)?;
-
-        // Store the welcome for them to pick up.
-        state
-            .db
-            .store_pending_welcome(&group_id, &group_name, user_id, welcome_data)?;
-
-        // Notify via SSE.
+    // Send SSE notifications after the transaction has committed.
+    for (user_id, _) in &new_members {
         let event = conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::Welcome(
                 conclave_proto::WelcomeEvent {
@@ -424,30 +475,24 @@ async fn upload_commit(
             )),
         };
         let mut event_bytes = Vec::new();
-        event.encode(&mut event_bytes).unwrap();
+        if let Err(error) = event.encode(&mut event_bytes) {
+            tracing::error!(%error, "failed to encode SSE event");
+        }
         let _ = state.sse_tx.send(crate::state::SseEvent {
             data: event_bytes,
-            target_user_ids: vec![user_id],
+            target_user_ids: vec![*user_id],
         });
     }
 
-    // Store the latest group info for external commits.
-    if !req.group_info.is_empty() {
-        state.db.store_group_info(&group_id, &req.group_info)?;
-    }
-
-    // Store the commit as a message so other existing members can process it.
-    if !req.commit_message.is_empty() {
-        state
-            .db
-            .store_message(&group_id, auth.user_id, &req.commit_message)?;
-
-        // Notify existing members.
+    if !request.commit_message.is_empty() {
+        // Notify existing members (excluding sender and newly added members).
         let members = state.db.get_group_members(&group_id)?;
+        let new_member_ids: std::collections::HashSet<i64> =
+            new_members.iter().map(|(id, _)| *id).collect();
         let member_ids: Vec<i64> = members
             .iter()
             .map(|(id, _)| *id)
-            .filter(|id| *id != auth.user_id)
+            .filter(|id| *id != auth.user_id && !new_member_ids.contains(id))
             .collect();
 
         let event = conclave_proto::ServerEvent {
@@ -459,7 +504,9 @@ async fn upload_commit(
             )),
         };
         let mut event_bytes = Vec::new();
-        event.encode(&mut event_bytes).unwrap();
+        if let Err(error) = event.encode(&mut event_bytes) {
+            tracing::error!(%error, "failed to encode SSE event");
+        }
         let _ = state.sse_tx.send(crate::state::SseEvent {
             data: event_bytes,
             target_user_ids: member_ids,
@@ -478,7 +525,7 @@ async fn send_message(
     Path(group_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::SendMessageRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::SendMessageRequest>(&body)?;
 
     if !state.db.is_group_member(&group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));
@@ -486,7 +533,7 @@ async fn send_message(
 
     let sequence_num = state
         .db
-        .store_message(&group_id, auth.user_id, &req.mls_message)?;
+        .store_message(&group_id, auth.user_id, &request.mls_message)?;
 
     // Notify group members via SSE.
     let members = state.db.get_group_members(&group_id)?;
@@ -506,7 +553,9 @@ async fn send_message(
         )),
     };
     let mut event_bytes = Vec::new();
-    event.encode(&mut event_bytes).unwrap();
+    if let Err(error) = event.encode(&mut event_bytes) {
+        tracing::error!(%error, "failed to encode SSE event");
+    }
     let _ = state.sse_tx.send(crate::state::SseEvent {
         data: event_bytes,
         target_user_ids: member_ids,
@@ -547,15 +596,17 @@ async fn get_messages(
 
     let stored_messages: Vec<conclave_proto::StoredMessage> = messages
         .into_iter()
-        .map(|(seq, sender_id, sender_username, mls_msg, created_at)| {
-            conclave_proto::StoredMessage {
-                sequence_num: seq as u64,
-                sender_id: sender_id as u64,
-                sender_username,
-                mls_message: mls_msg,
-                created_at: created_at as u64,
-            }
-        })
+        .map(
+            |(sequence_number, sender_id, sender_username, mls_message, created_at)| {
+                conclave_proto::StoredMessage {
+                    sequence_num: sequence_number as u64,
+                    sender_id: sender_id as u64,
+                    sender_username,
+                    mls_message,
+                    created_at: created_at as u64,
+                }
+            },
+        )
         .collect();
 
     Ok(proto_response(
@@ -614,7 +665,7 @@ async fn remove_group_member(
     Path(group_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
 
     if !state.db.is_group_member(&group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));
@@ -622,26 +673,26 @@ async fn remove_group_member(
 
     let target_user_id = state
         .db
-        .get_user_id_by_username(&req.username)?
-        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", req.username)))?;
+        .get_user_id_by_username(&request.username)?
+        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
 
     if !state.db.is_group_member(&group_id, target_user_id)? {
         return Err(Error::BadRequest(format!(
             "user '{}' is not a member of this group",
-            req.username
+            request.username
         )));
     }
 
     // Store the group info from the removal commit.
-    if !req.group_info.is_empty() {
-        state.db.store_group_info(&group_id, &req.group_info)?;
+    if !request.group_info.is_empty() {
+        state.db.store_group_info(&group_id, &request.group_info)?;
     }
 
     // Store the commit message for other members to process.
-    if !req.commit_message.is_empty() {
+    if !request.commit_message.is_empty() {
         state
             .db
-            .store_message(&group_id, auth.user_id, &req.commit_message)?;
+            .store_message(&group_id, auth.user_id, &request.commit_message)?;
     }
 
     // Remove from server DB.
@@ -655,12 +706,14 @@ async fn remove_group_member(
         event: Some(conclave_proto::server_event::Event::MemberRemoved(
             conclave_proto::MemberRemovedEvent {
                 group_id: group_id.clone(),
-                removed_username: req.username.clone(),
+                removed_username: request.username.clone(),
             },
         )),
     };
     let mut event_bytes = Vec::new();
-    event.encode(&mut event_bytes).unwrap();
+    if let Err(error) = event.encode(&mut event_bytes) {
+        tracing::error!(%error, "failed to encode SSE event");
+    }
     let _ = state.sse_tx.send(crate::state::SseEvent {
         data: event_bytes.clone(),
         target_user_ids: member_ids,
@@ -682,7 +735,10 @@ async fn leave_group(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
     Path(group_id): Path<String>,
+    body: Bytes,
 ) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::LeaveGroupRequest>(&body)?;
+
     if !state.db.is_group_member(&group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));
     }
@@ -691,6 +747,19 @@ async fn leave_group(
         .db
         .get_user_by_id(auth.user_id)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    // Store the group info from the leave commit (for external rejoin).
+    if !request.group_info.is_empty() {
+        state.db.store_group_info(&group_id, &request.group_info)?;
+    }
+
+    // Store the commit message so remaining members can process the MLS
+    // removal and advance their epoch.
+    if !request.commit_message.is_empty() {
+        state
+            .db
+            .store_message(&group_id, auth.user_id, &request.commit_message)?;
+    }
 
     // Remove from server DB.
     state.db.remove_group_member(&group_id, auth.user_id)?;
@@ -708,7 +777,9 @@ async fn leave_group(
         )),
     };
     let mut event_bytes = Vec::new();
-    event.encode(&mut event_bytes).unwrap();
+    if let Err(error) = event.encode(&mut event_bytes) {
+        tracing::error!(%error, "failed to encode SSE event");
+    }
     let _ = state.sse_tx.send(crate::state::SseEvent {
         data: event_bytes,
         target_user_ids: member_ids,
@@ -748,16 +819,30 @@ async fn external_join(
     Path(group_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let req = decode_proto::<conclave_proto::ExternalJoinRequest>(&body)?;
+    let request = decode_proto::<conclave_proto::ExternalJoinRequest>(&body)?;
+
+    // Verify the group exists.
+    if !state.db.group_exists(&group_id)? {
+        return Err(Error::NotFound("group not found".into()));
+    }
+
+    // Verify the group has a stored GroupInfo (only set by authorized members
+    // via upload_commit or remove_group_member). This prevents arbitrary users
+    // from joining groups they were never associated with.
+    if state.db.get_group_info(&group_id)?.is_none() {
+        return Err(Error::BadRequest(
+            "no group info available for external join".into(),
+        ));
+    }
 
     // Add user as group member (re-add after reset).
     state.db.add_group_member(&group_id, auth.user_id)?;
 
     // Store the external commit as a message for other members to process.
-    if !req.commit_message.is_empty() {
+    if !request.commit_message.is_empty() {
         state
             .db
-            .store_message(&group_id, auth.user_id, &req.commit_message)?;
+            .store_message(&group_id, auth.user_id, &request.commit_message)?;
 
         // Notify existing members.
         let members = state.db.get_group_members(&group_id)?;
@@ -776,7 +861,9 @@ async fn external_join(
             )),
         };
         let mut event_bytes = Vec::new();
-        event.encode(&mut event_bytes).unwrap();
+        if let Err(error) = event.encode(&mut event_bytes) {
+            tracing::error!(%error, "failed to encode SSE event");
+        }
         let _ = state.sse_tx.send(crate::state::SseEvent {
             data: event_bytes,
             target_user_ids: member_ids,
@@ -815,6 +902,10 @@ async fn sse_stream(
         Ok(sse_event) if sse_event.target_user_ids.contains(&user_id) => {
             let encoded = hex::encode(&sse_event.data);
             Some(Ok(Event::default().data(encoded)))
+        }
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
+            tracing::warn!(user_id, count, "SSE client lagged, events dropped");
+            Some(Ok(Event::default().event("lagged").data(count.to_string())))
         }
         _ => None,
     });

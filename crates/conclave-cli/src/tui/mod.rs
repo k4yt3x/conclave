@@ -19,7 +19,10 @@ use reqwest_eventsource::{Event as EsEvent, EventSource};
 use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
-use conclave_lib::config::{ClientConfig, SessionState};
+use conclave_lib::config::{
+    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
+    save_group_mapping,
+};
 use conclave_lib::mls::MlsManager;
 
 use self::commands::Command;
@@ -73,7 +76,7 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
                 }
             }
 
-            state.group_mapping = commands::load_group_mapping(&config.data_dir);
+            state.group_mapping = load_group_mapping(&config.data_dir);
 
             // Open message store and restore persisted last_seen_seq values
             // *before* loading rooms so that load_rooms preserves them.
@@ -586,12 +589,14 @@ async fn accept_pending_welcomes(
         };
 
         // Delete the welcome from the server so it is not re-processed.
-        let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
+        if let Err(error) = api.lock().await.accept_welcome(welcome.welcome_id).await {
+            tracing::warn!(%error, "failed to acknowledge welcome");
+        }
 
         state
             .group_mapping
             .insert(welcome.group_id.clone(), mls_group_id);
-        commands::save_group_mapping(data_dir, &state.group_mapping);
+        save_group_mapping(data_dir, &state.group_mapping);
 
         state.system_messages.push(DisplayMessage::system(&format!(
             "Joined #{} ({})",
@@ -719,18 +724,4 @@ async fn fetch_missed_messages(
             store.set_last_seen_seq(&group_id, room.last_seen_seq);
         }
     }
-}
-
-/// Generate initial key packages: 1 last-resort + 5 regular.
-/// Returns entries suitable for `api.upload_key_packages()`.
-fn generate_initial_key_packages(
-    mls: &MlsManager,
-) -> conclave_lib::error::Result<Vec<(Vec<u8>, bool)>> {
-    let mut entries = Vec::with_capacity(6);
-    let last_resort = mls.generate_last_resort_key_package()?;
-    entries.push((last_resort, true));
-    for kp in mls.generate_key_packages(5)? {
-        entries.push((kp, false));
-    }
-    Ok(entries)
 }

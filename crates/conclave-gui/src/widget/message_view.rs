@@ -10,46 +10,45 @@ use crate::widget::Element;
 pub fn message_list<'a, M: Clone + 'a>(
     messages: &[DisplayMessage],
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
-    let mut col = column![].spacing(2).width(Length::Fill);
+    let mut messages_column = column![].spacing(2).width(Length::Fill);
 
-    for msg in messages {
-        let time = format_timestamp(msg.timestamp);
+    for message in messages {
+        let time = format_timestamp(message.timestamp);
 
-        let row_el: Element<'a, M> = if msg.is_system {
+        let row_element: Element<'a, M> = if message.is_system {
             row![
                 text(format!("[{time}]"))
                     .size(13)
                     .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
-                text(format!(" *** {}", msg.content))
+                text(format!(" *** {}", message.content))
                     .size(13)
                     .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
             ]
             .into()
         } else {
-            let nick_color = theme::nick_color(&msg.sender);
+            let nick_color = theme::nick_color(&message.sender);
             row![
                 text(format!("[{time}]"))
                     .size(13)
                     .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
-                text(format!(" <{}>", msg.sender)).size(13).class(Box::new(
-                    move |_theme: &theme::Theme| {
+                text(format!(" <{}>", message.sender))
+                    .size(13)
+                    .class(Box::new(move |_theme: &theme::Theme| {
                         iced::widget::text::Style {
                             color: Some(nick_color),
                         }
-                    }
-                )
-                    as Box<dyn Fn(&theme::Theme) -> _>),
-                text(format!(" {}", msg.content))
+                    }) as Box<dyn Fn(&theme::Theme) -> _>),
+                text(format!(" {}", message.content))
                     .size(13)
                     .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
             ]
             .into()
         };
 
-        col = col.push(row_el);
+        messages_column = messages_column.push(row_element);
     }
 
-    col
+    messages_column
 }
 
 fn format_timestamp(ts: i64) -> String {

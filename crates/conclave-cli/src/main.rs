@@ -1,13 +1,12 @@
 mod error;
 mod tui;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
 use conclave_lib::api::ApiClient;
-use conclave_lib::config::{ClientConfig, SessionState};
+use conclave_lib::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
 use conclave_lib::mls::MlsManager;
 
 #[derive(Parser)]
@@ -291,7 +290,9 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
                 let mls_group_id = mls.join_group(&welcome.welcome_message)?;
 
                 // Delete the welcome from the server so it is not re-processed.
-                let _ = api.accept_welcome(welcome.welcome_id).await;
+                if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
+                    eprintln!("Warning: failed to acknowledge welcome: {error}");
+                }
 
                 mapping.insert(welcome.group_id.clone(), mls_group_id);
                 println!(
@@ -383,21 +384,4 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
     }
 
     Ok(())
-}
-
-fn load_group_mapping(data_dir: &std::path::Path) -> HashMap<String, String> {
-    let path = data_dir.join("group_mapping.toml");
-    if path.exists() {
-        let contents = std::fs::read_to_string(&path).unwrap_or_default();
-        toml::from_str(&contents).unwrap_or_default()
-    } else {
-        HashMap::new()
-    }
-}
-
-fn save_group_mapping(data_dir: &std::path::Path, mapping: &HashMap<String, String>) {
-    let path = data_dir.join("group_mapping.toml");
-    if let Ok(contents) = toml::to_string_pretty(mapping) {
-        let _ = std::fs::write(path, contents);
-    }
 }

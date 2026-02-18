@@ -51,16 +51,23 @@ impl MessageStore {
         .map_err(|e| crate::error::Error::Other(format!("message store init failed: {e}")))?;
 
         // Migrate: add last_read_seq column if upgrading from older schema.
-        let _ = conn.execute_batch(
+        if let Err(error) = conn.execute_batch(
             "ALTER TABLE room_state ADD COLUMN last_read_seq INTEGER NOT NULL DEFAULT 0;",
-        );
+        ) {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(crate::error::Error::Other(format!(
+                    "migration failed: {msg}"
+                )));
+            }
+        }
 
         Ok(Self { conn })
     }
 
     /// Append a message to the history for a room.
     pub fn push_message(&self, group_id: &str, msg: &DisplayMessage) {
-        let _ = self.conn.execute(
+        if let Err(error) = self.conn.execute(
             "INSERT INTO messages (group_id, sender, content, timestamp, is_system)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -70,7 +77,9 @@ impl MessageStore {
                 msg.timestamp,
                 msg.is_system as i32,
             ],
-        );
+        ) {
+            tracing::trace!(%error, "failed to persist message to local store");
+        }
     }
 
     /// Load recent messages for a room (last 1000), ordered chronologically.
@@ -111,12 +120,14 @@ impl MessageStore {
     }
 
     /// Update the last seen sequence number for a room.
-    pub fn set_last_seen_seq(&self, group_id: &str, seq: u64) {
-        let _ = self.conn.execute(
+    pub fn set_last_seen_seq(&self, group_id: &str, sequence_number: u64) {
+        if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, ?2, 0)
              ON CONFLICT(group_id) DO UPDATE SET last_seen_seq = excluded.last_seen_seq",
-            params![group_id, seq],
-        );
+            params![group_id, sequence_number],
+        ) {
+            tracing::trace!(%error, "failed to update last_seen_seq");
+        }
     }
 
     /// Get the last read sequence number for a room.
@@ -131,12 +142,14 @@ impl MessageStore {
     }
 
     /// Update the last read sequence number for a room.
-    pub fn set_last_read_seq(&self, group_id: &str, seq: u64) {
-        let _ = self.conn.execute(
+    pub fn set_last_read_seq(&self, group_id: &str, sequence_number: u64) {
+        if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, 0, ?2)
              ON CONFLICT(group_id) DO UPDATE SET last_read_seq = excluded.last_read_seq",
-            params![group_id, seq],
-        );
+            params![group_id, sequence_number],
+        ) {
+            tracing::trace!(%error, "failed to update last_read_seq");
+        }
     }
 }
 

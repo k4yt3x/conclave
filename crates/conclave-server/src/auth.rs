@@ -6,8 +6,17 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
+use std::sync::LazyLock;
+
 use crate::error::{Error, Result};
 use crate::state::AppState;
+
+/// Precomputed Argon2id hash used for timing equalization when a login
+/// attempt targets a non-existent user. This ensures both the valid-user
+/// and invalid-user code paths execute `verify_password` with identical
+/// computational cost, preventing username enumeration via timing.
+static DUMMY_HASH: LazyLock<String> =
+    LazyLock::new(|| hash_password("timing_equalization_dummy").expect("dummy hash generation"));
 
 /// Hash a password with Argon2id.
 pub fn hash_password(password: &str) -> Result<String> {
@@ -26,6 +35,11 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok())
+}
+
+/// Return a reference to the precomputed dummy hash for timing equalization.
+pub fn dummy_hash() -> &'static str {
+    &DUMMY_HASH
 }
 
 /// Generate a cryptographically secure opaque token (256-bit, hex-encoded).

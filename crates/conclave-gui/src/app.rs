@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use conclave_lib::api::ApiClient;
 use conclave_lib::command::Command;
-use conclave_lib::config::{ClientConfig, SessionState};
+use conclave_lib::config::{
+    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
+    save_group_mapping,
+};
 use conclave_lib::mls::MlsManager;
 use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
 use conclave_lib::store::MessageStore;
@@ -50,7 +53,7 @@ pub enum Message {
     RegisterResult(Result<RegisterInfo, String>),
     RoomsLoaded(Result<Vec<RoomInfo>, String>),
     MessageSent(Result<MessageSentInfo, String>),
-    MessagesFetched(Result<FetchedMessages, String>),
+    MessagesFetched(Result<FetchedMessages, (String, String)>),
     KeygenDone(Result<Vec<(Vec<u8>, bool)>, String>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<WelcomeResult>, String>),
@@ -210,7 +213,7 @@ impl Conclave {
                     tokio::task::spawn_blocking(move || {
                         let mls = MlsManager::new(&data_dir, &keygen_username)
                             .map_err(|e| e.to_string())?;
-                        generate_initial_key_packages(&mls)
+                        generate_initial_key_packages(&mls).map_err(|e| e.to_string())
                     })
                     .await
                     .map_err(|e| e.to_string())?
@@ -482,7 +485,7 @@ impl Conclave {
                         tokio::task::spawn_blocking(move || {
                             let mls =
                                 MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            generate_initial_key_packages(&mls)
+                            generate_initial_key_packages(&mls).map_err(|e| e.to_string())
                         })
                         .await
                         .map_err(|e| e.to_string())?
@@ -596,10 +599,7 @@ impl Conclave {
 
                 self.handle_input_text(text)
             }
-            screen::dashboard::Message::Logout => {
-                self.perform_logout();
-                Task::none()
-            }
+            screen::dashboard::Message::Logout => self.perform_logout(),
         }
     }
 
@@ -705,10 +705,7 @@ impl Conclave {
                 self.push_system_message("Already logged in. Use /logout first.");
                 Task::none()
             }
-            Ok(Command::Logout) => {
-                self.perform_logout();
-                Task::none()
-            }
+            Ok(Command::Logout) => self.perform_logout(),
             Ok(Command::Create { name, members }) => self.create_group(name, members),
             Ok(Command::Invite { members }) => self.invite_members(members),
             Ok(Command::Kick { username }) => self.kick_member(username),
@@ -773,7 +770,7 @@ impl Conclave {
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
-                        fetch_and_decrypt(
+                        match fetch_and_decrypt(
                             &api,
                             &group_id_clone,
                             last_seq,
@@ -782,6 +779,10 @@ impl Conclave {
                             &data_dir,
                         )
                         .await
+                        {
+                            Ok(fetched) => Ok(fetched),
+                            Err(error) => Err((group_id_clone, error)),
+                        }
                     },
                     Message::MessagesFetched,
                 )
@@ -804,12 +805,14 @@ impl Conclave {
             SseUpdate::MemberRemoved { group_id, username } => {
                 let is_self = self.username.as_deref() == Some(&username);
                 if is_self {
-                    // We were removed
+                    // We were removed — delete MLS group state
                     let room_name = self
                         .rooms
                         .get(&group_id)
                         .map(|r| r.name.clone())
                         .unwrap_or_else(|| group_id.clone());
+                    let mls_group_id = self.group_mapping.get(&group_id).cloned();
+
                     self.group_mapping.remove(&group_id);
                     save_group_mapping(&self.config.data_dir, &self.group_mapping);
                     self.rooms.remove(&group_id);
@@ -817,7 +820,36 @@ impl Conclave {
                         self.active_room = None;
                     }
                     self.push_system_message(&format!("You were removed from #{room_name}"));
+
+                    if let Some(mls_group_id) = mls_group_id {
+                        let data_dir = self.config.data_dir.clone();
+                        let our_username = self.username.clone().unwrap_or_default();
+                        Task::perform(
+                            async move {
+                                match tokio::task::spawn_blocking(move || {
+                                    let mls = MlsManager::new(&data_dir, &our_username)?;
+                                    mls.delete_group_state(&mls_group_id)
+                                })
+                                .await
+                                {
+                                    Ok(Err(error)) => {
+                                        tracing::warn!(%error, "failed to delete MLS group state");
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "MLS group state deletion task panicked");
+                                    }
+                                    Ok(Ok(())) => {}
+                                }
+                                Ok::<_, String>(vec![])
+                            },
+                            Message::CommandResult,
+                        )
+                    } else {
+                        Task::none()
+                    }
                 } else {
+                    // Someone else was removed — fetch the leave commit so our
+                    // MLS state advances the epoch.
                     if let Some(room) = self.rooms.get_mut(&group_id) {
                         room.members.retain(|m| m != &username);
                     }
@@ -825,8 +857,10 @@ impl Conclave {
                         Some(&group_id),
                         DisplayMessage::system(&format!("{username} was removed from the group")),
                     );
+
+                    // Trigger a message fetch to process the MLS removal commit
+                    self.handle_sse_event(SseUpdate::NewMessage { group_id })
                 }
-                Task::none()
             }
         }
     }
@@ -945,7 +979,7 @@ impl Conclave {
 
     fn handle_messages_fetched(
         &mut self,
-        result: Result<FetchedMessages, String>,
+        result: Result<FetchedMessages, (String, String)>,
     ) -> Task<Message> {
         match result {
             Ok(fetched) => {
@@ -980,8 +1014,9 @@ impl Conclave {
                     }
                 }
             }
-            Err(e) => {
-                self.push_system_message(&format!("Failed to fetch messages: {e}"));
+            Err((group_id, error)) => {
+                self.fetching_groups.remove(&group_id);
+                self.push_system_message(&format!("Failed to fetch messages: {error}"));
             }
         }
         Task::none()
@@ -1345,6 +1380,8 @@ impl Conclave {
             }
         };
 
+        let mls_group_id = self.group_mapping.get(&group_id).cloned();
+
         let room_name = self
             .rooms
             .get(&group_id)
@@ -1354,13 +1391,10 @@ impl Conclave {
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
+        let data_dir = self.config.data_dir.clone();
+        let username = self.username.clone().unwrap_or_default();
 
-        // Clean up local state immediately
-        if let Some(mls_group_id) = self.group_mapping.get(&group_id).cloned() {
-            if let Some(mls) = &self.mls {
-                let _ = mls.delete_group_state(&mls_group_id);
-            }
-        }
+        // Clean up local UI state immediately
         self.group_mapping.remove(&group_id);
         save_group_mapping(&self.config.data_dir, &self.group_mapping);
         self.rooms.remove(&group_id);
@@ -1369,9 +1403,55 @@ impl Conclave {
 
         Task::perform(
             async move {
+                // Produce an MLS self-remove commit so remaining members can
+                // advance their epoch and exclude us from future messages.
+                // This must happen BEFORE deleting the MLS group state.
+                let (commit_bytes, group_info_bytes) = if let Some(mls_gid) = &mls_group_id {
+                    match tokio::task::spawn_blocking({
+                        let data_dir = data_dir.clone();
+                        let username = username.clone();
+                        let mls_gid = mls_gid.clone();
+                        move || {
+                            let mls =
+                                MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                            mls.leave_group(&mls_gid).map_err(|e| e.to_string())
+                        }
+                    })
+                    .await
+                    {
+                        Ok(Ok(Some(data))) => data,
+                        _ => (Vec::new(), Vec::new()),
+                    }
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+
+                // Delete MLS group state after commit is produced
+                if let Some(mls_gid) = &mls_group_id {
+                    match tokio::task::spawn_blocking({
+                        let data_dir = data_dir.clone();
+                        let username = username.clone();
+                        let mls_gid = mls_gid.clone();
+                        move || {
+                            let mls = MlsManager::new(&data_dir, &username)?;
+                            mls.delete_group_state(&mls_gid)
+                        }
+                    })
+                    .await
+                    {
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "failed to delete MLS group state");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "MLS group state deletion task panicked");
+                        }
+                        Ok(Ok(())) => {}
+                    }
+                }
+
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                api.leave_group(&group_id)
+                api.leave_group(&group_id, commit_bytes, group_info_bytes)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(vec![])
@@ -1459,7 +1539,7 @@ impl Conclave {
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
-                        fetch_and_decrypt(
+                        match fetch_and_decrypt(
                             &api,
                             &group_id,
                             last_seq,
@@ -1468,6 +1548,10 @@ impl Conclave {
                             &data_dir,
                         )
                         .await
+                        {
+                            Ok(fetched) => Ok(fetched),
+                            Err(error) => Err((group_id, error)),
+                        }
                     },
                     Message::MessagesFetched,
                 ))
@@ -1518,7 +1602,9 @@ impl Conclave {
                     .map_err(|e| e.to_string())??;
 
                     // Delete the welcome from the server so it is not re-processed.
-                    let _ = api.accept_welcome(welcome.welcome_id).await;
+                    if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
+                        tracing::warn!(%error, "failed to acknowledge welcome");
+                    }
 
                     // Advance last_seen_seq past existing messages so that
                     // fetch_missed_messages skips the initial commit which
@@ -1536,22 +1622,28 @@ impl Conclave {
                     });
                 }
 
-                // Key packages are single-use (RFC 9420 §10); upload a fresh
-                // replacement so we remain available for future group invitations.
-                let kp = tokio::task::spawn_blocking({
+                // Key packages are single-use (RFC 9420 §10); replenish one
+                // per welcome consumed to maintain 5 regular packages.
+                let consumed_count = results.len();
+                let replacements = tokio::task::spawn_blocking({
                     let data_dir = data_dir.clone();
                     let username = username.clone();
                     move || {
                         let mls =
                             MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.generate_key_package().map_err(|e| e.to_string())
+                        mls.generate_key_packages(consumed_count)
+                            .map_err(|e| e.to_string())
                     }
                 })
                 .await
                 .map_err(|e| e.to_string())??;
-                api.upload_key_packages(vec![(kp, false)])
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let entries: Vec<(Vec<u8>, bool)> =
+                    replacements.into_iter().map(|kp| (kp, false)).collect();
+                if !entries.is_empty() {
+                    api.upload_key_packages(entries)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
 
                 Ok(results)
             },
@@ -1745,8 +1837,14 @@ impl Conclave {
         }
     }
 
-    fn perform_logout(&mut self) {
-        // Clear API token
+    fn perform_logout(&mut self) -> Task<Message> {
+        // Capture server info before clearing state so we can revoke the
+        // server-side token asynchronously.
+        let server_url = self.server_url.clone().unwrap_or_default();
+        let accept_invalid_certs = self.config.accept_invalid_certs;
+        let token = self.token.clone().unwrap_or_default();
+
+        // Clear local state.
         self.token = None;
         self.api = None;
         self.mls = None;
@@ -1763,14 +1861,33 @@ impl Conclave {
         self.welcome_seqs.clear();
         self.connection_status = ConnectionStatus::Disconnected;
 
-        // Delete session file
+        // Delete session file.
         let session_path = self.config.data_dir.join("session.toml");
-        let _ = std::fs::remove_file(session_path);
+        if let Err(error) = std::fs::remove_file(session_path) {
+            tracing::warn!(%error, "failed to remove session file");
+        }
 
-        // Go back to login screen
+        // Go back to login screen.
         self.screen = screen::Screen::Login(screen::Login::new(
             self.server_url.clone().unwrap_or_default(),
         ));
+
+        // Revoke the server-side token in the background.
+        if !token.is_empty() {
+            Task::perform(
+                async move {
+                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                    api.set_token(token);
+                    if let Err(error) = api.logout().await {
+                        tracing::warn!(%error, "server-side token revocation failed");
+                    }
+                    Ok::<_, String>(vec![])
+                },
+                Message::CommandResult,
+            )
+        } else {
+            Task::none()
+        }
     }
 }
 
@@ -1891,39 +2008,4 @@ async fn fetch_and_decrypt(
         group_id: group_id.to_string(),
         messages,
     })
-}
-
-/// Generate initial key packages: 1 last-resort + 5 regular.
-fn generate_initial_key_packages(mls: &MlsManager) -> Result<Vec<(Vec<u8>, bool)>, String> {
-    let mut entries = Vec::with_capacity(6);
-    let last_resort = mls
-        .generate_last_resort_key_package()
-        .map_err(|e| e.to_string())?;
-    entries.push((last_resort, true));
-    for kp in mls.generate_key_packages(5).map_err(|e| e.to_string())? {
-        entries.push((kp, false));
-    }
-    Ok(entries)
-}
-
-fn load_group_mapping(data_dir: &std::path::Path) -> HashMap<String, String> {
-    let path = data_dir.join("group_mapping.toml");
-    if path.exists() {
-        let contents = std::fs::read_to_string(&path).unwrap_or_default();
-        toml::from_str(&contents).unwrap_or_default()
-    } else {
-        HashMap::new()
-    }
-}
-
-fn save_group_mapping(data_dir: &std::path::Path, mapping: &HashMap<String, String>) {
-    let path = data_dir.join("group_mapping.toml");
-    if let Ok(contents) = toml::to_string_pretty(mapping) {
-        let _ = std::fs::write(&path, contents);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-    }
 }
