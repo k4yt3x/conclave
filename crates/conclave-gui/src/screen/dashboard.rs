@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use iced::Length;
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, tooltip};
 
 use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
 
@@ -37,8 +37,10 @@ impl Dashboard {
         system_messages: &'a [DisplayMessage],
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
+        server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
-        let sidebar = self.view_sidebar(rooms, active_room, connection_status, username);
+        let sidebar =
+            self.view_sidebar(rooms, active_room, connection_status, username, server_url);
         let main_area = self.view_main_area(rooms, active_room, room_messages, system_messages);
 
         row![sidebar, main_area].into()
@@ -50,6 +52,7 @@ impl Dashboard {
         active_room: &'a Option<String>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
+        server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
         let header = container(
             text("Rooms")
@@ -97,9 +100,60 @@ impl Dashboard {
             text(label).size(11).class(style)
         };
 
-        let user_label = text(username.as_deref().unwrap_or(""))
-            .size(12)
-            .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>);
+        // Sidebar is 200px with 12px padding each side → ~176px usable.
+        // At font size 12 a character is ~7px wide.
+        const USER_MAX_CHARS: usize = 24;
+        const URL_MAX_CHARS: usize = 24;
+
+        let user_full = username
+            .as_ref()
+            .map(|u| format!("@{u}"))
+            .unwrap_or_default();
+        let user_label: Element<'a, Message> = if user_full.len() > USER_MAX_CHARS {
+            let mut truncated = user_full.chars().take(USER_MAX_CHARS).collect::<String>();
+            truncated.push('…');
+            tooltip(
+                text(truncated)
+                    .size(12)
+                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+                text(user_full.clone()).size(11),
+                tooltip::Position::Top,
+            )
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>)
+            .padding(6)
+            .gap(4)
+            .into()
+        } else {
+            text(user_full)
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>)
+                .into()
+        };
+
+        let server_url_str = server_url.as_deref().unwrap_or("");
+        let server_label: Element<'a, Message> = if server_url_str.len() > URL_MAX_CHARS {
+            let mut truncated = server_url_str
+                .chars()
+                .take(URL_MAX_CHARS)
+                .collect::<String>();
+            truncated.push('…');
+            tooltip(
+                text(truncated)
+                    .size(12)
+                    .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
+                text(server_url_str).size(12),
+                tooltip::Position::Top,
+            )
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>)
+            .padding(6)
+            .gap(4)
+            .into()
+        } else {
+            text(server_url_str)
+                .size(12)
+                .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>)
+                .into()
+        };
 
         let logout_btn = button(
             text("Logout")
@@ -112,7 +166,7 @@ impl Dashboard {
         .class(Box::new(theme::button::danger) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press(Message::Logout);
 
-        let footer = column![status_indicator, user_label, logout_btn]
+        let footer = column![status_indicator, user_label, server_label, logout_btn]
             .spacing(4)
             .padding(12);
 
@@ -167,7 +221,7 @@ impl Dashboard {
             }
             None => text("No room selected — use /join or click a room")
                 .size(14)
-                .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>)
                 .into(),
         };
 

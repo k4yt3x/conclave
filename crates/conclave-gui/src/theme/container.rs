@@ -40,12 +40,7 @@ pub fn sidebar(theme: &Theme) -> Style {
 
 pub fn title_bar(theme: &Theme) -> Style {
     Style {
-        background: Some(Background::Color(theme.surface)),
-        border: Border {
-            color: theme.border,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        background: Some(Background::Color(theme.title_bar)),
         ..Style::default()
     }
 }

@@ -195,6 +195,9 @@ impl Conclave {
 
             // Transition to dashboard
             app.screen = screen::Screen::Dashboard(screen::Dashboard::new());
+            app.system_messages = vec![DisplayMessage::system(&format!(
+                "Welcome back, {username}. Type /help for commands."
+            ))];
 
             // Generate key packages and load rooms from server
             let accept_invalid_certs = app.config.accept_invalid_certs;
@@ -314,6 +317,7 @@ impl Conclave {
                     &self.system_messages,
                     &self.connection_status,
                     &self.username,
+                    &self.server_url,
                 )
                 .map(Message::Dashboard),
         }

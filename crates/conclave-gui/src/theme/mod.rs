@@ -7,7 +7,7 @@ pub mod text_input;
 
 use iced::Color;
 
-/// Dark theme for the Conclave GUI (Ferra-inspired palette).
+/// Dark theme for the Conclave GUI (greyscale palette).
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub background: Color,
@@ -22,23 +22,25 @@ pub struct Theme {
     pub border: Color,
     pub scrollbar: Color,
     pub selection: Color,
+    pub title_bar: Color,
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            background: Color::from_rgb8(0x2b, 0x29, 0x2d),
-            surface: Color::from_rgb8(0x24, 0x22, 0x26),
-            surface_bright: Color::from_rgb8(0x32, 0x30, 0x34),
-            primary: Color::from_rgb8(0xfe, 0xcd, 0xb2),
-            text: Color::from_rgb8(0xfe, 0xcd, 0xb2),
-            text_secondary: Color::from_rgb8(0xab, 0x8a, 0x79),
-            text_muted: Color::from_rgb8(0x68, 0x56, 0x50),
-            error: Color::from_rgb8(0xe0, 0x6b, 0x75),
-            success: Color::from_rgb8(0xb1, 0xb6, 0x95),
-            border: Color::from_rgb8(0x4f, 0x47, 0x4d),
-            scrollbar: Color::from_rgb8(0x32, 0x30, 0x34),
-            selection: Color::from_rgb8(0x45, 0x3d, 0x41),
+            background: Color::from_rgb8(0x15, 0x15, 0x15),
+            surface: Color::from_rgb8(0x0c, 0x12, 0x1a),
+            surface_bright: Color::from_rgb8(0x31, 0x31, 0x31),
+            primary: Color::from_rgb8(0xd7, 0xd7, 0xd7),
+            text: Color::from_rgb8(0xd7, 0xd7, 0xd7),
+            text_secondary: Color::from_rgb8(0xab, 0xab, 0xab),
+            text_muted: Color::from_rgb8(0x80, 0x80, 0x80),
+            error: Color::from_rgb8(0xaa, 0x40, 0x40),
+            success: Color::from_rgb8(0xe0, 0xc5, 0x78),
+            border: Color::from_rgb8(0x20, 0x20, 0x20),
+            scrollbar: Color::from_rgb8(0x31, 0x31, 0x31),
+            selection: Color::from_rgb8(0x3f, 0x3f, 0x3f),
+            title_bar: Color::from_rgb8(0x20, 0x20, 0x20),
         }
     }
 }
@@ -64,7 +66,7 @@ impl iced::theme::Base for Theme {
     }
 
     fn name(&self) -> &str {
-        "Conclave Dark"
+        "Conclave Greyscale"
     }
 }
 

@@ -2,6 +2,7 @@
 background = "#2A2A2A"
 surface = "#232323"
 surface_bright = "#313131"
+title_bar = "#1E1E1E"
 primary = "#D7D7D7"
 text = "#D7D7D7"
 text_secondary = "#919191"
