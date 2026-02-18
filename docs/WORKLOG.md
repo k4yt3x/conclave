@@ -1,5 +1,31 @@
 # Conclave Work Log
 
+## 2026-02-18: Startup Welcome Processing
+
+### What Changed
+
+Fixed a bug where users invited to a group while offline would see "group mapping not found" errors on startup. The root cause: neither CLI nor GUI processed pending welcomes at startup — welcome processing only happened via real-time SSE events or manual `/join`.
+
+#### Problem
+
+When user A invites user B (offline), the server adds B to the group and stores a pending welcome. When B starts their client, `load_rooms()` returns the new group (B is a member on the server), but B never processed the MLS welcome — so there's no group mapping or MLS state. The subsequent `fetch_missed_messages` fails because it looks up the group in `group_mapping` and finds nothing.
+
+#### CLI Fix — `crates/conclave-cli/src/tui/mod.rs`
+
+- Added `accept_pending_welcomes()` function that fetches pending welcomes from the server, processes each via `mls.join_group()`, updates the group mapping, uploads a replacement key package, and reloads rooms.
+- Called at startup after `load_rooms()` but before `fetch_missed_messages()`.
+- Called on SSE reconnect (`EsEvent::Open`) before fetching missed messages, covering the case where the user is invited while SSE is disconnected but the client is still running.
+
+#### GUI Fix — `crates/conclave-gui/src/app.rs`
+
+- Added `welcomes_processed: bool` flag to `Conclave` (mirrors existing `rooms_loaded` pattern).
+- Fires `accept_welcomes()` task at startup alongside keygen and rooms tasks.
+- Gated the initial missed message fetch in `handle_rooms_loaded()` on `welcomes_processed` being true. Whichever completes last (rooms or welcomes) triggers the fetch.
+- `handle_welcomes_processed()` sets the flag and triggers the fetch if rooms are already loaded.
+- SSE `Connected` handler now fires both `accept_welcomes()` and `fetch_all_missed_messages()` on reconnect.
+- Extracted `fetch_all_missed_messages()` helper to avoid duplicating the fetch logic between `handle_rooms_loaded`, `handle_welcomes_processed`, and `SseUpdate::Connected`.
+- Reset `welcomes_processed = false` in `perform_logout()`.
+
 ## 2026-02-17: Robust Message Synchronization
 
 ### What Changed

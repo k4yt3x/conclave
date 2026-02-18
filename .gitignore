@@ -1,2 +1,5 @@
-/temp
 /target
+
+# Project-specific files
+/temp
+TODO.md

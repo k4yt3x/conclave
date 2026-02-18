@@ -273,6 +273,35 @@ impl ApiClient {
         )?)
     }
 
+    /// Accept (delete) a pending welcome by its server-assigned ID.
+    pub async fn accept_welcome(&self, welcome_id: i64) -> Result<()> {
+        let url = format!("{}/api/v1/welcomes/{welcome_id}/accept", self.base_url);
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf");
+
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.bytes().await?;
+            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                err.message
+            } else {
+                String::from_utf8_lossy(&body).to_string()
+            };
+            return Err(Error::Server {
+                status: status.as_u16(),
+                message: error_msg,
+            });
+        }
+        Ok(())
+    }
+
     // ── Member Management ──────────────────────────────────────────
 
     pub async fn remove_member(

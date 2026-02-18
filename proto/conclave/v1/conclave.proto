@@ -96,6 +96,7 @@ message PendingWelcome {
   string group_id = 1;
   string group_name = 2;
   bytes welcome_message = 3;
+  int64 welcome_id = 4;
 }
 
 message ListPendingWelcomesResponse {

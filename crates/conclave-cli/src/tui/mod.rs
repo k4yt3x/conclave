@@ -87,6 +87,10 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
                 )));
             }
 
+            // Accept pending welcomes (invites received while offline) so
+            // that group mappings exist before we fetch missed messages.
+            accept_pending_welcomes(&api, &mut state, &mls, &config.data_dir).await;
+
             // Restore persisted last_seen_seq and message history per room,
             // then fetch any messages that arrived while we were offline.
             if let Some(store) = &msg_store {
@@ -232,6 +236,10 @@ async fn main_loop(
                 match sse_event {
                     Ok(EsEvent::Open) => {
                         state.connection_status = ConnectionStatus::Connected;
+
+                        // Accept any pending welcomes (invites received
+                        // while SSE was disconnected) before fetching.
+                        accept_pending_welcomes(api, state, mls, &config.data_dir).await;
 
                         // Fetch messages missed while disconnected.
                         if let Some(store) = msg_store {
@@ -524,6 +532,108 @@ fn add_and_render_message(
         // Reset scroll to bottom when new messages arrive.
         state.scroll_offset = 0;
         let _ = render::render_new_message(stdout, state, input, &msg);
+    }
+}
+
+/// Accept any pending welcomes (group invitations received while offline).
+/// Processes each welcome via MLS, updates group mapping, uploads a
+/// replacement key package, and reloads the room list.
+async fn accept_pending_welcomes(
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    mls: &Option<MlsManager>,
+    data_dir: &std::path::Path,
+) {
+    let username = match &state.username {
+        Some(u) => u.clone(),
+        None => return,
+    };
+
+    if mls.is_none() {
+        return;
+    }
+
+    let resp = match api.lock().await.list_pending_welcomes().await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    if resp.welcomes.is_empty() {
+        return;
+    }
+
+    let mut joined_any = false;
+    for welcome in &resp.welcomes {
+        let data_dir_clone = data_dir.to_path_buf();
+        let username_clone = username.clone();
+        let welcome_bytes = welcome.welcome_message.clone();
+
+        let mls_group_id = match tokio::task::spawn_blocking(move || {
+            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+            mls.join_group(&welcome_bytes)
+        })
+        .await
+        {
+            Ok(Ok(id)) => id,
+            Ok(Err(e)) => {
+                state.system_messages.push(DisplayMessage::system(&format!(
+                    "Failed to join #{}: {e}",
+                    welcome.group_name
+                )));
+                continue;
+            }
+            Err(_) => continue,
+        };
+
+        // Delete the welcome from the server so it is not re-processed.
+        let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
+
+        state
+            .group_mapping
+            .insert(welcome.group_id.clone(), mls_group_id);
+        commands::save_group_mapping(data_dir, &state.group_mapping);
+
+        state.system_messages.push(DisplayMessage::system(&format!(
+            "Joined #{} ({})",
+            welcome.group_name, welcome.group_id
+        )));
+        joined_any = true;
+    }
+
+    if joined_any {
+        // Upload a replacement key package.
+        let data_dir_clone = data_dir.to_path_buf();
+        let username_clone = username.clone();
+        if let Ok(Ok(kp)) = tokio::task::spawn_blocking(move || {
+            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
+            mls.generate_key_package()
+        })
+        .await
+        {
+            let _ = api
+                .lock()
+                .await
+                .upload_key_packages(vec![(kp, false)])
+                .await;
+        }
+
+        // Reload rooms to include the newly joined groups.
+        let _ = commands::load_rooms(api, state).await;
+
+        // Advance last_seen_seq for newly joined groups so that
+        // fetch_missed_messages skips the initial commit (seq 1) which
+        // was already processed as part of the welcome.
+        for group_id in state.group_mapping.keys() {
+            if let Some(room) = state.rooms.get_mut(group_id) {
+                if room.last_seen_seq == 0 {
+                    let max_seq = match api.lock().await.get_messages(group_id, 0).await {
+                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                        Err(_) => 0,
+                    };
+                    room.last_seen_seq = max_seq;
+                }
+            }
+        }
     }
 }
 

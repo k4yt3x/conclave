@@ -32,8 +32,12 @@ pub struct Conclave {
     connection_status: ConnectionStatus,
     msg_store: Option<MessageStore>,
     rooms_loaded: bool,
+    welcomes_processed: bool,
     /// Groups currently being fetched — prevents duplicate concurrent fetches.
     fetching_groups: HashSet<String>,
+    /// Sequence numbers learned during welcome processing, applied to rooms
+    /// once they are loaded so fetch_missed_messages skips initial commits.
+    welcome_seqs: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,9 @@ pub struct WelcomeResult {
     pub group_id: String,
     pub group_name: String,
     pub mls_group_id: String,
+    /// Highest message sequence number at the time of joining, so
+    /// fetch_missed_messages skips already-processed commits.
+    pub last_seen_seq: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +161,9 @@ impl Conclave {
             connection_status: ConnectionStatus::Disconnected,
             msg_store: None,
             rooms_loaded: false,
+            welcomes_processed: false,
             fetching_groups: HashSet::new(),
+            welcome_seqs: HashMap::new(),
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -215,7 +224,9 @@ impl Conclave {
                 Message::RoomsLoaded,
             );
 
-            return (app, Task::batch([keygen_task, rooms_task]));
+            let welcome_task = app.accept_welcomes();
+
+            return (app, Task::batch([keygen_task, rooms_task, welcome_task]));
         }
 
         (app, Task::none())
@@ -703,22 +714,6 @@ impl Conclave {
                 self.push_system_message("Reset not yet supported in GUI. Use CLI.");
                 Task::none()
             }
-            Ok(Command::Keygen) => {
-                let data_dir = self.config.data_dir.clone();
-                let username = self.username.clone().unwrap_or_default();
-                Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let mls =
-                                MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            generate_initial_key_packages(&mls)
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
-                    },
-                    Message::KeygenDone,
-                )
-            }
             Ok(Command::Msg { room, text }) => self.send_to_room(&room, &text),
             Err(e) => {
                 self.push_system_message(&format!("{e}"));
@@ -734,44 +729,11 @@ impl Conclave {
             SseUpdate::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
 
-                // Fetch missed messages for all rooms on reconnect
-                let tasks: Vec<_> = self
-                    .rooms
-                    .keys()
-                    .map(|group_id| {
-                        let server_url = self.server_url.clone().unwrap_or_default();
-                        let accept_invalid_certs = self.config.accept_invalid_certs;
-                        let token = self.token.clone().unwrap_or_default();
-                        let last_seq = self
-                            .rooms
-                            .get(group_id)
-                            .map(|r| r.last_seen_seq)
-                            .unwrap_or(0);
-                        let mls_group_id = self.group_mapping.get(group_id).cloned();
-                        let username = self.username.clone();
-                        let data_dir = self.config.data_dir.clone();
-                        let group_id = group_id.clone();
-
-                        Task::perform(
-                            async move {
-                                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                                api.set_token(token);
-                                fetch_and_decrypt(
-                                    &api,
-                                    &group_id,
-                                    last_seq,
-                                    mls_group_id.as_deref(),
-                                    username.as_deref(),
-                                    &data_dir,
-                                )
-                                .await
-                            },
-                            Message::MessagesFetched,
-                        )
-                    })
-                    .collect();
-
-                Task::batch(tasks)
+                // Accept any pending welcomes (invites received while
+                // disconnected) and fetch missed messages for all rooms.
+                let welcome_task = self.accept_welcomes();
+                let fetch_task = self.fetch_all_missed_messages();
+                Task::batch([welcome_task, fetch_task])
             }
             SseUpdate::Connecting => {
                 self.connection_status = ConnectionStatus::Connecting;
@@ -949,6 +911,14 @@ impl Conclave {
             }
         }
 
+        // Apply last_seen_seq values from welcome processing to newly
+        // loaded rooms so fetch_missed_messages skips initial commits.
+        for (group_id, seq) in &self.welcome_seqs {
+            if let Some(room) = self.rooms.get_mut(group_id) {
+                room.last_seen_seq = room.last_seen_seq.max(*seq);
+            }
+        }
+
         // On the very first load (startup catch-up), fetch missed messages
         // for all rooms. Subsequent calls (from /rooms, invite, kick, etc.)
         // skip this since SSE is already connected and last_seen_seq is
@@ -960,49 +930,13 @@ impl Conclave {
             return Task::none();
         }
 
-        // Fetch missed messages for all rooms
-        let tasks: Vec<_> = self
-            .rooms
-            .keys()
-            .filter_map(|group_id| {
-                let mls_group_id = self.group_mapping.get(group_id)?;
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                let last_seq = self
-                    .rooms
-                    .get(group_id)
-                    .map(|r| r.last_seen_seq)
-                    .unwrap_or(0);
-                let mls_group_id = Some(mls_group_id.clone());
-                let username = self.username.clone();
-                let data_dir = self.config.data_dir.clone();
-                let group_id = group_id.clone();
-
-                Some(Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        fetch_and_decrypt(
-                            &api,
-                            &group_id,
-                            last_seq,
-                            mls_group_id.as_deref(),
-                            username.as_deref(),
-                            &data_dir,
-                        )
-                        .await
-                    },
-                    Message::MessagesFetched,
-                ))
-            })
-            .collect();
-
-        if tasks.is_empty() {
-            Task::none()
-        } else {
-            Task::batch(tasks)
+        // Wait for pending welcomes to be processed before fetching.
+        // Welcomes create group mappings needed for decryption.
+        if !self.welcomes_processed {
+            return Task::none();
         }
+
+        self.fetch_all_missed_messages()
     }
 
     fn handle_messages_fetched(
@@ -1077,11 +1011,22 @@ impl Conclave {
         &mut self,
         result: Result<Vec<WelcomeResult>, String>,
     ) -> Task<Message> {
+        let was_processed = self.welcomes_processed;
+        self.welcomes_processed = true;
+
         match result {
             Ok(welcomes) => {
                 for w in &welcomes {
                     self.group_mapping
                         .insert(w.group_id.clone(), w.mls_group_id.clone());
+                    // Store the last_seen_seq so it can be applied to rooms
+                    // once they are loaded. Also apply immediately if the
+                    // room already exists.
+                    self.welcome_seqs
+                        .insert(w.group_id.clone(), w.last_seen_seq);
+                    if let Some(room) = self.rooms.get_mut(&w.group_id) {
+                        room.last_seen_seq = room.last_seen_seq.max(w.last_seen_seq);
+                    }
                     self.push_system_message(&format!("Joined #{} ({})", w.group_name, w.group_id));
                 }
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
@@ -1091,21 +1036,36 @@ impl Conclave {
                     self.active_room = Some(last.group_id.clone());
                 }
 
-                // Reload rooms
+                // Reload rooms (picks up newly joined groups).
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
-                Task::perform(
+                let rooms_task = Task::perform(
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
                         load_rooms_async(&api).await
                     },
                     Message::RoomsLoaded,
-                )
+                );
+
+                // If rooms were already loaded (startup: rooms finished
+                // before welcomes), trigger the initial missed message fetch
+                // now that we have all group mappings.
+                if !was_processed && self.rooms_loaded {
+                    Task::batch([rooms_task, self.fetch_all_missed_messages()])
+                } else {
+                    rooms_task
+                }
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to process welcomes: {e}"));
+
+                // Even on error, the initial fetch should proceed so
+                // rooms that already have mappings get their messages.
+                if !was_processed && self.rooms_loaded {
+                    return self.fetch_all_missed_messages();
+                }
                 Task::none()
             }
         }
@@ -1462,6 +1422,61 @@ impl Conclave {
         )
     }
 
+    /// Fetch missed messages for all rooms that have a group mapping.
+    fn fetch_all_missed_messages(&mut self) -> Task<Message> {
+        let tasks: Vec<_> = self
+            .rooms
+            .keys()
+            .filter(|group_id| {
+                // Skip groups that are already being fetched to prevent
+                // concurrent MLS operations on the same group state.
+                self.group_mapping.contains_key(*group_id)
+                    && !self.fetching_groups.contains(*group_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|group_id| {
+                let mls_group_id = self.group_mapping.get(&group_id)?.clone();
+                self.fetching_groups.insert(group_id.clone());
+                let server_url = self.server_url.clone().unwrap_or_default();
+                let accept_invalid_certs = self.config.accept_invalid_certs;
+                let token = self.token.clone().unwrap_or_default();
+                let last_seq = self
+                    .rooms
+                    .get(&group_id)
+                    .map(|r| r.last_seen_seq)
+                    .unwrap_or(0);
+                let mls_group_id = Some(mls_group_id);
+                let username = self.username.clone();
+                let data_dir = self.config.data_dir.clone();
+
+                Some(Task::perform(
+                    async move {
+                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                        api.set_token(token);
+                        fetch_and_decrypt(
+                            &api,
+                            &group_id,
+                            last_seq,
+                            mls_group_id.as_deref(),
+                            username.as_deref(),
+                            &data_dir,
+                        )
+                        .await
+                    },
+                    Message::MessagesFetched,
+                ))
+            })
+            .collect();
+
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
+    }
+
     fn accept_welcomes(&mut self) -> Task<Message> {
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
@@ -1498,10 +1513,22 @@ impl Conclave {
                     .await
                     .map_err(|e| e.to_string())??;
 
+                    // Delete the welcome from the server so it is not re-processed.
+                    let _ = api.accept_welcome(welcome.welcome_id).await;
+
+                    // Advance last_seen_seq past existing messages so that
+                    // fetch_missed_messages skips the initial commit which
+                    // was already processed as part of the welcome.
+                    let max_seq = match api.get_messages(&group_id, 0).await {
+                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                        Err(_) => 0,
+                    };
+
                     results.push(WelcomeResult {
                         group_id,
                         group_name,
                         mls_group_id,
+                        last_seen_seq: max_seq,
                     });
                 }
 
@@ -1614,7 +1641,6 @@ impl Conclave {
             "/leave                        Leave the room",
             "/part                         Switch away without leaving",
             "/rotate                       Rotate keys (forward secrecy)",
-            "/keygen                       Generate and upload a key package",
             "/info                         Show MLS group details",
             "/rooms                        List your rooms",
             "/unread                       Check rooms for new messages",
@@ -1729,6 +1755,8 @@ impl Conclave {
         self.system_messages.clear();
         self.msg_store = None;
         self.rooms_loaded = false;
+        self.welcomes_processed = false;
+        self.welcome_seqs.clear();
         self.connection_status = ConnectionStatus::Disconnected;
 
         // Delete session file

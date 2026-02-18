@@ -177,6 +177,9 @@ async fn handle_welcome(
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
+        // Delete the welcome from the server so it is not re-processed.
+        let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
+
         state
             .group_mapping
             .insert(welcome.group_id.clone(), mls_group_id);
@@ -203,6 +206,18 @@ async fn handle_welcome(
 
         // Refresh rooms.
         commands::load_rooms(api, state).await?;
+
+        // Advance last_seen_seq so fetch_missed_messages skips the initial
+        // commit that was already processed as part of the welcome.
+        {
+            let max_seq = match api.lock().await.get_messages(&welcome.group_id, 0).await {
+                Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                Err(_) => 0,
+            };
+            if let Some(room) = state.rooms.get_mut(&welcome.group_id) {
+                room.last_seen_seq = room.last_seen_seq.max(max_seq);
+            }
+        }
 
         let msg = DisplayMessage::system(&format!(
             "You have been invited to #{} ({})",

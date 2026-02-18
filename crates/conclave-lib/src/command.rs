@@ -12,7 +12,6 @@ pub enum Command {
         username: String,
         password: String,
     },
-    Keygen,
     Create {
         name: String,
         members: Vec<String>,
@@ -88,7 +87,6 @@ pub fn parse(input: &str) -> Result<Command> {
                 password: parts[3].to_string(),
             })
         }
-        "/keygen" => Ok(Command::Keygen),
         "/create" => {
             if parts.len() < 3 {
                 return Err(Error::Other(
@@ -197,12 +195,6 @@ mod tests {
         assert!(parse("/login example.com alice").is_err());
         assert!(parse("/login example.com").is_err());
         assert!(parse("/login").is_err());
-    }
-
-    #[test]
-    fn test_parse_keygen() {
-        let cmd = parse("/keygen").unwrap();
-        assert!(matches!(cmd, Command::Keygen));
     }
 
     #[test]

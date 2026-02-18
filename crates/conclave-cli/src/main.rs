@@ -45,8 +45,6 @@ enum Commands {
         #[arg(short, long)]
         password: String,
     },
-    /// Generate and upload a new MLS key package.
-    Keygen,
     /// Create a new encrypted group.
     CreateGroup {
         #[arg(short, long)]
@@ -154,6 +152,10 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             let api = ApiClient::new(&server, config.accept_invalid_certs);
             let resp = api.login(&username, &password).await?;
 
+            // Set up an authenticated API client before moving values into session.
+            let mut login_api = ApiClient::new(&server, config.accept_invalid_certs);
+            login_api.set_token(resp.token.clone());
+
             session.server_url = Some(server);
             session.token = Some(resp.token);
             session.user_id = Some(resp.user_id);
@@ -162,19 +164,9 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
 
             // Initialize MLS identity.
             std::fs::create_dir_all(&config.data_dir)?;
-            let _mls = MlsManager::new(&config.data_dir, &username)?;
+            let mls = MlsManager::new(&config.data_dir, &username)?;
 
-            println!("Logged in as {username} (user ID {})", resp.user_id);
-        }
-
-        Commands::Keygen => {
-            let api = api_from_session(&session, config)?;
-            let username = session.username.as_ref().ok_or_else(|| {
-                conclave_lib::error::Error::Other("not logged in — run login first".into())
-            })?;
-            let mls = MlsManager::new(&config.data_dir, username)?;
-
-            // Generate 1 last-resort + 5 regular key packages.
+            // Auto-generate and upload key packages (1 last-resort + 5 regular).
             let mut entries = Vec::with_capacity(6);
             let last_resort = mls.generate_last_resort_key_package()?;
             entries.push((last_resort, true));
@@ -182,9 +174,11 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
                 entries.push((kp, false));
             }
             let count = entries.len();
-            api.upload_key_packages(entries).await?;
+            login_api.upload_key_packages(entries).await?;
+
+            println!("Logged in as {username} (user ID {})", resp.user_id);
             println!(
-                "{count} key packages generated and uploaded (1 last-resort + {} regular).",
+                "{count} key packages uploaded (1 last-resort + {} regular).",
                 count - 1
             );
         }
@@ -295,6 +289,10 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
 
             for welcome in &resp.welcomes {
                 let mls_group_id = mls.join_group(&welcome.welcome_message)?;
+
+                // Delete the welcome from the server so it is not re-processed.
+                let _ = api.accept_welcome(welcome.welcome_id).await;
+
                 mapping.insert(welcome.group_id.clone(), mls_group_id);
                 println!(
                     "Joined group '{}' (ID: {})",

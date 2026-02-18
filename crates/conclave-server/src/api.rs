@@ -575,10 +575,11 @@ async fn list_pending_welcomes(
     let pending: Vec<conclave_proto::PendingWelcome> = welcomes
         .into_iter()
         .map(
-            |(_id, group_id, group_name, welcome_data)| conclave_proto::PendingWelcome {
+            |(id, group_id, group_name, welcome_data)| conclave_proto::PendingWelcome {
                 group_id,
                 group_name,
                 welcome_message: welcome_data,
+                welcome_id: id,
             },
         )
         .collect();

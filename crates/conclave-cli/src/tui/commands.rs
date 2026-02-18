@@ -72,6 +72,29 @@ pub async fn execute(
             std::fs::create_dir_all(&config.data_dir)?;
             *mls = Some(MlsManager::new(&config.data_dir, &username)?);
 
+            // Auto-generate and upload key packages (1 last-resort + 5 regular).
+            if let Some(mls_mgr) = &*mls {
+                match super::generate_initial_key_packages(mls_mgr) {
+                    Ok(entries) => {
+                        let count = entries.len();
+                        if let Err(e) = api.lock().await.upload_key_packages(entries).await {
+                            msgs.push(DisplayMessage::system(&format!(
+                                "Warning: failed to upload key packages: {e}"
+                            )));
+                        } else {
+                            msgs.push(DisplayMessage::system(&format!(
+                                "{count} key packages uploaded."
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        msgs.push(DisplayMessage::system(&format!(
+                            "Warning: failed to generate key packages: {e}"
+                        )));
+                    }
+                }
+            }
+
             // Load group mapping.
             state.group_mapping = load_group_mapping(&config.data_dir);
 
@@ -83,19 +106,6 @@ pub async fn execute(
                 resp.user_id
             )));
             start_sse = true;
-        }
-
-        Command::Keygen => {
-            let mls_mgr = mls
-                .as_ref()
-                .ok_or_else(|| Error::Other("not logged in".into()))?;
-            let entries = super::generate_initial_key_packages(mls_mgr)?;
-            let count = entries.len();
-            api.lock().await.upload_key_packages(entries).await?;
-            msgs.push(DisplayMessage::system(&format!(
-                "{count} key packages generated and uploaded (1 last-resort + {} regular).",
-                count - 1
-            )));
         }
 
         Command::Create { name, members } => {
@@ -150,14 +160,19 @@ pub async fn execute(
             }
 
             let mut last_group_id = None;
+            let mut joined_group_ids = Vec::new();
 
             for welcome in &resp.welcomes {
                 let mls_group_id = mls_mgr.join_group(&welcome.welcome_message)?;
+
+                // Delete the welcome from the server so it is not re-processed.
+                let _ = api.lock().await.accept_welcome(welcome.welcome_id).await;
 
                 state
                     .group_mapping
                     .insert(welcome.group_id.clone(), mls_group_id);
                 last_group_id = Some(welcome.group_id.clone());
+                joined_group_ids.push(welcome.group_id.clone());
 
                 msgs.push(DisplayMessage::system(&format!(
                     "Joined #{} ({})",
@@ -180,6 +195,21 @@ pub async fn execute(
             if let Some(gid) = last_group_id {
                 state.active_room = Some(gid);
                 state.scroll_offset = 0;
+            }
+
+            // Advance last_seen_seq for newly joined groups so that
+            // fetch_missed_messages skips the initial commit (seq 1)
+            // which was already processed as part of the welcome.
+            for group_id in &joined_group_ids {
+                if let Some(room) = state.rooms.get_mut(group_id) {
+                    if room.last_seen_seq == 0 {
+                        let max_seq = match api.lock().await.get_messages(group_id, 0).await {
+                            Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                            Err(_) => 0,
+                        };
+                        room.last_seen_seq = max_seq;
+                    }
+                }
             }
         }
 
@@ -684,7 +714,6 @@ pub async fn execute(
             let help = [
                 "/register <server> <user> <pass>  Register a new account",
                 "/login <server> <user> <pass>     Login to the server",
-                "/keygen                       Generate and upload a key package",
                 "/create <name> <user1,user2>  Create a room with members",
                 "/join                         Accept pending invitations",
                 "/join <room>                  Switch to a room",
