@@ -325,6 +325,22 @@ The client persists the following files in `data_dir`:
 - **Identity**: `BasicCredential` with username bytes (suitable for the current trust model; X.509 can be added later)
 - **Storage**: SQLite-backed via `mls-rs-provider-sqlite` with `FileConnectionStrategy`
 
+#### Epoch Retention
+
+MLS groups advance through epochs on each commit (member add/remove, key rotation, external rejoin). The mls-rs default epoch retention is 3, which is too tight for real-world offline periods. Conclave configures `with_max_epoch_retention(16)` on the group state storage, allowing clients to decrypt messages from up to 16 prior epochs. This means a client can be offline through 16 group state transitions (commits) and still catch up on missed messages. RFC 9420 does not specify a recommended epoch retention value — this is left to implementations.
+
+Regular application messages (chat) do not advance the epoch. A client can be offline through an unlimited number of chat messages within the same epoch.
+
+#### Decryption Error Handling
+
+`decrypt_message()` returns a `DecryptedMessage` enum with four variants:
+- `Application(Vec<u8>)`: Successfully decrypted application message.
+- `Commit(CommitInfo)`: Successfully processed commit with roster change details.
+- `None`: Expected non-error condition (e.g., processing own commit after welcome).
+- `Failed(String)`: Decryption failure with reason (epoch evicted, key missing, invalid signature, etc.).
+
+When `Failed` is returned, both CLI and GUI clients display a system message notifying the user of the undecryptable message (with sequence number and reason) and continue processing subsequent messages. The `last_seen_seq` is still advanced — permanently undecryptable messages cannot be retried, so blocking on them would cause infinite retry loops. Users can `/reset` to rejoin the group with fresh state if needed.
+
 #### MLS Operations
 
 | Operation           | mls-rs API                                                        |

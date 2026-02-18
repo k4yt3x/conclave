@@ -365,6 +365,12 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
                                 println!("  [{}] * {removed} was removed", msg.sequence_num);
                             }
                         }
+                        Ok(conclave_lib::mls::DecryptedMessage::Failed(reason)) => {
+                            eprintln!(
+                                "  [{}] {}: <decryption failed: {reason}>",
+                                msg.sequence_num, msg.sender_username
+                            );
+                        }
                         Ok(conclave_lib::mls::DecryptedMessage::None) => {}
                         Err(e) => {
                             eprintln!(

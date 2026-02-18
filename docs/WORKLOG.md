@@ -1,5 +1,36 @@
 # Conclave Work Log
 
+## 2026-02-17: Robust Message Synchronization
+
+### What Changed
+
+Improved MLS message decryption error handling and epoch retention to make message synchronization more robust when clients are offline or encounter desync.
+
+#### Problem
+
+When `decrypt_message()` failed (e.g., epoch data evicted after being offline too long), the error was silently swallowed as `DecryptedMessage::None` and `last_seen_seq` advanced past the undecryptable messages — making the loss permanent and invisible. The default mls-rs epoch retention of 3 was also too tight for real-world offline periods (3 commits = 3 member changes or key rotations would evict old epoch secrets).
+
+#### DecryptedMessage::Failed Variant
+
+- **`conclave-lib/src/mls.rs`**: Added `DecryptedMessage::Failed(String)` variant. `decrypt_message()` now distinguishes between "can't process message from self" (harmless, returns `None`) and real decryption errors (returns `Failed(reason)`). Uses string matching on the `Display` output since `MlsError` is `#[non_exhaustive]` and Conclave wraps it as `Error::Mls(String)`.
+- **`conclave-cli/src/tui/events.rs`**: `handle_new_message()` emits a system message on `Failed` with the failure reason and sequence number.
+- **`conclave-cli/src/tui/mod.rs`**: `fetch_missed_messages()` emits a system message on `Failed` and continues processing subsequent messages.
+- **`conclave-cli/src/main.rs`**: One-shot `messages` subcommand prints failures to stderr.
+- **`conclave-gui/src/app.rs`**: `fetch_and_decrypt()` creates a system message (`is_system: true`) on `Failed` and continues.
+
+#### Epoch Retention Increase
+
+- **`conclave-lib/src/mls.rs`**: Added `EPOCH_RETENTION` constant (16). Configured `with_max_epoch_retention(EPOCH_RETENTION)` on the SQLite group state storage in `build_client()`. This extends the window from 3 to 16 epochs, allowing offline catch-up across many more commits. RFC 9420 does not specify a recommended value — this is left to implementations.
+
+#### GUI Fetch Deduplication
+
+- **`conclave-gui/src/app.rs`**: Added `fetching_groups: HashSet<String>` field to `Conclave`. When an SSE `NewMessage` event arrives, the handler skips spawning a `fetch_and_decrypt` task if one is already in-flight for that group. The group ID is inserted before spawning and removed in `handle_messages_fetched()`. This prevents parallel tasks from racing on the same group's MLS state.
+
+#### Design Decisions
+
+- `last_seen_seq` is still advanced past failed messages. Permanently undecryptable messages (evicted epoch, corrupted state) cannot be retried, so blocking would cause infinite retry loops. Instead, the user is notified and can `/reset` if needed.
+- String matching on error messages is pragmatic: `MlsError` is `#[non_exhaustive]`, and the "can't process message from self" case is the only expected error that should be silent.
+
 ## 2026-02-17: Configurable GUI Theme and XDG Compliance
 
 ### What Changed

@@ -128,6 +128,15 @@ async fn handle_new_message(
                     ));
                 }
             }
+            DecryptedMessage::Failed(reason) => {
+                results.push((
+                    group_id.clone(),
+                    DisplayMessage::system(&format!(
+                        "Failed to decrypt message (seq {}): {reason}",
+                        stored_msg.sequence_num
+                    )),
+                ));
+            }
             DecryptedMessage::None => {}
         }
 

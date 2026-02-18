@@ -19,6 +19,14 @@ use crate::error::{Error, Result};
 
 const CIPHERSUITE: CipherSuite = CipherSuite::CURVE448_CHACHA;
 
+/// Number of prior MLS epochs to retain for decrypting old messages.
+///
+/// The mls-rs default is 3, which is too tight — if a client is offline while
+/// 4+ commits occur (invites, kicks, key rotations), messages from the oldest
+/// epoch become permanently undecryptable. A value of 16 gives a comfortable
+/// buffer for typical offline periods at minimal storage cost.
+const EPOCH_RETENTION: u64 = 16;
+
 /// Result of decrypting an incoming MLS message.
 pub enum DecryptedMessage {
     /// Application message with plaintext bytes.
@@ -27,6 +35,9 @@ pub enum DecryptedMessage {
     Commit(CommitInfo),
     /// Other MLS message types (proposals, etc.) — no visible content.
     None,
+    /// Decryption failed with a meaningful error (e.g., epoch evicted, key
+    /// missing). Callers should notify the user and may suggest `/reset`.
+    Failed(String),
 }
 
 /// Information about changes in a commit.
@@ -126,6 +137,11 @@ impl MlsManager {
         let secret_key =
             mls_rs_core::crypto::SignatureSecretKey::from(self.signing_key_bytes.clone());
 
+        let group_state = storage
+            .group_state_storage()
+            .map_err(|e| Error::Mls(format!("group state storage: {e}")))?
+            .with_max_epoch_retention(EPOCH_RETENTION);
+
         let client = Client::builder()
             .crypto_provider(OpensslCryptoProvider::default())
             .identity_provider(BasicIdentityProvider)
@@ -140,11 +156,7 @@ impl MlsManager {
                     .pre_shared_key_storage()
                     .map_err(|e| Error::Mls(format!("PSK storage: {e}")))?,
             )
-            .group_state_storage(
-                storage
-                    .group_state_storage()
-                    .map_err(|e| Error::Mls(format!("group state storage: {e}")))?,
-            )
+            .group_state_storage(group_state)
             .signing_identity(signing_identity, secret_key, CIPHERSUITE)
             .build();
 
@@ -389,10 +401,18 @@ impl MlsManager {
 
         let received = match group.process_incoming_message(msg) {
             Ok(r) => r,
-            Err(_) => {
-                // Messages from prior epochs (e.g., commits already processed via welcome)
-                // are expected and can be safely skipped.
-                return Ok(DecryptedMessage::None);
+            Err(e) => {
+                let err_str = e.to_string();
+
+                // Our own commits (e.g., the initial commit already applied via
+                // welcome) produce "can't process message from self" — harmless.
+                if err_str.contains("can't process message from self") {
+                    return Ok(DecryptedMessage::None);
+                }
+
+                // All other errors indicate a real problem: epoch evicted,
+                // key missing, invalid signature, state desync, etc.
+                return Ok(DecryptedMessage::Failed(err_str));
             }
         };
 
@@ -1212,7 +1232,7 @@ mod tests {
 
         let carol_result = carol.decrypt_message(&group_id, &ciphertext).unwrap();
         match carol_result {
-            DecryptedMessage::None => {}
+            DecryptedMessage::None | DecryptedMessage::Failed(_) => {}
             DecryptedMessage::Application(_) => {
                 panic!("carol must NOT be able to decrypt after removal")
             }

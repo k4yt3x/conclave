@@ -589,6 +589,13 @@ async fn fetch_missed_messages(
                     store.push_message(&group_id, &msg);
                     state.push_room_message(&group_id, msg);
                 }
+                conclave_lib::mls::DecryptedMessage::Failed(reason) => {
+                    let msg = DisplayMessage::system(&format!(
+                        "Failed to decrypt message (seq {}): {reason}",
+                        stored_msg.sequence_num
+                    ));
+                    state.push_room_message(&group_id, msg);
+                }
                 _ => {}
             }
 

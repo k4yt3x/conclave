@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -64,9 +64,19 @@ Five crates in `crates/`:
 - **mls-rs** (0.53): AWS-maintained, API may change between versions. Pin carefully.
 - Rust edition 2024 with `use<>` precise capture syntax (needed for `impl IntoResponse` returns in axum handlers).
 
+## RFC 9420 Compliance
+
+Conclave's end-to-end encryption is built on the Messaging Layer Security (MLS) protocol defined in RFC 9420. All MLS-related design choices, protocol flows, and implementation details must comply with the RFC.
+
+- **Reference**: https://www.rfc-editor.org/rfc/rfc9420.txt
+- When making design decisions involving MLS (group management, key packages, epochs, commits, proposals, credentials, etc.), always refer to the RFC for guidance.
+- When uncertain about MLS behavior or conventions, consult the RFC before making assumptions.
+- The mls-rs library source is available under `temp/` for implementation-level reference when the RFC alone is insufficient.
+
 ## Conventions
 
-- Update `docs/WORKLOG.md` and `AGENT.md` after completing work.
+- Update `docs/WORKLOG.md` and `AGENTS.md` after completing work.
+- Update `docs/SPEC.md` when changes affect the technical specification (architecture, protocol, API, MLS behavior, storage, etc.).
 - `docs/SPEC.md` is the authoritative technical specification.
 - Config lives in `~/.config/conclave/`, data in `~/.local/share/conclave/` (XDG).
 - Server URL is specified at login time, not in config files — stored in `session.toml`.

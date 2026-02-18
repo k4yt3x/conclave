@@ -1,6 +1,6 @@
 use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use conclave_lib::api::ApiClient;
 use conclave_lib::command::Command;
@@ -32,6 +32,8 @@ pub struct Conclave {
     connection_status: ConnectionStatus,
     msg_store: Option<MessageStore>,
     rooms_loaded: bool,
+    /// Groups currently being fetched — prevents duplicate concurrent fetches.
+    fetching_groups: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +154,7 @@ impl Conclave {
             connection_status: ConnectionStatus::Disconnected,
             msg_store: None,
             rooms_loaded: false,
+            fetching_groups: HashSet::new(),
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -779,6 +782,13 @@ impl Conclave {
                 Task::none()
             }
             SseUpdate::NewMessage { group_id } => {
+                // Skip if we're already fetching this group to prevent
+                // concurrent MLS operations on the same group state.
+                if self.fetching_groups.contains(&group_id) {
+                    return Task::none();
+                }
+                self.fetching_groups.insert(group_id.clone());
+
                 // Fetch and decrypt new messages
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
@@ -1001,6 +1011,9 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok(fetched) => {
+                // Allow new fetches for this group now that we're done.
+                self.fetching_groups.remove(&fetched.group_id);
+
                 for msg in &fetched.messages {
                     let display = if msg.is_system {
                         DisplayMessage::system(&msg.content)
@@ -1825,6 +1838,18 @@ async fn fetch_and_decrypt(
                         is_system: true,
                     });
                 }
+            }
+            conclave_lib::mls::DecryptedMessage::Failed(reason) => {
+                messages.push(DecryptedMsg {
+                    sender: String::new(),
+                    content: format!(
+                        "Failed to decrypt message (seq {}): {reason}",
+                        stored_msg.sequence_num
+                    ),
+                    timestamp: stored_msg.created_at as i64,
+                    sequence_num: stored_msg.sequence_num,
+                    is_system: true,
+                });
             }
             conclave_lib::mls::DecryptedMessage::None => {}
         }
