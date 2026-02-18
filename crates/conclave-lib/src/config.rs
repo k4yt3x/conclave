@@ -141,3 +141,252 @@ pub fn generate_initial_key_packages(
     }
     Ok(entries)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_client_config_default() {
+        let config = ClientConfig::default();
+        assert!(!config.accept_invalid_certs);
+        assert!(!config.data_dir.as_os_str().is_empty());
+        assert!(!config.config_dir.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_session_state_default() {
+        let state = SessionState::default();
+        assert!(state.server_url.is_none());
+        assert!(state.token.is_none());
+        assert!(state.user_id.is_none());
+        assert!(state.username.is_none());
+    }
+
+    #[test]
+    fn test_session_state_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = SessionState {
+            server_url: Some("https://example.com".into()),
+            token: Some("tok123".into()),
+            user_id: Some(42),
+            username: Some("alice".into()),
+        };
+        state.save(&dir.path().to_path_buf()).unwrap();
+        let loaded = SessionState::load(&dir.path().to_path_buf());
+        assert_eq!(loaded.server_url.as_deref(), Some("https://example.com"));
+        assert_eq!(loaded.token.as_deref(), Some("tok123"));
+        assert_eq!(loaded.user_id, Some(42));
+        assert_eq!(loaded.username.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn test_session_state_load_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let loaded = SessionState::load(&dir.path().to_path_buf());
+        assert!(loaded.server_url.is_none());
+        assert!(loaded.token.is_none());
+    }
+
+    #[test]
+    fn test_session_state_overwrite() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let state1 = SessionState {
+            server_url: Some("https://first.com".into()),
+            token: Some("tok1".into()),
+            user_id: Some(1),
+            username: Some("alice".into()),
+        };
+        state1.save(&path).unwrap();
+
+        let state2 = SessionState {
+            server_url: Some("https://second.com".into()),
+            token: Some("tok2".into()),
+            user_id: Some(2),
+            username: Some("bob".into()),
+        };
+        state2.save(&path).unwrap();
+
+        let loaded = SessionState::load(&path);
+        assert_eq!(loaded.server_url.as_deref(), Some("https://second.com"));
+        assert_eq!(loaded.username.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn test_session_state_creates_nested_dirs() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("a").join("b").join("c");
+        let state = SessionState {
+            server_url: Some("https://example.com".into()),
+            ..Default::default()
+        };
+        state.save(&nested).unwrap();
+        let loaded = SessionState::load(&nested);
+        assert_eq!(loaded.server_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn test_session_state_partial_data() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let state = SessionState {
+            server_url: Some("https://example.com".into()),
+            token: None,
+            user_id: None,
+            username: None,
+        };
+        state.save(&path).unwrap();
+        let loaded = SessionState::load(&path);
+        assert_eq!(loaded.server_url.as_deref(), Some("https://example.com"));
+        assert!(loaded.token.is_none());
+        assert!(loaded.user_id.is_none());
+        assert!(loaded.username.is_none());
+    }
+
+    #[test]
+    fn test_group_mapping_empty() {
+        let dir = TempDir::new().unwrap();
+        let mapping = load_group_mapping(dir.path());
+        assert!(mapping.is_empty());
+    }
+
+    #[test]
+    fn test_group_mapping_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let mut mapping = HashMap::new();
+        mapping.insert("server-uuid-1".into(), "mls-group-1".into());
+        mapping.insert("server-uuid-2".into(), "mls-group-2".into());
+        save_group_mapping(dir.path(), &mapping);
+        let loaded = load_group_mapping(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.get("server-uuid-1").unwrap(), "mls-group-1");
+        assert_eq!(loaded.get("server-uuid-2").unwrap(), "mls-group-2");
+    }
+
+    #[test]
+    fn test_group_mapping_overwrite() {
+        let dir = TempDir::new().unwrap();
+        let mut map1 = HashMap::new();
+        map1.insert("key1".into(), "val1".into());
+        save_group_mapping(dir.path(), &map1);
+
+        let mut map2 = HashMap::new();
+        map2.insert("key2".into(), "val2".into());
+        save_group_mapping(dir.path(), &map2);
+
+        let loaded = load_group_mapping(dir.path());
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("key2"));
+        assert!(!loaded.contains_key("key1"));
+    }
+
+    #[test]
+    fn test_generate_initial_key_packages_count() {
+        let dir = TempDir::new().unwrap();
+        let mls = MlsManager::new(dir.path(), "testuser").unwrap();
+        let entries = generate_initial_key_packages(&mls).unwrap();
+        assert_eq!(entries.len(), 6);
+
+        let last_resort_count = entries.iter().filter(|(_, lr)| *lr).count();
+        assert_eq!(last_resort_count, 1);
+
+        let regular_count = entries.iter().filter(|(_, lr)| !*lr).count();
+        assert_eq!(regular_count, 5);
+
+        // First entry should be the last-resort package
+        assert!(entries[0].1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_session_state_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let state = SessionState {
+            server_url: Some("https://example.com".into()),
+            ..Default::default()
+        };
+        state.save(&path).unwrap();
+
+        let session_path = path.join("session.toml");
+        let perms = std::fs::metadata(&session_path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o600);
+
+        let dir_perms = std::fs::metadata(&path).unwrap().permissions();
+        assert_eq!(dir_perms.mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn test_group_mapping_empty_values() {
+        let dir = TempDir::new().unwrap();
+        let mut mapping = HashMap::new();
+        mapping.insert("key1".into(), "".into());
+        mapping.insert("key2".into(), "".into());
+        save_group_mapping(dir.path(), &mapping);
+        let loaded = load_group_mapping(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.get("key1").unwrap(), "");
+        assert_eq!(loaded.get("key2").unwrap(), "");
+    }
+
+    #[test]
+    fn test_group_mapping_many_entries() {
+        let dir = TempDir::new().unwrap();
+        let mut mapping = HashMap::new();
+        for i in 0..100 {
+            mapping.insert(format!("uuid-{i}"), format!("mls-group-{i}"));
+        }
+        save_group_mapping(dir.path(), &mapping);
+        let loaded = load_group_mapping(dir.path());
+        assert_eq!(loaded.len(), 100);
+        assert_eq!(loaded.get("uuid-0").unwrap(), "mls-group-0");
+        assert_eq!(loaded.get("uuid-50").unwrap(), "mls-group-50");
+        assert_eq!(loaded.get("uuid-99").unwrap(), "mls-group-99");
+    }
+
+    #[test]
+    fn test_session_state_load_malformed_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.toml");
+        std::fs::write(&path, "this is not valid [[[ toml {{{{").unwrap();
+        let loaded = SessionState::load(&dir.path().to_path_buf());
+        assert!(loaded.server_url.is_none());
+        assert!(loaded.token.is_none());
+        assert!(loaded.user_id.is_none());
+        assert!(loaded.username.is_none());
+    }
+
+    #[test]
+    fn test_client_config_load_missing_file() {
+        // ClientConfig::load() falls back to defaults when the config file does not exist.
+        // We cannot easily redirect the config dir without unsafe env var manipulation,
+        // so we verify that load() returns a valid config matching defaults.
+        let config = ClientConfig::load();
+        let default_config = ClientConfig::default();
+        assert_eq!(config.accept_invalid_certs, default_config.accept_invalid_certs);
+    }
+
+    #[test]
+    fn test_generate_initial_key_packages_structure() {
+        let dir = TempDir::new().unwrap();
+        let mls = MlsManager::new(dir.path(), "testuser").unwrap();
+        let entries = generate_initial_key_packages(&mls).unwrap();
+        assert_eq!(entries.len(), 6);
+
+        // All key packages should have non-empty data bytes.
+        for (data, _) in &entries {
+            assert!(!data.is_empty());
+        }
+
+        // First entry should be last-resort.
+        assert!(entries[0].1);
+
+        // Remaining 5 entries should be regular (not last-resort).
+        for (_, is_last_resort) in &entries[1..] {
+            assert!(!is_last_resort);
+        }
+    }
+}

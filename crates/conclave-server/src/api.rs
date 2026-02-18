@@ -78,7 +78,7 @@ fn decode_proto<M: Message + Default>(body: &Bytes) -> Result<M> {
 
 /// Validate that a key package blob is a structurally valid MLS KeyPackage
 /// message per RFC 9420 Section 6. Checks the version (must be MLS 1.0 = 1)
-/// and wire format (must be mls_key_package = 3). Full cryptographic
+/// and wire format (must be mls_key_package = 5). Full cryptographic
 /// validation is left to the consuming client.
 fn validate_key_package_wire_format(data: &[u8]) -> Result<()> {
     if data.len() < 4 {
@@ -93,10 +93,10 @@ fn validate_key_package_wire_format(data: &[u8]) -> Result<()> {
             "unsupported MLS version {version}, expected 1"
         )));
     }
-    // RFC 9420 Section 6: WireFormat mls_key_package = 3
-    if wire_format != 3 {
+    // RFC 9420 Section 6: WireFormat mls_key_package = 5
+    if wire_format != 5 {
         return Err(Error::BadRequest(format!(
-            "expected MLS wire format mls_key_package (3), got {wire_format}"
+            "expected MLS wire format mls_key_package (5), got {wire_format}"
         )));
     }
     Ok(())

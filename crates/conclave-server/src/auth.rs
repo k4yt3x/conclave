@@ -137,4 +137,38 @@ mod tests {
             "verifying against an invalid hash format should return Err"
         );
     }
+
+    #[test]
+    fn test_dummy_hash_is_valid() {
+        let hash = dummy_hash();
+        assert!(
+            hash.starts_with("$argon2id$"),
+            "dummy hash should be a valid Argon2id hash, got: {hash}"
+        );
+    }
+
+    #[test]
+    fn test_generate_token_is_hex() {
+        let token = generate_token();
+        assert!(
+            hex::decode(&token).is_ok(),
+            "token should be valid hexadecimal, got: {token}"
+        );
+    }
+
+    #[test]
+    fn test_hash_password_empty_input() {
+        let result = hash_password("");
+        assert!(
+            result.is_ok(),
+            "hashing an empty string should not panic or error"
+        );
+    }
+
+    #[test]
+    fn test_verify_password_empty_password() {
+        let hash = hash_password("real_password").expect("hashing should succeed");
+        let result = verify_password("", &hash).expect("verification should succeed");
+        assert!(!result, "empty password should not verify against a real hash");
+    }
 }

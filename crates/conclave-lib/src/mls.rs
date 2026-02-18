@@ -31,6 +31,7 @@ const CIPHERSUITE: CipherSuite = CipherSuite::CURVE448_CHACHA;
 const EPOCH_RETENTION: u64 = 16;
 
 /// Result of decrypting an incoming MLS message.
+#[derive(Debug)]
 pub enum DecryptedMessage {
     /// Application message with plaintext bytes.
     Application(Vec<u8>),
@@ -44,6 +45,7 @@ pub enum DecryptedMessage {
 }
 
 /// Information about changes in a commit.
+#[derive(Debug)]
 pub struct CommitInfo {
     pub members_added: Vec<String>,
     pub members_removed: Vec<String>,
@@ -1326,6 +1328,1011 @@ mod tests {
             DecryptedMessage::Commit(_) => {
                 panic!("carol must NOT process this as a commit")
             }
+        }
+    }
+
+    // ── Multi-Epoch Decryption (RFC 9420 §14 epoch retention) ─────
+
+    #[test]
+    fn test_multi_epoch_decryption() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+        assert_eq!(bob_group_id, group_id);
+
+        let plaintext = b"message at epoch N";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+        bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+
+        let decrypted = bob.decrypt_message(&bob_group_id, &ciphertext).unwrap();
+        match decrypted {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_key_rotations() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        for _ in 0..3 {
+            let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+            bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+        }
+
+        let plaintext = b"after rotations";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+        let decrypted = bob.decrypt_message(&bob_group_id, &ciphertext).unwrap();
+        match decrypted {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Bidirectional Messaging ───────────────────────────────────
+
+    #[test]
+    fn test_bidirectional_messaging() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let ct1 = alice.encrypt_message(&group_id, b"hello bob").unwrap();
+        let dec1 = bob.decrypt_message(&bob_group_id, &ct1).unwrap();
+        match dec1 {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"hello bob"),
+            other => panic!("expected Application, got {other:?}"),
+        }
+
+        let ct2 = bob.encrypt_message(&bob_group_id, b"hello alice").unwrap();
+        let dec2 = alice.decrypt_message(&group_id, &ct2).unwrap();
+        match dec2 {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"hello alice"),
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sequential_messages_same_sender() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        for i in 0..5 {
+            let msg = format!("message {i}");
+            let ct = alice.encrypt_message(&group_id, msg.as_bytes()).unwrap();
+            let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+            match dec {
+                DecryptedMessage::Application(data) => {
+                    assert_eq!(data, msg.as_bytes().to_vec());
+                }
+                other => panic!("expected Application for message {i}, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Message Content Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_empty_message_roundtrip() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let ct = alice.encrypt_message(&group_id, b"").unwrap();
+        let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+        match dec {
+            DecryptedMessage::Application(data) => assert!(data.is_empty()),
+            other => panic!("expected empty Application, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_large_message_roundtrip() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let large_msg = vec![0x42u8; 64 * 1024];
+        let ct = alice.encrypt_message(&group_id, &large_msg).unwrap();
+        let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+        match dec {
+            DecryptedMessage::Application(data) => assert_eq!(data, large_msg),
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unicode_content_roundtrip() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let unicode_msg = "Hello 🌍! Привет мир! こんにちは世界!";
+        let ct = alice
+            .encrypt_message(&group_id, unicode_msg.as_bytes())
+            .unwrap();
+        let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+        match dec {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(String::from_utf8(data).unwrap(), unicode_msg);
+            }
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Forward Secrecy (RFC 9420 §16.1) ──────────────────────────
+
+    #[test]
+    fn test_forward_secrecy_removed_member_cannot_decrypt() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let bob_index = alice.find_member_index(&group_id, "bob").unwrap().unwrap();
+        let (remove_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
+
+        let result = bob.decrypt_message(&bob_group_id, &remove_commit).unwrap();
+        match result {
+            DecryptedMessage::Commit(info) => assert!(info.self_removed),
+            other => panic!("expected Commit with self_removed, got {other:?}"),
+        }
+
+        let ct = alice
+            .encrypt_message(&group_id, b"secret post-removal")
+            .unwrap();
+
+        let bob_result = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+        match bob_result {
+            DecryptedMessage::Application(_) => {
+                panic!("removed member must not decrypt post-removal messages")
+            }
+            DecryptedMessage::Failed(_) | DecryptedMessage::None => {}
+            DecryptedMessage::Commit(_) => panic!("should not be a commit"),
+        }
+    }
+
+    // ── Post-Compromise Security (RFC 9420 §16.2) ─────────────────
+
+    #[test]
+    fn test_post_compromise_security_via_rotation() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+        bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+
+        let ct = alice
+            .encrypt_message(&group_id, b"after key rotation")
+            .unwrap();
+        let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
+        match dec {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, b"after key rotation");
+            }
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Three-Member Group ────────────────────────────────────────
+
+    #[test]
+    fn test_three_member_group_messaging() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let carol_kp = carol.generate_key_package().unwrap();
+
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob_kp);
+        members.insert("carol".to_string(), carol_kp);
+
+        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
+        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
+        let carol_gid = carol.join_group(welcome_map.get("carol").unwrap()).unwrap();
+        assert_eq!(bob_gid, group_id);
+        assert_eq!(carol_gid, group_id);
+
+        let ct = alice.encrypt_message(&group_id, b"hello all").unwrap();
+        match bob.decrypt_message(&bob_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"hello all"),
+            other => panic!("bob: expected Application, got {other:?}"),
+        }
+        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"hello all"),
+            other => panic!("carol: expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Sequential Member Addition ────────────────────────────────
+
+    #[test]
+    fn test_sequential_member_addition() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
+        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
+
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (invite_commit, carol_welcome_map, _gi) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+
+        bob.decrypt_message(&bob_gid, &invite_commit).unwrap();
+
+        let carol_gid = carol
+            .join_group(carol_welcome_map.get("carol").unwrap())
+            .unwrap();
+        assert_eq!(carol_gid, group_id);
+
+        let ct = alice.encrypt_message(&group_id, b"trio message").unwrap();
+        match bob.decrypt_message(&bob_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"trio message"),
+            other => panic!("bob: expected Application, got {other:?}"),
+        }
+        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"trio message"),
+            other => panic!("carol: expected Application, got {other:?}"),
+        }
+    }
+
+    // ── External Rejoin ───────────────────────────────────────────
+
+    #[test]
+    fn test_external_rejoin_without_removal() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, gi) = setup_alice_bob();
+
+        // bob2 uses external commit to join (without removing old bob)
+        let (_dir_b2, bob2) = create_manager("bob2");
+        let (rejoin_gid, rejoin_commit) = bob2.external_rejoin_group(&gi, None).unwrap();
+        assert_eq!(rejoin_gid, group_id);
+        assert!(!rejoin_commit.is_empty());
+
+        let result = alice.decrypt_message(&group_id, &rejoin_commit).unwrap();
+        match result {
+            DecryptedMessage::Commit(_) => {}
+            other => panic!("expected Commit, got {other:?}"),
+        }
+    }
+
+    // ── Group Info Details ─────────────────────────────────────────
+
+    #[test]
+    fn test_group_info_after_member_add() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        bob.join_group(&welcome).unwrap();
+
+        let details = alice.group_info_details(&group_id).unwrap();
+        assert_eq!(details.member_count, 2);
+        assert!(details.epoch > 0);
+
+        let member_names: Vec<&str> = details.members.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(member_names.contains(&"alice"));
+        assert!(member_names.contains(&"bob"));
+    }
+
+    // ── Key Package Properties ────────────────────────────────────
+
+    #[test]
+    fn test_key_package_uniqueness() {
+        let (_dir, mgr) = create_manager("alice");
+        let kp1 = mgr.generate_key_package().unwrap();
+        let kp2 = mgr.generate_key_package().unwrap();
+        assert_ne!(kp1, kp2, "each key package must be unique");
+    }
+
+    #[test]
+    fn test_last_resort_differs_from_regular() {
+        let (_dir, mgr) = create_manager("alice");
+        let regular = mgr.generate_key_package().unwrap();
+        let last_resort = mgr.generate_last_resort_key_package().unwrap();
+        assert_ne!(
+            regular, last_resort,
+            "last-resort should differ from regular key package"
+        );
+    }
+
+    // ── Cipher Suite Verification ─────────────────────────────────
+
+    #[test]
+    fn test_cipher_suite_matches_configured() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        let details = alice.group_info_details(&group_id).unwrap();
+        // CIPHERSUITE constant resolves to CipherSuite(6), which is
+        // the 256-bit security suite used by Conclave.
+        let expected = format!("{:?}", CIPHERSUITE);
+        assert_eq!(details.cipher_suite, expected);
+    }
+
+    // ── Self-Message Handling ─────────────────────────────────────
+
+    #[test]
+    fn test_decrypt_own_message_returns_failed_self() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        bob.join_group(&welcome).unwrap();
+
+        let ct = alice.encrypt_message(&group_id, b"self-test").unwrap();
+        let result = alice.decrypt_message(&group_id, &ct).unwrap();
+        // mls-rs returns "message from self can't be processed" which our code
+        // maps to either DecryptedMessage::None or DecryptedMessage::Failed
+        match result {
+            DecryptedMessage::None | DecryptedMessage::Failed(_) => {}
+            other => panic!("decrypting own message should return None or Failed, got {other:?}"),
+        }
+    }
+
+    // ── Data Directory ────────────────────────────────────────────
+
+    #[test]
+    fn test_manager_data_dir() {
+        let (dir, mgr) = create_manager("alice");
+        assert_eq!(mgr.data_dir(), dir.path());
+    }
+
+    // ── Invalid Welcome ───────────────────────────────────────────
+
+    #[test]
+    fn test_join_with_invalid_welcome_fails() {
+        let (_dir, mgr) = create_manager("alice");
+        let result = mgr.join_group(b"definitely not a valid welcome");
+        assert!(result.is_err());
+    }
+
+    // ── Find Member Index ─────────────────────────────────────────
+
+    #[test]
+    fn test_find_member_index_for_self() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        let alice_index = alice.find_member_index(&group_id, "alice").unwrap();
+        assert!(alice_index.is_some());
+    }
+
+    #[test]
+    fn test_find_member_index_nonexistent_user() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        let result = alice.find_member_index(&group_id, "nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── Epoch Advances ────────────────────────────────────────────
+
+    #[test]
+    fn test_epoch_advances_on_add() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        let epoch_after_create = alice.group_info_details(&group_id).unwrap().epoch;
+
+        let (_dir_c, carol) = create_manager("carol");
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut members = HashMap::new();
+        members.insert("carol".to_string(), carol_kp);
+        alice.invite_to_group(&group_id, &members).unwrap();
+
+        let epoch_after_invite = alice.group_info_details(&group_id).unwrap().epoch;
+        assert!(
+            epoch_after_invite > epoch_after_create,
+            "epoch must advance after adding a member"
+        );
+    }
+
+    #[test]
+    fn test_epoch_advances_on_removal() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        bob.join_group(&welcome).unwrap();
+
+        let epoch_before = alice.group_info_details(&group_id).unwrap().epoch;
+        let bob_index = alice.find_member_index(&group_id, "bob").unwrap().unwrap();
+        alice.remove_member(&group_id, bob_index).unwrap();
+        let epoch_after = alice.group_info_details(&group_id).unwrap().epoch;
+        assert!(
+            epoch_after > epoch_before,
+            "epoch must advance after removing a member"
+        );
+    }
+
+    #[test]
+    fn test_epoch_advances_on_key_rotation() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        let epoch_before = alice.group_info_details(&group_id).unwrap().epoch;
+        alice.rotate_keys(&group_id).unwrap();
+        let epoch_after = alice.group_info_details(&group_id).unwrap().epoch;
+        assert!(
+            epoch_after > epoch_before,
+            "epoch must advance after key rotation"
+        );
+    }
+
+    // ── Delete / Wipe State ───────────────────────────────────────
+
+    #[test]
+    fn test_delete_group_then_load_fails() {
+        let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
+        alice.delete_group_state(&group_id).unwrap();
+        let result = alice.group_info_details(&group_id);
+        assert!(result.is_err(), "loading deleted group should fail");
+    }
+
+    #[test]
+    fn test_wipe_then_recreate_identity() {
+        let (dir, mgr) = create_manager("alice");
+        mgr.wipe_local_state().unwrap();
+
+        let mgr2 = MlsManager::new(dir.path(), "alice").unwrap();
+        let kp = mgr2.generate_key_package().unwrap();
+        assert!(!kp.is_empty());
+    }
+
+    // ── Message After Rotation Both Directions ────────────────────
+
+    #[test]
+    fn test_message_after_rotation_both_directions() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let (rotate_commit, _gi) = bob.rotate_keys(&bob_group_id).unwrap();
+        alice.decrypt_message(&group_id, &rotate_commit).unwrap();
+
+        let ct1 = alice.encrypt_message(&group_id, b"from alice").unwrap();
+        match bob.decrypt_message(&bob_group_id, &ct1).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"from alice"),
+            other => panic!("expected Application, got {other:?}"),
+        }
+
+        let ct2 = bob.encrypt_message(&bob_group_id, b"from bob").unwrap();
+        match alice.decrypt_message(&group_id, &ct2).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, b"from bob"),
+            other => panic!("expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Leave Group ───────────────────────────────────────────────
+
+    #[test]
+    fn test_leave_group_returns_commit() {
+        let (_dir_a, _alice, _dir_b, bob, _group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let leave_result = bob.leave_group(&bob_group_id).unwrap();
+        if let Some((commit_bytes, _gi_bytes)) = leave_result {
+            assert!(!commit_bytes.is_empty());
+        }
+    }
+
+    // ── Epoch Retention Boundary (RFC 9420 §14) ─────────────────
+
+    #[test]
+    fn test_epoch_retention_boundary() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Encrypt a message at the current epoch.
+        let plaintext = b"old epoch message";
+        let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        // Advance the epoch more than EPOCH_RETENTION (16) times so the
+        // old epoch is evicted from bob's state.
+        for _ in 0..(EPOCH_RETENTION + 1) {
+            let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+            bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+        }
+
+        // Bob should no longer be able to decrypt the message from the
+        // evicted epoch.
+        let result = bob.decrypt_message(&bob_group_id, &ciphertext).unwrap();
+        match result {
+            DecryptedMessage::Failed(_) => {}
+            DecryptedMessage::Application(_) => {
+                panic!("must not decrypt a message from an evicted epoch")
+            }
+            other => panic!(
+                "expected Failed for evicted epoch, got {other:?}"
+            ),
+        }
+    }
+
+    // ── Five-Member Group ───────────────────────────────────────
+
+    #[test]
+    fn test_five_member_group() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_d, dave) = create_manager("dave");
+        let (_dir_e, eve) = create_manager("eve");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let carol_kp = carol.generate_key_package().unwrap();
+        let dave_kp = dave.generate_key_package().unwrap();
+        let eve_kp = eve.generate_key_package().unwrap();
+
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob_kp);
+        members.insert("carol".to_string(), carol_kp);
+        members.insert("dave".to_string(), dave_kp);
+        members.insert("eve".to_string(), eve_kp);
+
+        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
+
+        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
+        let carol_gid = carol.join_group(welcome_map.get("carol").unwrap()).unwrap();
+        let dave_gid = dave.join_group(welcome_map.get("dave").unwrap()).unwrap();
+        let eve_gid = eve.join_group(welcome_map.get("eve").unwrap()).unwrap();
+
+        assert_eq!(bob_gid, group_id);
+        assert_eq!(carol_gid, group_id);
+        assert_eq!(dave_gid, group_id);
+        assert_eq!(eve_gid, group_id);
+
+        let details = alice.group_info_details(&group_id).unwrap();
+        assert_eq!(
+            details.member_count, 5,
+            "group must have 5 members (alice + bob + carol + dave + eve)"
+        );
+
+        // Alice sends a message, all others can decrypt.
+        let plaintext = b"hello five-member group";
+        let ct = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        for (name, mgr, gid) in [
+            ("bob", &bob, &bob_gid),
+            ("carol", &carol, &carol_gid),
+            ("dave", &dave, &dave_gid),
+            ("eve", &eve, &eve_gid),
+        ] {
+            match mgr.decrypt_message(gid, &ct).unwrap() {
+                DecryptedMessage::Application(data) => {
+                    assert_eq!(data, plaintext.to_vec(), "{name} must decrypt correctly");
+                }
+                other => panic!("{name}: expected Application, got {other:?}"),
+            }
+        }
+
+        // Eve sends a message, alice and bob can decrypt.
+        let eve_msg = b"message from eve";
+        let eve_ct = eve.encrypt_message(&eve_gid, eve_msg).unwrap();
+
+        match alice.decrypt_message(&group_id, &eve_ct).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, eve_msg.to_vec(), "alice must decrypt eve's message");
+            }
+            other => panic!("alice: expected Application from eve, got {other:?}"),
+        }
+        match bob.decrypt_message(&bob_gid, &eve_ct).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, eve_msg.to_vec(), "bob must decrypt eve's message");
+            }
+            other => panic!("bob: expected Application from eve, got {other:?}"),
+        }
+    }
+
+    // ── Invite After Multiple Rotations ─────────────────────────
+
+    #[test]
+    fn test_invite_after_multiple_rotations() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Perform several key rotations before inviting a new member.
+        for _ in 0..5 {
+            let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+            bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+        }
+
+        let epoch_before_invite = alice.group_info_details(&group_id).unwrap().epoch;
+        assert!(
+            epoch_before_invite >= 6,
+            "epoch must be at least 6 after 5 rotations and initial commit"
+        );
+
+        // Now invite carol.
+        let (_dir_c, carol) = create_manager("carol");
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (invite_commit, carol_welcome_map, _gi) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+
+        bob.decrypt_message(&bob_group_id, &invite_commit).unwrap();
+
+        let carol_gid = carol
+            .join_group(carol_welcome_map.get("carol").unwrap())
+            .unwrap();
+        assert_eq!(carol_gid, group_id, "carol's group_id must match");
+
+        // Verify all three can communicate.
+        let plaintext = b"post-rotation invite test";
+        let ct = alice.encrypt_message(&group_id, plaintext).unwrap();
+
+        match bob.decrypt_message(&bob_group_id, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, plaintext.to_vec()),
+            other => panic!("bob: expected Application, got {other:?}"),
+        }
+        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, plaintext.to_vec()),
+            other => panic!("carol: expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Removed Member Cannot Rejoin via Welcome ────────────────
+
+    #[test]
+    fn test_removed_member_cannot_rejoin_via_welcome() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_c, carol) = create_manager("carol");
+
+        let bob_kp = bob.generate_key_package().unwrap();
+        let mut bob_members = HashMap::new();
+        bob_members.insert("bob".to_string(), bob_kp);
+
+        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
+        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+
+        // Invite carol.
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+
+        let (invite_commit, carol_welcome_map, _gi) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        bob.decrypt_message(&group_id, &invite_commit).unwrap();
+        carol
+            .join_group(carol_welcome_map.get("carol").unwrap())
+            .unwrap();
+
+        // Remove carol.
+        let carol_index = alice
+            .find_member_index(&group_id, "carol")
+            .unwrap()
+            .expect("carol must be in the group");
+        let (removal_commit, _gi) = alice.remove_member(&group_id, carol_index).unwrap();
+        bob.decrypt_message(&group_id, &removal_commit).unwrap();
+
+        // Carol tries to rejoin using her old welcome message, which should
+        // fail because the key package was already consumed and state is stale.
+        let old_welcome = carol_welcome_map.get("carol").unwrap();
+        let rejoin_result = carol.join_group(old_welcome);
+        assert!(
+            rejoin_result.is_err(),
+            "removed member must not be able to rejoin with an old welcome"
+        );
+    }
+
+    // ── External Rejoin with Self-Removal ───────────────────────
+
+    #[test]
+    fn test_external_rejoin_with_self_removal() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, gi) = setup_alice_bob();
+        bob.join_group(&welcome).unwrap();
+
+        // Find bob's current leaf index.
+        let bob_index = alice
+            .find_member_index(&group_id, "bob")
+            .unwrap()
+            .expect("bob must be found in group");
+
+        // Bob does an external rejoin, removing his old leaf.
+        let (_dir_b2, bob_new) = create_manager("bob");
+        let (rejoin_gid, rejoin_commit) = bob_new
+            .external_rejoin_group(&gi, Some(bob_index))
+            .unwrap();
+
+        assert_eq!(
+            rejoin_gid, group_id,
+            "external rejoin must produce the same group_id"
+        );
+        assert!(
+            !rejoin_commit.is_empty(),
+            "external rejoin commit must not be empty"
+        );
+
+        // Alice processes the external commit.
+        let result = alice.decrypt_message(&group_id, &rejoin_commit).unwrap();
+        match result {
+            DecryptedMessage::Commit(info) => {
+                assert!(
+                    !info.self_removed,
+                    "alice must not be self_removed by bob's rejoin"
+                );
+            }
+            other => panic!("expected Commit from external rejoin, got {other:?}"),
+        }
+
+        // Verify alice and the new bob can still communicate.
+        let plaintext = b"after external rejoin";
+        let ct = alice.encrypt_message(&group_id, plaintext).unwrap();
+        match bob_new.decrypt_message(&rejoin_gid, &ct).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, plaintext.to_vec());
+            }
+            other => panic!("bob_new: expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Multiple Groups Isolation ───────────────────────────────
+
+    #[test]
+    fn test_multiple_groups_isolation() {
+        let (_dir_a, alice) = create_manager("alice");
+        let (_dir_b, bob) = create_manager("bob");
+
+        // Create group 1 (alice + bob).
+        let bob_kp1 = bob.generate_key_package().unwrap();
+        let mut members1 = HashMap::new();
+        members1.insert("bob".to_string(), bob_kp1);
+        let (group1_id, _commit1, welcome_map1, _gi1) = alice.create_group(&members1).unwrap();
+        let bob_gid1 = bob.join_group(welcome_map1.get("bob").unwrap()).unwrap();
+
+        // Create group 2 (alice + bob).
+        let bob_kp2 = bob.generate_key_package().unwrap();
+        let mut members2 = HashMap::new();
+        members2.insert("bob".to_string(), bob_kp2);
+        let (group2_id, _commit2, welcome_map2, _gi2) = alice.create_group(&members2).unwrap();
+        let bob_gid2 = bob.join_group(welcome_map2.get("bob").unwrap()).unwrap();
+
+        assert_ne!(
+            group1_id, group2_id,
+            "two groups must have different IDs"
+        );
+
+        // Send a message in group 1.
+        let msg1 = b"group 1 only";
+        let ct1 = alice.encrypt_message(&group1_id, msg1).unwrap();
+
+        // Bob can decrypt it in group 1.
+        match bob.decrypt_message(&bob_gid1, &ct1).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, msg1.to_vec()),
+            other => panic!("bob group1: expected Application, got {other:?}"),
+        }
+
+        // Bob cannot decrypt group 1's message in group 2.
+        let cross_result = bob.decrypt_message(&bob_gid2, &ct1).unwrap();
+        match cross_result {
+            DecryptedMessage::Failed(_) => {}
+            DecryptedMessage::Application(_) => {
+                panic!("group 1 message must not be decryptable in group 2")
+            }
+            other => panic!("expected Failed for cross-group decrypt, got {other:?}"),
+        }
+
+        // Send a message in group 2 and verify it works there.
+        let msg2 = b"group 2 only";
+        let ct2 = alice.encrypt_message(&group2_id, msg2).unwrap();
+        match bob.decrypt_message(&bob_gid2, &ct2).unwrap() {
+            DecryptedMessage::Application(data) => assert_eq!(data, msg2.to_vec()),
+            other => panic!("bob group2: expected Application, got {other:?}"),
+        }
+    }
+
+    // ── Rapid Sequential Messages ───────────────────────────────
+
+    #[test]
+    fn test_rapid_sequential_messages() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        let message_count = 50;
+        let mut ciphertexts = Vec::with_capacity(message_count);
+
+        // Encrypt many messages in quick succession.
+        for i in 0..message_count {
+            let msg = format!("rapid message {i}");
+            let ct = alice.encrypt_message(&group_id, msg.as_bytes()).unwrap();
+            ciphertexts.push((msg, ct));
+        }
+
+        // Decrypt all of them in order.
+        for (expected_msg, ct) in &ciphertexts {
+            match bob.decrypt_message(&bob_group_id, ct).unwrap() {
+                DecryptedMessage::Application(data) => {
+                    assert_eq!(
+                        data,
+                        expected_msg.as_bytes().to_vec(),
+                        "mismatch for '{expected_msg}'"
+                    );
+                }
+                other => panic!("expected Application for '{expected_msg}', got {other:?}"),
+            }
+        }
+    }
+
+    // ── Binary Payload Roundtrip ────────────────────────────────
+
+    #[test]
+    fn test_binary_payload_roundtrip() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Construct non-UTF8 binary data (all 256 byte values).
+        let binary_payload: Vec<u8> = (0..=255).collect();
+        assert!(
+            std::str::from_utf8(&binary_payload).is_err(),
+            "test data must not be valid UTF-8"
+        );
+
+        let ct = alice.encrypt_message(&group_id, &binary_payload).unwrap();
+        match bob.decrypt_message(&bob_group_id, &ct).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(
+                    data, binary_payload,
+                    "binary payload must survive encrypt/decrypt roundtrip"
+                );
+            }
+            other => panic!("expected Application for binary payload, got {other:?}"),
+        }
+    }
+
+    // ── Leave Group Self-Removal Detection ──────────────────────
+
+    #[test]
+    fn test_leave_group_self_removal_detection() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Alice removes bob. When bob processes the removal commit, the
+        // CommitEffect should be `Removed` which sets self_removed = true.
+        let bob_index = alice
+            .find_member_index(&group_id, "bob")
+            .unwrap()
+            .expect("bob must be found in group");
+        let (removal_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
+
+        let result = bob.decrypt_message(&bob_group_id, &removal_commit).unwrap();
+        match result {
+            DecryptedMessage::Commit(info) => {
+                assert!(
+                    info.self_removed,
+                    "bob must see self_removed = true when he is removed"
+                );
+            }
+            other => panic!("expected Commit with self_removed for bob, got {other:?}"),
+        }
+
+        // Also test the leave_group path: bob tries to leave on his own.
+        // mls-rs may or may not support self-removal commits; if it does,
+        // alice should see it as a removal commit.
+        let (_dir_a2, alice2) = create_manager("alice");
+        let (_dir_b2, bob2) = create_manager("bob");
+
+        let bob2_kp = bob2.generate_key_package().unwrap();
+        let mut members = HashMap::new();
+        members.insert("bob".to_string(), bob2_kp);
+        let (group2_id, _commit2, welcome_map2, _gi2) = alice2.create_group(&members).unwrap();
+        let bob2_gid = bob2.join_group(welcome_map2.get("bob").unwrap()).unwrap();
+
+        let leave_result = bob2.leave_group(&bob2_gid).unwrap();
+        if let Some((leave_commit, _gi)) = leave_result {
+            assert!(!leave_commit.is_empty(), "leave commit must not be empty");
+
+            let alice_result = alice2.decrypt_message(&group2_id, &leave_commit).unwrap();
+            match alice_result {
+                DecryptedMessage::Commit(info) => {
+                    assert!(
+                        !info.self_removed,
+                        "alice must not be self_removed when bob leaves"
+                    );
+                    assert!(
+                        !info.members_removed.is_empty(),
+                        "the commit must report a member removal"
+                    );
+                }
+                other => panic!("expected Commit for bob's leave, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Group Info Epoch Matches ────────────────────────────────
+
+    #[test]
+    fn test_group_info_epoch_matches() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Track epoch through several operations.
+        let epoch_after_create = alice.group_info_details(&group_id).unwrap().epoch;
+
+        // Key rotation.
+        let (rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+        bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
+        let epoch_after_rotation = alice.group_info_details(&group_id).unwrap().epoch;
+        assert_eq!(
+            epoch_after_rotation,
+            epoch_after_create + 1,
+            "epoch must increment by 1 after rotation"
+        );
+
+        // Invite carol.
+        let (_dir_c, carol) = create_manager("carol");
+        let carol_kp = carol.generate_key_package().unwrap();
+        let mut carol_members = HashMap::new();
+        carol_members.insert("carol".to_string(), carol_kp);
+        let (invite_commit, _carol_welcome, _gi) =
+            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        bob.decrypt_message(&bob_group_id, &invite_commit).unwrap();
+        let epoch_after_invite = alice.group_info_details(&group_id).unwrap().epoch;
+        assert_eq!(
+            epoch_after_invite,
+            epoch_after_rotation + 1,
+            "epoch must increment by 1 after invite"
+        );
+
+        // Remove carol.
+        let carol_index = alice
+            .find_member_index(&group_id, "carol")
+            .unwrap()
+            .expect("carol must be in the group");
+        let (removal_commit, _gi) = alice.remove_member(&group_id, carol_index).unwrap();
+        bob.decrypt_message(&bob_group_id, &removal_commit).unwrap();
+        let epoch_after_removal = alice.group_info_details(&group_id).unwrap().epoch;
+        assert_eq!(
+            epoch_after_removal,
+            epoch_after_invite + 1,
+            "epoch must increment by 1 after removal"
+        );
+
+        // Verify bob's view of the epoch matches alice's.
+        let bob_epoch = bob.group_info_details(&bob_group_id).unwrap().epoch;
+        assert_eq!(
+            bob_epoch, epoch_after_removal,
+            "bob's epoch must match alice's epoch"
+        );
+    }
+
+    // ── Concurrent Key Rotations from Different Members ─────────
+
+    #[test]
+    fn test_concurrent_key_rotations_from_different_members() {
+        let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
+        let bob_group_id = bob.join_group(&welcome).unwrap();
+
+        // Alice rotates keys; bob processes the commit.
+        let (alice_rotate_commit, _gi) = alice.rotate_keys(&group_id).unwrap();
+        bob.decrypt_message(&bob_group_id, &alice_rotate_commit)
+            .unwrap();
+
+        // Bob rotates keys; alice processes the commit.
+        let (bob_rotate_commit, _gi) = bob.rotate_keys(&bob_group_id).unwrap();
+        alice
+            .decrypt_message(&group_id, &bob_rotate_commit)
+            .unwrap();
+
+        // Both should be at the same epoch.
+        let alice_epoch = alice.group_info_details(&group_id).unwrap().epoch;
+        let bob_epoch = bob.group_info_details(&bob_group_id).unwrap().epoch;
+        assert_eq!(
+            alice_epoch, bob_epoch,
+            "alice and bob must agree on epoch after mutual rotations"
+        );
+
+        // Verify bidirectional messaging still works.
+        let ct1 = alice
+            .encrypt_message(&group_id, b"alice after rotations")
+            .unwrap();
+        match bob.decrypt_message(&bob_group_id, &ct1).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, b"alice after rotations");
+            }
+            other => panic!("bob: expected Application, got {other:?}"),
+        }
+
+        let ct2 = bob
+            .encrypt_message(&bob_group_id, b"bob after rotations")
+            .unwrap();
+        match alice.decrypt_message(&group_id, &ct2).unwrap() {
+            DecryptedMessage::Application(data) => {
+                assert_eq!(data, b"bob after rotations");
+            }
+            other => panic!("alice: expected Application, got {other:?}"),
         }
     }
 }

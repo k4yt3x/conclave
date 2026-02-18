@@ -273,4 +273,197 @@ mod tests {
         assert_eq!(g2_msgs.len(), 1);
         assert_eq!(g2_msgs[0].content, "for g2");
     }
+
+    #[test]
+    fn test_system_messages_stored_correctly() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::system("alice joined the group"));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].is_system);
+        assert_eq!(msgs[0].content, "alice joined the group");
+    }
+
+    #[test]
+    fn test_mixed_user_and_system_messages() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::system("group created"));
+        store.push_message("g1", &DisplayMessage::user("alice", "hello!", 100));
+        store.push_message("g1", &DisplayMessage::system("bob joined"));
+        store.push_message("g1", &DisplayMessage::user("bob", "hi!", 200));
+
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 4);
+        assert!(msgs[0].is_system);
+        assert!(!msgs[1].is_system);
+        assert!(msgs[2].is_system);
+        assert!(!msgs[3].is_system);
+    }
+
+    #[test]
+    fn test_reopen_persistence() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = MessageStore::open(dir.path()).unwrap();
+            store.push_message("g1", &DisplayMessage::user("alice", "persisted", 1));
+            store.set_last_seen_seq("g1", 99);
+            store.set_last_read_seq("g1", 50);
+        }
+        let store = MessageStore::open(dir.path()).unwrap();
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "persisted");
+        assert_eq!(store.get_last_seen_seq("g1"), 99);
+        assert_eq!(store.get_last_read_seq("g1"), 50);
+    }
+
+    #[test]
+    fn test_sequence_state_persistence() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = MessageStore::open(dir.path()).unwrap();
+            store.set_last_seen_seq("g1", 100);
+            store.set_last_read_seq("g1", 75);
+        }
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_last_seen_seq("g1"), 100);
+        assert_eq!(store.get_last_read_seq("g1"), 75);
+    }
+
+    #[test]
+    fn test_multiple_group_sequences() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 10);
+        store.set_last_seen_seq("g2", 20);
+        store.set_last_seen_seq("g3", 30);
+        assert_eq!(store.get_last_seen_seq("g1"), 10);
+        assert_eq!(store.get_last_seen_seq("g2"), 20);
+        assert_eq!(store.get_last_seen_seq("g3"), 30);
+    }
+
+    #[test]
+    fn test_messages_ordered_chronologically() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::user("alice", "first", 300));
+        store.push_message("g1", &DisplayMessage::user("bob", "second", 100));
+        store.push_message("g1", &DisplayMessage::user("carol", "third", 200));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "first");
+        assert_eq!(msgs[1].content, "second");
+        assert_eq!(msgs[2].content, "third");
+    }
+
+    #[test]
+    fn test_load_messages_returns_most_recent_1000() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        for i in 0..1100 {
+            store.push_message(
+                "g1",
+                &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
+            );
+        }
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1000);
+        assert_eq!(msgs[0].content, "msg100");
+        assert_eq!(msgs[999].content, "msg1099");
+    }
+
+    #[test]
+    fn test_set_last_seen_seq_creates_room_state_entry() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 50);
+        assert_eq!(store.get_last_read_seq("g1"), 0);
+    }
+
+    #[test]
+    fn test_set_last_read_seq_creates_room_state_entry() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_read_seq("g1", 50);
+        assert_eq!(store.get_last_seen_seq("g1"), 0);
+    }
+
+    #[test]
+    fn test_reopen_preserves_room_state_independently() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = MessageStore::open(dir.path()).unwrap();
+            store.set_last_seen_seq("g1", 10);
+            store.set_last_read_seq("g1", 5);
+            store.set_last_seen_seq("g2", 200);
+            store.set_last_read_seq("g2", 150);
+        }
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_last_seen_seq("g1"), 10);
+        assert_eq!(store.get_last_read_seq("g1"), 5);
+        assert_eq!(store.get_last_seen_seq("g2"), 200);
+        assert_eq!(store.get_last_read_seq("g2"), 150);
+    }
+
+    #[test]
+    fn test_empty_content_message() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::user("alice", "", 1));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "");
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        let unicode_content = "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
+        store.push_message("g1", &DisplayMessage::user("alice", unicode_content, 1));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, unicode_content);
+    }
+
+    #[test]
+    fn test_large_message_content() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        let large_content = "A".repeat(100 * 1024);
+        store.push_message("g1", &DisplayMessage::user("alice", &large_content, 1));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, large_content);
+    }
+
+    #[test]
+    fn test_system_and_user_message_counts() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.push_message("g1", &DisplayMessage::system("system msg 1"));
+        store.push_message("g1", &DisplayMessage::system("system msg 2"));
+        store.push_message("g1", &DisplayMessage::system("system msg 3"));
+        store.push_message("g1", &DisplayMessage::user("alice", "user msg 1", 100));
+        store.push_message("g1", &DisplayMessage::user("bob", "user msg 2", 200));
+        let msgs = store.load_messages("g1");
+        assert_eq!(msgs.len(), 5);
+        assert!(msgs[0].is_system);
+        assert!(msgs[1].is_system);
+        assert!(msgs[2].is_system);
+        assert!(!msgs[3].is_system);
+        assert!(!msgs[4].is_system);
+    }
+
+    #[test]
+    fn test_sequence_numbers_isolated_between_groups() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.set_last_seen_seq("g1", 100);
+        store.set_last_seen_seq("g2", 200);
+        assert_eq!(store.get_last_seen_seq("g1"), 100);
+        assert_eq!(store.get_last_seen_seq("g2"), 200);
+    }
 }

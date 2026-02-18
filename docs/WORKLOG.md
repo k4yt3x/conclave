@@ -1,5 +1,45 @@
 # Conclave Work Log
 
+## 2026-02-18: Comprehensive Test Suite Expansion
+
+### What Changed
+
+Expanded the test suite from ~208 tests to 330 tests (+122 new tests) covering MLS protocol compliance, server API edge cases, database/auth internals, client storage, and end-to-end protocol flows with real MLS cryptography.
+
+### Bug Fix: MLS Key Package Wire Format (RFC 9420 Section 6)
+
+- **`conclave-server/src/api.rs`**: `validate_key_package_wire_format()` checked for wire format `3` (`mls_welcome`), but the correct value per RFC 9420 Section 6 is `5` (`mls_key_package`). Fixed to validate against `5`. Updated `docs/SPEC.md` accordingly.
+
+### New Tests by Category
+
+#### MLS Protocol Compliance (11 tests in `conclave-lib/src/mls.rs`)
+- Epoch retention boundary (16 epochs), five-member group operations, invite after multiple key rotations, removed member cannot rejoin via old welcome, external rejoin with self-removal, multi-group isolation, rapid sequential messages, binary payload roundtrip, leave group self-removal detection, group info epoch matching, concurrent key rotations from different members.
+
+#### Server API Edge Cases (16 tests in `conclave-server/tests/api_tests.rs`)
+- Username boundary validation (64-char max, starting with underscore/dot/hyphen, valid special chars, empty password), key package edge cases (exactly 16 KiB, batch oversized entry), external join without group info, message pagination cap at 500, group name exactly 128 chars, auth header format (missing Bearer prefix, empty bearer), upload commit with multiple welcomes, leave group stores group info, external join commit stored as message.
+
+#### Server Database & Auth (14 tests in `conclave-server/src/db.rs` and `auth.rs`)
+- `process_commit` with multiple welcomes, empty commit message, empty group info, nonexistent user. Messages isolated between groups, `group_exists`, multiple pending welcomes for same user, delete welcome wrong user, `count_key_packages`, session token hashed. Auth: dummy hash validity, token hex format, empty password hashing/verification.
+
+#### Client Store & Config (13 tests in `conclave-lib/src/store.rs` and `config.rs`)
+- Room state creation via set_last_seen/read_seq, reopen preserves room state independently, empty/unicode/large content messages, system vs user message counts, sequence numbers isolated between groups. Config: group mapping empty values, many entries, malformed session file, key package structure verification.
+
+#### End-to-End Protocol Flow (9 tests in `conclave-server/tests/protocol_flow_tests.rs`)
+- Full group creation and bidirectional messaging with real MLS encryption/decryption through the server API. Three-party group messaging. Post-creation invite flow (solo group → invite → welcome → messaging). Member removal flow with commit processing by remaining members. Key rotation continuity (epoch advance preserves messaging). External rejoin after removal. Real key package wire format validation. Key package roundtrip through server (upload → retrieve → parse by another client). Message ordering and sequence number verification across 10 sequential messages.
+
+### Test Counts
+
+| Crate | Before | After |
+|-------|--------|-------|
+| conclave-cli | 33 | 33 |
+| conclave-lib | 116 | 140 |
+| conclave-server (unit) | 40 | 54 |
+| conclave-server (api_tests) | 78 | 94 |
+| conclave-server (protocol_flow_tests) | 0 | 9 |
+| **Total** | **~208** | **330** |
+
+---
+
 ## 2026-02-18: Comprehensive Codebase Audit & Remediation
 
 ### What Changed

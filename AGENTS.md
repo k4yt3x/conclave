@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~189 tests across 8 suites)
+cargo test --workspace                   # Run all tests (~330 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-lib               # Client library tests only
 cargo clippy --workspace                 # Lint
@@ -82,8 +82,9 @@ Five crates in `crates/`:
 
 ## Testing Patterns
 
-- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router.
-- **Client MLS tests** (`crates/conclave-lib/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking.
+- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 94 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, validation edge cases.
+- **End-to-end protocol flow tests** (`crates/conclave-server/tests/protocol_flow_tests.rs`): Combine real MLS cryptographic operations (via `conclave-lib::MlsManager`) with server API calls through tower::oneshot. Tests full protocol flows: group creation, welcome processing, encrypted messaging, member removal, key rotation, external rejoin.
+- **Client MLS tests** (`crates/conclave-lib/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking. 74 tests covering key package generation, group lifecycle, message encryption/decryption, epoch management, member operations.
 - **All tests use real protobuf encoding/decoding** — match production wire format.
 
 ## Critical Dependencies

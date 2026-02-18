@@ -1070,4 +1070,216 @@ mod tests {
         let result = db.get_user_id_by_username("nobody").unwrap();
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_process_commit_with_multiple_welcomes() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+        let charlie = db.create_user("charlie", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let mut welcomes = std::collections::HashMap::new();
+        welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
+        welcomes.insert("charlie".to_string(), b"welcome_charlie".to_vec());
+
+        let (new_members, seq) = db
+            .process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"commit_msg")
+            .unwrap();
+
+        assert_eq!(new_members.len(), 2);
+        assert!(db.is_group_member("g1", bob).unwrap());
+        assert!(db.is_group_member("g1", charlie).unwrap());
+
+        let bob_welcomes = db.get_pending_welcomes(bob).unwrap();
+        assert_eq!(bob_welcomes.len(), 1);
+        let charlie_welcomes = db.get_pending_welcomes(charlie).unwrap();
+        assert_eq!(charlie_welcomes.len(), 1);
+
+        assert_eq!(seq, Some(1));
+        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].3, b"commit_msg");
+    }
+
+    #[test]
+    fn test_process_commit_empty_commit_message() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let mut welcomes = std::collections::HashMap::new();
+        welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
+
+        let (new_members, seq) = db
+            .process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"")
+            .unwrap();
+
+        assert_eq!(new_members.len(), 1);
+        assert_eq!(seq, None);
+        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_process_commit_empty_group_info() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let welcomes = std::collections::HashMap::new();
+
+        db.process_commit("g1", "test-group", alice, &welcomes, b"", b"commit_msg")
+            .unwrap();
+
+        let info = db.get_group_info("g1").unwrap();
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_process_commit_nonexistent_user() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        let mut welcomes = std::collections::HashMap::new();
+        welcomes.insert("nonexistent".to_string(), b"welcome_data".to_vec());
+
+        let result =
+            db.process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"commit_msg");
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not found"),
+            "Expected error to contain 'not found', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_messages_isolated_between_groups() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "group-one", alice).unwrap();
+        db.create_group("g2", "group-two", alice).unwrap();
+
+        db.store_message("g1", alice, b"msg_g1").unwrap();
+        db.store_message("g2", alice, b"msg_g2").unwrap();
+
+        let msgs_g1 = db.get_messages("g1", 0, 100).unwrap();
+        assert_eq!(msgs_g1.len(), 1);
+        assert_eq!(msgs_g1[0].3, b"msg_g1");
+
+        let msgs_g2 = db.get_messages("g2", 0, 100).unwrap();
+        assert_eq!(msgs_g2.len(), 1);
+        assert_eq!(msgs_g2[0].3, b"msg_g2");
+    }
+
+    #[test]
+    fn test_group_exists() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        assert!(db.group_exists("g1").unwrap());
+        assert!(!db.group_exists("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn test_multiple_pending_welcomes_for_same_user() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+
+        db.store_pending_welcome("g1", "test-group", alice, b"welcome_1")
+            .unwrap();
+        db.store_pending_welcome("g1", "test-group", alice, b"welcome_2")
+            .unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert_eq!(welcomes.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_pending_welcome_wrong_user() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        db.create_group("g1", "test-group", alice).unwrap();
+        db.add_group_member("g1", bob).unwrap();
+
+        db.store_pending_welcome("g1", "test-group", alice, b"welcome_data")
+            .unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert_eq!(welcomes.len(), 1);
+        let welcome_id = welcomes[0].0;
+
+        // Deleting with the wrong user_id should not remove the welcome.
+        db.delete_pending_welcome(welcome_id, bob).unwrap();
+
+        let welcomes = db.get_pending_welcomes(alice).unwrap();
+        assert_eq!(welcomes.len(), 1);
+    }
+
+    #[test]
+    fn test_count_key_packages() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        let (regular, last_resort) = db.count_key_packages(uid).unwrap();
+        assert_eq!(regular, 0);
+        assert_eq!(last_resort, 0);
+
+        db.store_key_package(uid, b"kp1", false).unwrap();
+        db.store_key_package(uid, b"kp2", false).unwrap();
+        db.store_key_package(uid, b"kp3", false).unwrap();
+        db.store_key_package(uid, b"lr1", true).unwrap();
+
+        let (regular, last_resort) = db.count_key_packages(uid).unwrap();
+        assert_eq!(regular, 3);
+        assert_eq!(last_resort, 1);
+    }
+
+    #[test]
+    fn test_session_token_hashed() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+        let raw_token = "my-secret-token";
+
+        db.create_session(raw_token, uid, i64::MAX).unwrap();
+
+        // The token is stored as a SHA-256 hash, so querying the sessions table
+        // directly with the raw token should find nothing.
+        let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let found: Option<i64> = conn
+            .prepare("SELECT user_id FROM sessions WHERE token = ?1")
+            .unwrap()
+            .query_row(params![raw_token], |row| row.get(0))
+            .optional()
+            .unwrap();
+        assert!(
+            found.is_none(),
+            "raw token should not match the stored hashed token"
+        );
+
+        // But the hashed version should be present.
+        let token_hash = hash_token(raw_token);
+        let found: Option<i64> = conn
+            .prepare("SELECT user_id FROM sessions WHERE token = ?1")
+            .unwrap()
+            .query_row(params![token_hash], |row| row.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(found, Some(uid));
+    }
 }
