@@ -41,6 +41,7 @@ pub struct Conclave {
     /// Sequence numbers learned during welcome processing, applied to rooms
     /// once they are loaded so fetch_missed_messages skips initial commits.
     welcome_seqs: HashMap<String, u64>,
+    window_focused: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,8 @@ pub enum Message {
     TabPressed,
     /// Quit the application (e.g. Ctrl+Q).
     Quit,
+    WindowFocused,
+    WindowUnfocused,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +170,7 @@ impl Conclave {
             welcomes_processed: false,
             fetching_groups: HashSet::new(),
             welcome_seqs: HashMap::new(),
+            window_focused: true,
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -283,6 +287,14 @@ impl Conclave {
                 }
             }
             Message::Quit => iced::exit(),
+            Message::WindowFocused => {
+                self.window_focused = true;
+                Task::none()
+            }
+            Message::WindowUnfocused => {
+                self.window_focused = false;
+                Task::none()
+            }
             Message::GroupCreated(result) => self.handle_group_created(result),
             Message::RefreshRooms(result) => {
                 match result {
@@ -327,7 +339,7 @@ impl Conclave {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let kbd = iced::event::listen_with(|event, _status, _window| match event {
+        let events = iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Character(c),
                 modifiers,
@@ -337,6 +349,8 @@ impl Conclave {
                 key: keyboard::Key::Named(keyboard::key::Named::Tab),
                 ..
             }) => Some(Message::TabPressed),
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
+            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
             _ => None,
         });
 
@@ -347,9 +361,9 @@ impl Conclave {
                 self.config.accept_invalid_certs,
             )
             .map(Message::SseEvent);
-            Subscription::batch([sse, kbd])
+            Subscription::batch([sse, events])
         } else {
-            kbd
+            events
         }
     }
 
@@ -1011,6 +1025,25 @@ impl Conclave {
                         if let Some(store) = &self.msg_store {
                             store.set_last_read_seq(&fetched.group_id, room.last_read_seq);
                         }
+                    }
+                }
+
+                if !self.window_focused {
+                    let last_msg = fetched
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| !m.is_system);
+                    if let Some(msg) = last_msg {
+                        let room_name = self
+                            .rooms
+                            .get(&fetched.group_id)
+                            .map(|r| r.name.as_str())
+                            .unwrap_or("unknown");
+                        conclave_lib::notification::send_notification(
+                            &format!("#{room_name} - {}", msg.sender),
+                            &msg.content,
+                        );
                     }
                 }
             }

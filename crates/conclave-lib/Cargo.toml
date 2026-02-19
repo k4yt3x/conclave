@@ -23,6 +23,7 @@ mls-rs-codec = "0.7"
 mls-rs-crypto-openssl = "0.19"
 mls-rs-provider-sqlite = { version = "0.21", features = ["sqlite-bundled"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
+notify-rust = "4.11"
 
 [dev-dependencies]
 tempfile = "3"

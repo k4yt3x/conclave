@@ -20,8 +20,8 @@ use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
 use conclave_lib::config::{
-    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
-    save_group_mapping,
+    ClientConfig, NotificationMethod, SessionState, generate_initial_key_packages,
+    load_group_mapping, save_group_mapping,
 };
 use conclave_lib::mls::MlsManager;
 
@@ -216,7 +216,7 @@ async fn main_loop(
                             Err(e) => {
                                 let msg = DisplayMessage::system(&format!("Error: {e}"));
                                 add_and_render_message(stdout, state, input, None, msg,
-                                    msg_store);
+                                    msg_store, &config.notifications);
                             }
                         }
                     }
@@ -271,7 +271,7 @@ async fn main_loop(
                                     add_and_render_message(
                                         stdout, state, input,
                                         Some(&group_id), display_msg,
-                                        msg_store,
+                                        msg_store, &config.notifications,
                                     );
                                 }
                             }
@@ -280,7 +280,7 @@ async fn main_loop(
                                     &format!("SSE processing error: {e}"),
                                 );
                                 add_and_render_message(stdout, state, input, None, msg,
-                                    msg_store);
+                                    msg_store, &config.notifications);
                             }
                         }
                     }
@@ -354,7 +354,7 @@ async fn handle_key_event(
                     match commands::execute(cmd, api, state, mls, config, msg_store).await {
                         Ok((msgs, should_start_sse)) => {
                             for msg in msgs {
-                                add_and_render_message(stdout, state, input, None, msg, msg_store);
+                                add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
                             }
                             if should_start_sse {
                                 // Open the message store after a fresh /login
@@ -374,14 +374,14 @@ async fn handle_key_event(
                         }
                         Err(e) => {
                             let msg = DisplayMessage::system(&format!("Error: {e}"));
-                            add_and_render_message(stdout, state, input, None, msg, msg_store);
+                            add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
                         }
                     }
                     let _ = render::render_full(stdout, state, input);
                 }
                 Err(e) => {
                     let msg = DisplayMessage::system(&format!("{e}"));
-                    add_and_render_message(stdout, state, input, None, msg, msg_store);
+                    add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
                     let _ = render::render_full(stdout, state, input);
                 }
             }
@@ -492,6 +492,7 @@ fn add_and_render_message(
     group_id: Option<&str>,
     msg: DisplayMessage,
     msg_store: &Option<MessageStore>,
+    notifications: &NotificationMethod,
 ) {
     // Determine the effective group_id: system messages (group_id=None) are
     // pushed into the active room's message list so they appear inline.
@@ -535,6 +536,29 @@ fn add_and_render_message(
         // Reset scroll to bottom when new messages arrive.
         state.scroll_offset = 0;
         let _ = render::render_new_message(stdout, state, input, &msg);
+    } else if !msg.is_system && group_id.is_some() {
+        let room_name = group_id
+            .and_then(|gid| state.rooms.get(gid))
+            .map(|r| r.name.as_str())
+            .unwrap_or("unknown");
+        let use_native = matches!(
+            notifications,
+            NotificationMethod::Native | NotificationMethod::Both
+        );
+        let use_bell = matches!(
+            notifications,
+            NotificationMethod::Bell | NotificationMethod::Both
+        );
+        if use_native {
+            conclave_lib::notification::send_notification(
+                &format!("#{room_name} - {}", msg.sender),
+                &msg.content,
+            );
+        }
+        if use_bell {
+            let _ = stdout.write_all(b"\x07");
+            let _ = stdout.flush();
+        }
     }
 }
 

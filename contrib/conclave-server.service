@@ -1,0 +1,46 @@
+[Unit]
+Description=Conclave Server (MLS-based E2EE group messaging)
+Documentation=https://github.com/k4yt3x/conclave
+After=network.target
+
+[Service]
+User=conclave
+Group=conclave
+Type=simple
+WorkingDirectory=/var/lib/conclave
+ExecStart=/usr/bin/conclave-server -c /etc/conclave/conclave-server.toml
+Restart=on-failure
+RestartSec=5s
+ConfigurationDirectory=conclave
+StateDirectory=conclave
+LogsDirectory=conclave
+RuntimeDirectory=conclave
+AmbientCapabilities=
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+PrivateUsers=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/conclave
+
+[Install]
+WantedBy=multi-user.target

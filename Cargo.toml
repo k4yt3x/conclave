@@ -15,8 +15,8 @@ license = "AGPL-3.0-or-later"
 
 [profile.release]
 strip = "symbols"
-lto = "fat"
-codegen-units = 1
+#lto = "fat"
+#codegen-units = 1
 
 [workspace.dependencies]
 conclave-proto = { path = "crates/conclave-proto" }
