@@ -11,6 +11,20 @@ pub struct ApiClient {
     token: Option<String>,
 }
 
+/// Normalize a server URL by prepending `https://` if no scheme is present
+/// and stripping any trailing slash.
+pub fn normalize_server_url(url: &str) -> String {
+    let url = if !url.is_empty()
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        format!("https://{url}")
+    } else {
+        url.to_string()
+    };
+    url.trim_end_matches('/').to_string()
+}
+
 impl ApiClient {
     pub fn new(base_url: &str, accept_invalid_certs: bool) -> Self {
         let client = Client::builder()
@@ -18,19 +32,9 @@ impl ApiClient {
             .build()
             .unwrap_or_default();
 
-        // Auto-prepend https:// if no scheme is present
-        let base_url = if !base_url.is_empty()
-            && !base_url.starts_with("http://")
-            && !base_url.starts_with("https://")
-        {
-            format!("https://{base_url}")
-        } else {
-            base_url.to_string()
-        };
-
         Self {
             client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: normalize_server_url(base_url),
             token: None,
         }
     }

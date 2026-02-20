@@ -1,5 +1,34 @@
 # Conclave Work Log
 
+## 2026-02-19: Fix GUI SSE "Always Disconnected" Bug
+
+### What Changed
+
+The GUI always showed "Disconnected" status even though API calls (creating rooms, sending messages) worked fine. The CLI was unaffected.
+
+#### Root Cause
+
+`self.server_url` in the GUI stored the raw URL from the login form (e.g., `host:port`) without scheme normalization. The SSE subscription used this raw URL directly to construct the events endpoint (`host:port/api/v1/events`), which is invalid without `https://`. Meanwhile, `ApiClient::new()` internally normalized URLs by prepending `https://` when no scheme was present, so all API calls worked fine. The CLI was unaffected because it uses `api.connect_sse()` which uses the already-normalized `ApiClient.base_url`.
+
+#### Fix
+
+- **`crates/conclave-lib/src/api.rs`**: Extracted URL normalization logic from `ApiClient::new()` into a public `normalize_server_url()` function, then refactored `ApiClient::new()` to use it.
+- **`crates/conclave-gui/src/app.rs`**: Imported `normalize_server_url` and applied it when setting `self.server_url` in both the session restore path (`Conclave::new()`) and the login result handler (`handle_login_result()`). This ensures the SSE subscription always receives a properly normalized URL with scheme.
+
+## 2026-02-19: GUI `/reset` Command Implementation
+
+### What Changed
+
+Ported the `/reset` command from the CLI TUI to the GUI client. The GUI previously displayed a stub message ("Reset not yet supported in GUI. Use CLI.") — now it performs the full RFC 9420-compliant account reset flow.
+
+#### `crates/conclave-gui/src/app.rs`
+
+- Added `ResetCompleteInfo` struct and `Message::ResetComplete` variant for the async result.
+- Replaced the `Command::Reset` stub with `self.reset_account()`.
+- Implemented `reset_account()` method: single `Task::perform()` async block that collects groups and old leaf indices, calls `api.reset_account()`, wipes local MLS state, regenerates identity, uploads new key packages (1 last-resort + 5 regular), and performs external commit rejoin for each group — matching the CLI flow exactly.
+- Implemented `handle_reset_complete()` method: updates `self.group_mapping`, saves to disk, reinitializes `self.mls` with the new identity, clears stale `fetching_groups` state, displays status messages, and triggers a room reload.
+- Added `/reset` to the `/help` output.
+
 ## 2026-02-18: Comprehensive Test Suite Expansion
 
 ### What Changed

@@ -2,7 +2,7 @@ use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
 
-use conclave_lib::api::ApiClient;
+use conclave_lib::api::{normalize_server_url, ApiClient};
 use conclave_lib::command::Command;
 use conclave_lib::config::{
     ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
@@ -66,6 +66,8 @@ pub enum Message {
     GroupCreated(Result<GroupCreatedInfo, String>),
     /// A group operation completed that requires a room refresh.
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
+    /// Account reset completed — update group mapping and MLS state.
+    ResetComplete(Result<ResetCompleteInfo, String>),
     /// Tab key pressed (for login field navigation).
     TabPressed,
     /// Quit the application (e.g. Ctrl+Q).
@@ -133,6 +135,12 @@ pub struct GroupCreatedInfo {
     pub messages: Vec<DisplayMessage>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResetCompleteInfo {
+    pub new_group_mapping: HashMap<String, String>,
+    pub messages: Vec<DisplayMessage>,
+}
+
 impl Conclave {
     pub fn new() -> (Self, Task<Message>) {
         let config = ClientConfig::load();
@@ -182,7 +190,7 @@ impl Conclave {
             let mut api = ApiClient::new(&server_url, app.config.accept_invalid_certs);
             api.set_token(token.clone());
             app.api = Some(api);
-            app.server_url = Some(server_url.clone());
+            app.server_url = Some(normalize_server_url(&server_url));
             app.username = Some(username.clone());
             app.user_id = Some(user_id);
             app.token = Some(token);
@@ -295,6 +303,7 @@ impl Conclave {
                 self.window_focused = false;
                 Task::none()
             }
+            Message::ResetComplete(result) => self.handle_reset_complete(result),
             Message::GroupCreated(result) => self.handle_group_created(result),
             Message::RefreshRooms(result) => {
                 match result {
@@ -451,7 +460,7 @@ impl Conclave {
         match result {
             Ok(info) => {
                 // Store the server URL the user actually connected to
-                self.server_url = Some(info.server_url.clone());
+                self.server_url = Some(normalize_server_url(&info.server_url));
 
                 // Set up API client
                 let mut api = ApiClient::new(&info.server_url, self.config.accept_invalid_certs);
@@ -725,10 +734,7 @@ impl Conclave {
             Ok(Command::Kick { username }) => self.kick_member(username),
             Ok(Command::Leave) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
-            Ok(Command::Reset) => {
-                self.push_system_message("Reset not yet supported in GUI. Use CLI.");
-                Task::none()
-            }
+            Ok(Command::Reset) => self.reset_account(),
             Ok(Command::Msg { room, text }) => self.send_to_room(&room, &text),
             Err(e) => {
                 self.push_system_message(&format!("{e}"));
@@ -1539,6 +1545,196 @@ impl Conclave {
         )
     }
 
+    fn reset_account(&mut self) -> Task<Message> {
+        let username = match &self.username {
+            Some(username) => username.clone(),
+            None => {
+                self.push_system_message("Not logged in.");
+                return Task::none();
+            }
+        };
+
+        let server_url = self.server_url.clone().unwrap_or_default();
+        let accept_invalid_certs = self.config.accept_invalid_certs;
+        let token = self.token.clone().unwrap_or_default();
+        let data_dir = self.config.data_dir.clone();
+        let group_mapping = self.group_mapping.clone();
+
+        self.push_system_message("Resetting account...");
+
+        Task::perform(
+            async move {
+                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                api.set_token(token);
+
+                // Step 1: Collect groups and find old leaf indices before wiping
+                let groups_to_rejoin: Vec<(String, String)> = group_mapping
+                    .iter()
+                    .map(|(server_id, mls_id)| (server_id.clone(), mls_id.clone()))
+                    .collect();
+
+                let old_indices: HashMap<String, Option<u32>> = tokio::task::spawn_blocking({
+                    let data_dir = data_dir.clone();
+                    let username = username.clone();
+                    let groups = groups_to_rejoin.clone();
+                    move || {
+                        let mls =
+                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                        let mut indices = HashMap::new();
+                        for (server_id, mls_id) in &groups {
+                            let index =
+                                mls.find_member_index(mls_id, &username).ok().flatten();
+                            indices.insert(server_id.clone(), index);
+                        }
+                        Ok::<_, String>(indices)
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+
+                // Step 2: Notify server to clear our key packages
+                api.reset_account().await.map_err(|e| e.to_string())?;
+
+                // Step 3: Wipe local MLS state
+                tokio::task::spawn_blocking({
+                    let data_dir = data_dir.clone();
+                    let username = username.clone();
+                    move || {
+                        let mls =
+                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                        mls.wipe_local_state().map_err(|e| e.to_string())
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+
+                // Step 4: Regenerate identity and upload new key packages
+                let entries = tokio::task::spawn_blocking({
+                    let data_dir = data_dir.clone();
+                    let username = username.clone();
+                    move || {
+                        let mls =
+                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                        generate_initial_key_packages(&mls).map_err(|e| e.to_string())
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+
+                api.upload_key_packages(entries)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                // Step 5: Rejoin each group via external commit
+                let mut new_mapping = HashMap::new();
+                let mut messages = Vec::new();
+                let mut rejoin_count = 0;
+
+                for (server_id, _) in &groups_to_rejoin {
+                    let group_info_response = match api.get_group_info(server_id).await {
+                        Ok(response) => response,
+                        Err(error) => {
+                            messages.push(DisplayMessage::system(&format!(
+                                "Failed to get group info for {server_id}: {error}"
+                            )));
+                            continue;
+                        }
+                    };
+
+                    let old_index = old_indices.get(server_id).copied().flatten();
+                    let group_info_bytes = group_info_response.group_info.clone();
+
+                    let rejoin_result = tokio::task::spawn_blocking({
+                        let data_dir = data_dir.clone();
+                        let username = username.clone();
+                        move || {
+                            let mls = MlsManager::new(&data_dir, &username)
+                                .map_err(|e| e.to_string())?;
+                            mls.external_rejoin_group(&group_info_bytes, old_index)
+                                .map_err(|e| e.to_string())
+                        }
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                    match rejoin_result {
+                        Ok((new_mls_id, commit_bytes)) => {
+                            if let Err(error) =
+                                api.external_join(server_id, commit_bytes).await
+                            {
+                                messages.push(DisplayMessage::system(&format!(
+                                    "Failed to rejoin {server_id}: {error}"
+                                )));
+                                continue;
+                            }
+                            new_mapping.insert(server_id.clone(), new_mls_id);
+                            rejoin_count += 1;
+                        }
+                        Err(error) => {
+                            messages.push(DisplayMessage::system(&format!(
+                                "Failed external commit for {server_id}: {error}"
+                            )));
+                        }
+                    }
+                }
+
+                messages.push(DisplayMessage::system(&format!(
+                    "Account reset complete. Rejoined {rejoin_count}/{} groups.",
+                    groups_to_rejoin.len()
+                )));
+
+                Ok(ResetCompleteInfo {
+                    new_group_mapping: new_mapping,
+                    messages,
+                })
+            },
+            Message::ResetComplete,
+        )
+    }
+
+    fn handle_reset_complete(
+        &mut self,
+        result: Result<ResetCompleteInfo, String>,
+    ) -> Task<Message> {
+        match result {
+            Ok(info) => {
+                self.group_mapping = info.new_group_mapping;
+                save_group_mapping(&self.config.data_dir, &self.group_mapping);
+
+                // Reinitialize MLS with the new identity
+                if let Some(username) = &self.username {
+                    if let Ok(mls) = MlsManager::new(&self.config.data_dir, username) {
+                        self.mls = Some(mls);
+                    }
+                }
+
+                // Clear stale fetch state from pre-reset MLS groups
+                self.fetching_groups.clear();
+
+                for message in info.messages {
+                    self.add_message(None, message);
+                }
+
+                // Reload rooms to pick up any membership changes
+                let server_url = self.server_url.clone().unwrap_or_default();
+                let accept_invalid_certs = self.config.accept_invalid_certs;
+                let token = self.token.clone().unwrap_or_default();
+                Task::perform(
+                    async move {
+                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                        api.set_token(token);
+                        load_rooms_async(&api).await
+                    },
+                    Message::RoomsLoaded,
+                )
+            }
+            Err(error) => {
+                self.push_system_message(&format!("Reset failed: {error}"));
+                Task::none()
+            }
+        }
+    }
+
     /// Fetch missed messages for all rooms that have a group mapping.
     fn fetch_all_missed_messages(&mut self) -> Task<Message> {
         let tasks: Vec<_> = self
@@ -1770,6 +1966,7 @@ impl Conclave {
             "/leave                        Leave the room",
             "/part                         Switch away without leaving",
             "/rotate                       Rotate keys (forward secrecy)",
+            "/reset                        Reset account and rejoin groups",
             "/info                         Show MLS group details",
             "/rooms                        List your rooms",
             "/unread                       Check rooms for new messages",
