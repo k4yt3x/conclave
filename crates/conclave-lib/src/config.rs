@@ -137,10 +137,16 @@ pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
 pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
     let path = data_dir.join("group_mapping.toml");
     if let Ok(contents) = toml::to_string_pretty(mapping) {
-        let _ = std::fs::write(&path, contents);
+        if let Err(error) = std::fs::write(&path, &contents) {
+            tracing::warn!(%error, path = %path.display(), "failed to write group mapping");
+        }
         #[cfg(unix)]
         {
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            if let Err(error) =
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::warn!(%error, path = %path.display(), "failed to set group mapping permissions");
+            }
         }
     }
 }

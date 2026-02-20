@@ -826,17 +826,17 @@ async fn external_join(
         return Err(Error::NotFound("group not found".into()));
     }
 
-    // Verify the group has a stored GroupInfo (only set by authorized members
-    // via upload_commit or remove_group_member). This prevents arbitrary users
-    // from joining groups they were never associated with.
+    // Only existing members (e.g., after an account reset that preserves
+    // server-side memberships) may rejoin via external commit.
+    if !state.db.is_group_member(&group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
     if state.db.get_group_info(&group_id)?.is_none() {
         return Err(Error::BadRequest(
             "no group info available for external join".into(),
         ));
     }
-
-    // Add user as group member (re-add after reset).
-    state.db.add_group_member(&group_id, auth.user_id)?;
 
     // Store the external commit as a message for other members to process.
     if !request.commit_message.is_empty() {

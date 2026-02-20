@@ -9,6 +9,10 @@ use crossterm::{
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage};
 
+fn sanitize_for_terminal(input: &str) -> String {
+    conclave_lib::sanitize_control_chars(input)
+}
+
 /// Full redraw of the terminal.
 pub fn render_full(
     stdout: &mut impl Write,
@@ -58,7 +62,8 @@ pub fn render_status_line(
 
     let room_info = if let Some(room) = state.active_room_info() {
         let member_count = room.members.len();
-        format!("#{} ({member_count})", room.name)
+        let name = sanitize_for_terminal(&room.name);
+        format!("#{name} ({member_count})")
     } else {
         String::from("no room")
     };
@@ -90,7 +95,8 @@ pub fn render_input_line(
     )?;
 
     let prefix = if let Some(room) = state.active_room_info() {
-        format!("[#{}] ", room.name)
+        let name = sanitize_for_terminal(&room.name);
+        format!("[#{name}] ")
     } else {
         String::from("> ")
     };
@@ -120,18 +126,21 @@ fn write_message(stdout: &mut impl Write, msg: &DisplayMessage, _cols: u16) -> s
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_else(|| "??:??".to_string());
 
+    let content = sanitize_for_terminal(&msg.content);
+
     if msg.is_system {
         queue!(stdout, SetForegroundColor(Color::DarkYellow))?;
-        write!(stdout, "[{time}] *** {}", msg.content)?;
+        write!(stdout, "[{time}] *** {content}")?;
         queue!(stdout, ResetColor)?;
     } else {
-        let nick_color = username_color(&msg.sender);
+        let sender = sanitize_for_terminal(&msg.sender);
+        let nick_color = username_color(&sender);
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "[{time}] ")?;
         queue!(stdout, SetForegroundColor(nick_color))?;
-        write!(stdout, "<{}>", msg.sender)?;
+        write!(stdout, "<{sender}>")?;
         queue!(stdout, ResetColor)?;
-        write!(stdout, " {}", msg.content)?;
+        write!(stdout, " {content}")?;
     }
 
     Ok(())
@@ -157,4 +166,41 @@ fn username_color(username: &str) -> Color {
         acc.wrapping_mul(31).wrapping_add(b as usize)
     });
     colors[hash % colors.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_strips_escape_sequences() {
+        assert_eq!(sanitize_for_terminal("\x1b[2Jcleared"), "[2Jcleared");
+        assert_eq!(sanitize_for_terminal("\x1b[Hhome"), "[Hhome");
+        assert_eq!(
+            sanitize_for_terminal("\x1b[8mhidden\x1b[0m"),
+            "[8mhidden[0m"
+        );
+        assert_eq!(
+            sanitize_for_terminal("before\x1b[31mred\x1b[0mafter"),
+            "before[31mred[0mafter"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_preserves_normal_text() {
+        assert_eq!(sanitize_for_terminal("hello world"), "hello world");
+        assert_eq!(sanitize_for_terminal("café résumé"), "café résumé");
+        assert_eq!(sanitize_for_terminal("emoji 🎉🔒"), "emoji 🎉🔒");
+        assert_eq!(sanitize_for_terminal("日本語テスト"), "日本語テスト");
+        assert_eq!(sanitize_for_terminal("line1\nline2"), "line1\nline2");
+    }
+
+    #[test]
+    fn test_sanitize_strips_control_chars() {
+        assert_eq!(sanitize_for_terminal("\x00null"), "null");
+        assert_eq!(sanitize_for_terminal("\x07bell"), "bell");
+        assert_eq!(sanitize_for_terminal("\x08backspace"), "backspace");
+        assert_eq!(sanitize_for_terminal("\x7fdelete"), "delete");
+        assert_eq!(sanitize_for_terminal("\x01\x02\x03"), "");
+    }
 }

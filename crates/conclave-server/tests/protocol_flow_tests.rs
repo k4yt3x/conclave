@@ -216,20 +216,6 @@ async fn accept_welcome(app: &Router, token: &str, welcome_id: i64) {
 }
 
 /// Get group info from the server.
-async fn get_group_info_bytes(app: &Router, token: &str, group_id: &str) -> Vec<u8> {
-    let request = Request::builder()
-        .method("GET")
-        .uri(format!("/api/v1/groups/{group_id}/group-info"))
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let resp = conclave_proto::GetGroupInfoResponse::decode(body_bytes).unwrap();
-    resp.group_info
-}
-
 // ── End-to-End Protocol Flow Tests ────────────────────────────────
 
 /// Full flow: register, upload real MLS key packages, create group with member,
@@ -799,22 +785,10 @@ async fn test_e2e_external_rejoin_after_removal() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Bob performs an external rejoin using the group info stored on the server.
-    // First, alice needs to be a member to retrieve group info.
-    let group_info_data = get_group_info_bytes(&app, &alice_token, &server_group_id).await;
-
-    // Bob creates a new MLS identity for the rejoin (simulating account reset).
-    let bob_rejoin_dir = TempDir::new().unwrap();
-    let bob_rejoin_mls = MlsManager::new(bob_rejoin_dir.path(), "bob").unwrap();
-
-    // Bob was already removed from the tree, so no old leaf index to remove.
-    let (rejoin_mls_gid, rejoin_commit) = bob_rejoin_mls
-        .external_rejoin_group(&group_info_data, None)
-        .unwrap();
-
-    // Bob does the server-side external join.
+    // Bob attempts an external rejoin after being removed.
+    // The server should reject this since Bob is no longer a group member.
     let req_body = conclave_proto::ExternalJoinRequest {
-        commit_message: rejoin_commit.clone(),
+        commit_message: b"bob_rejoin_commit".to_vec(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -826,32 +800,11 @@ async fn test_e2e_external_rejoin_after_removal() {
         .body(Body::from(body))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    // Alice processes the external commit.
-    let messages = get_messages(&app, &alice_token, &server_group_id, 0).await;
-    for msg in &messages {
-        let _ = alice_mls.decrypt_message(&mls_group_id, &msg.mls_message);
-    }
-
-    // Verify bidirectional messaging works after rejoin.
-    let post_rejoin = b"Welcome back, Bob!";
-    let encrypted = alice_mls
-        .encrypt_message(&mls_group_id, post_rejoin)
-        .unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
-
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
-    let msg = messages.iter().find(|m| m.sequence_num == seq).unwrap();
-    let decrypted = bob_rejoin_mls
-        .decrypt_message(&rejoin_mls_gid, &msg.mls_message)
-        .unwrap();
-    match decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
-            assert_eq!(data, post_rejoin);
-        }
-        other => panic!("expected Application after rejoin, got: {other:?}"),
-    }
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "removed members should not be able to external-join"
+    );
 }
 
 /// Test that real MLS key packages pass the server's wire format validation.

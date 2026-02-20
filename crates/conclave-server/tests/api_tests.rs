@@ -1207,10 +1207,14 @@ async fn test_external_join_success() {
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "ext-group", vec![]).await;
 
-    // Alice uploads a commit with group_info so external join is possible.
+    // Register Bob and add him to the group via a commit with a welcome message.
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+    let mut welcome_messages = std::collections::HashMap::new();
+    welcome_messages.insert("bob".to_string(), b"welcome_bob".to_vec());
     let commit_body = conclave_proto::UploadCommitRequest {
-        commit_message: vec![],
-        welcome_messages: std::collections::HashMap::new(),
+        commit_message: b"add_bob".to_vec(),
+        welcome_messages,
         group_info: b"fake_group_info".to_vec(),
     };
     let mut cbody = Vec::new();
@@ -1225,10 +1229,7 @@ async fn test_external_join_success() {
     let response = app.clone().oneshot(commit_request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Bob performs an external join
-    register_user(&app, "bob", "password123").await;
-    let bob_token = login_user(&app, "bob", "password123").await;
-
+    // Bob (an existing member) performs an external join (e.g., after account reset).
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"ext_commit".to_vec(),
     };
@@ -1246,7 +1247,7 @@ async fn test_external_join_success() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Verify bob is now a member by sending a message
+    // Verify bob is still a member by sending a message.
     let req_body = conclave_proto::SendMessageRequest {
         mls_message: b"bob_message".to_vec(),
     };
@@ -2703,10 +2704,7 @@ async fn test_external_join_no_group_info_stored() {
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "no-info-group", vec![]).await;
 
-    // No commit with group_info has been uploaded, so no group_info exists.
-    register_user(&app, "bob", "password123").await;
-    let bob_token = login_user(&app, "bob", "password123").await;
-
+    // Alice (a member) attempts external join but no group_info has been uploaded.
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"ext_commit".to_vec(),
     };
@@ -2717,7 +2715,7 @@ async fn test_external_join_no_group_info_stored() {
         .method("POST")
         .uri(format!("/api/v1/groups/{group_id}/external-join"))
         .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
         .body(Body::from(body))
         .unwrap();
 
@@ -2986,10 +2984,14 @@ async fn test_external_join_commit_stored_as_message() {
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "ext-msg-group", vec![]).await;
 
-    // Alice uploads commit with group_info to enable external join.
+    // Register Bob and add him to the group via a commit with a welcome.
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+    let mut welcome_messages = HashMap::new();
+    welcome_messages.insert("bob".to_string(), b"welcome_bob".to_vec());
     let req_body = conclave_proto::UploadCommitRequest {
-        commit_message: vec![],
-        welcome_messages: HashMap::new(),
+        commit_message: b"add_bob".to_vec(),
+        welcome_messages,
         group_info: b"ext_group_info".to_vec(),
     };
     let mut body = Vec::new();
@@ -3004,10 +3006,7 @@ async fn test_external_join_commit_stored_as_message() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Bob performs an external join with a commit_message.
-    register_user(&app, "bob", "password123").await;
-    let bob_token = login_user(&app, "bob", "password123").await;
-
+    // Bob (existing member) performs an external join with a commit_message.
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"external_join_commit_data".to_vec(),
     };
@@ -3026,7 +3025,9 @@ async fn test_external_join_commit_stored_as_message() {
     // Alice retrieves messages and verifies the external join commit is present.
     let request = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/groups/{group_id}/messages?after=0"))
+        .uri(format!(
+            "/api/v1/groups/{group_id}/messages?after=0&limit=500"
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
         .body(Body::empty())
         .unwrap();
@@ -3041,5 +3042,56 @@ async fn test_external_join_commit_stored_as_message() {
     assert!(
         has_external_join_commit,
         "external join commit message should be stored and retrievable"
+    );
+}
+
+// ── Security: External Join Requires Membership ──────────────────
+
+#[tokio::test]
+async fn test_external_join_requires_membership() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "private-group", vec![]).await;
+
+    // Alice uploads commit with group_info.
+    let commit_body = conclave_proto::UploadCommitRequest {
+        commit_message: vec![],
+        welcome_messages: HashMap::new(),
+        group_info: b"group_info_data".to_vec(),
+    };
+    let mut cbody = Vec::new();
+    commit_body.encode(&mut cbody).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/commit"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(cbody))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Eve (not a group member) attempts an external join.
+    register_user(&app, "eve", "password123").await;
+    let eve_token = login_user(&app, "eve", "password123").await;
+
+    let req_body = conclave_proto::ExternalJoinRequest {
+        commit_message: b"eve_commit".to_vec(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/external-join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {eve_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "non-member should be rejected from external join"
     );
 }
