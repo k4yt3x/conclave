@@ -2,13 +2,14 @@ use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
 
-use conclave_lib::api::{normalize_server_url, ApiClient};
+use conclave_lib::api::{ApiClient, normalize_server_url};
 use conclave_lib::command::Command;
 use conclave_lib::config::{
     ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
     save_group_mapping,
 };
 use conclave_lib::mls::MlsManager;
+use conclave_lib::operations;
 use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
 use conclave_lib::store::MessageStore;
 
@@ -52,22 +53,22 @@ pub enum Message {
     // Async results
     LoginResult(Result<LoginInfo, String>),
     RegisterResult(Result<RegisterInfo, String>),
-    RoomsLoaded(Result<Vec<RoomInfo>, String>),
-    MessageSent(Result<MessageSentInfo, String>),
-    MessagesFetched(Result<FetchedMessages, (String, String)>),
+    RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
+    MessageSent(Result<(operations::MessageSentResult, String), String>),
+    MessagesFetched(Result<operations::FetchedMessages, (String, String)>),
     KeygenDone(Result<Vec<(Vec<u8>, bool)>, String>),
     KeyPackageUploaded(Result<(), String>),
-    WelcomesProcessed(Result<Vec<WelcomeResult>, String>),
+    WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
     // SSE
     SseEvent(SseUpdate),
     // Commands
     CommandResult(Result<Vec<DisplayMessage>, String>),
     /// A group was created or joined — update mapping and refresh rooms.
-    GroupCreated(Result<GroupCreatedInfo, String>),
+    GroupCreated(Result<operations::GroupCreatedResult, String>),
     /// A group operation completed that requires a room refresh.
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
     /// Account reset completed — update group mapping and MLS state.
-    ResetComplete(Result<ResetCompleteInfo, String>),
+    ResetComplete(Result<operations::ResetResult, String>),
     /// Tab key pressed (for login field navigation).
     TabPressed,
     /// Quit the application (e.g. Ctrl+Q).
@@ -87,55 +88,6 @@ pub struct LoginInfo {
 #[derive(Debug, Clone)]
 pub struct RegisterInfo {
     pub user_id: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct RoomInfo {
-    pub group_id: String,
-    pub name: String,
-    pub members: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MessageSentInfo {
-    pub group_id: String,
-    pub sequence_num: u64,
-    pub text: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct FetchedMessages {
-    pub group_id: String,
-    pub messages: Vec<DecryptedMsg>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DecryptedMsg {
-    pub sender: String,
-    pub content: String,
-    pub timestamp: i64,
-    pub sequence_num: u64,
-    pub is_system: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct WelcomeResult {
-    pub group_id: String,
-    pub group_name: String,
-    pub mls_group_id: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupCreatedInfo {
-    pub server_group_id: String,
-    pub mls_group_id: String,
-    pub messages: Vec<DisplayMessage>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResetCompleteInfo {
-    pub new_group_mapping: HashMap<String, String>,
-    pub messages: Vec<DisplayMessage>,
 }
 
 impl Conclave {
@@ -212,9 +164,6 @@ impl Conclave {
             ))];
 
             // Generate key packages and load rooms from server
-            let accept_invalid_certs = app.config.accept_invalid_certs;
-            let token = app.token.clone().unwrap_or_default();
-
             let data_dir = app.config.data_dir.clone();
             let keygen_username = username.clone();
             let keygen_task = Task::perform(
@@ -230,15 +179,7 @@ impl Conclave {
                 Message::KeygenDone,
             );
 
-            let rooms_task = Task::perform(
-                async move {
-                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                    api.set_token(token);
-                    load_rooms_async(&api).await
-                },
-                Message::RoomsLoaded,
-            );
-
+            let rooms_task = app.load_rooms_task();
             let welcome_task = app.accept_welcomes();
 
             return (app, Task::batch([keygen_task, rooms_task, welcome_task]));
@@ -311,18 +252,7 @@ impl Conclave {
                     }
                     Err(e) => self.push_system_message(&format!("Error: {e}")),
                 }
-                // Trigger a room reload
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                )
+                self.load_rooms_task()
             }
         }
     }
@@ -513,17 +443,7 @@ impl Conclave {
                     Message::KeygenDone,
                 );
 
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                let rooms_task = Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                );
+                let rooms_task = self.load_rooms_task();
 
                 Task::batch([keygen_task, rooms_task])
             }
@@ -640,7 +560,9 @@ impl Conclave {
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                         api.set_token(token);
-                        let rooms = load_rooms_async(&api).await.map_err(|e| e.to_string())?;
+                        let rooms = operations::load_rooms(&api)
+                            .await
+                            .map_err(|e| e.to_string())?;
                         if rooms.is_empty() {
                             return Ok(vec![DisplayMessage::system("No rooms.")]);
                         }
@@ -767,62 +689,30 @@ impl Conclave {
                 if self.fetching_groups.contains(&group_id) {
                     return Task::none();
                 }
+
+                let mls_group_id = match self.group_mapping.get(&group_id) {
+                    Some(id) => id.clone(),
+                    None => return Task::none(),
+                };
+                if self.username.is_none() {
+                    return Task::none();
+                }
+
                 self.fetching_groups.insert(group_id.clone());
 
-                // Fetch and decrypt new messages
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
                 let last_seq = self
                     .rooms
                     .get(&group_id)
                     .map(|r| r.last_seen_seq)
                     .unwrap_or(0);
-                let mls_group_id = self.group_mapping.get(&group_id).cloned();
-                let username = self.username.clone();
-                let data_dir = self.config.data_dir.clone();
-                let group_id_clone = group_id.clone();
 
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        match fetch_and_decrypt(
-                            &api,
-                            &group_id_clone,
-                            last_seq,
-                            mls_group_id.as_deref(),
-                            username.as_deref(),
-                            &data_dir,
-                        )
-                        .await
-                        {
-                            Ok(fetched) => Ok(fetched),
-                            Err(error) => Err((group_id_clone, error)),
-                        }
-                    },
-                    Message::MessagesFetched,
-                )
+                self.fetch_messages_task(group_id, last_seq, mls_group_id)
             }
             SseUpdate::Welcome => self.accept_welcomes(),
-            SseUpdate::GroupUpdate => {
-                // Reload rooms
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                )
-            }
+            SseUpdate::GroupUpdate => self.load_rooms_task(),
             SseUpdate::MemberRemoved { group_id, username } => {
                 let is_self = self.username.as_deref() == Some(&username);
                 if is_self {
-                    // We were removed — delete MLS group state
                     let room_name = self
                         .rooms
                         .get(&group_id)
@@ -838,24 +728,20 @@ impl Conclave {
                     }
                     self.push_system_message(&format!("You were removed from #{room_name}"));
 
-                    if let Some(mls_group_id) = mls_group_id {
+                    if let (Some(mls_group_id), Some(our_username)) =
+                        (mls_group_id, self.username.clone())
+                    {
                         let data_dir = self.config.data_dir.clone();
-                        let our_username = self.username.clone().unwrap_or_default();
                         Task::perform(
                             async move {
-                                match tokio::task::spawn_blocking(move || {
-                                    let mls = MlsManager::new(&data_dir, &our_username)?;
-                                    mls.delete_group_state(&mls_group_id)
-                                })
+                                if let Err(error) = operations::delete_mls_group_state(
+                                    &mls_group_id,
+                                    &data_dir,
+                                    &our_username,
+                                )
                                 .await
                                 {
-                                    Ok(Err(error)) => {
-                                        tracing::warn!(%error, "failed to delete MLS group state");
-                                    }
-                                    Err(error) => {
-                                        tracing::warn!(%error, "MLS group state deletion task panicked");
-                                    }
-                                    Ok(Ok(())) => {}
+                                    tracing::warn!(%error, "failed to delete MLS group state");
                                 }
                                 Ok::<_, String>(vec![])
                             },
@@ -884,33 +770,20 @@ impl Conclave {
 
     // ── Rooms ─────────────────────────────────────────────────────
 
-    fn handle_group_created(&mut self, result: Result<GroupCreatedInfo, String>) -> Task<Message> {
+    fn handle_group_created(
+        &mut self,
+        result: Result<operations::GroupCreatedResult, String>,
+    ) -> Task<Message> {
         match result {
             Ok(info) => {
-                // Update group mapping
                 self.group_mapping
                     .insert(info.server_group_id.clone(), info.mls_group_id);
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
-                // Auto-switch to the new room
                 self.active_room = Some(info.server_group_id.clone());
+                self.push_system_message(&format!("Group created ({})", info.server_group_id));
 
-                for msg in info.messages {
-                    self.add_message(None, msg);
-                }
-
-                // Reload rooms
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                )
+                self.load_rooms_task()
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to create group: {e}"));
@@ -919,7 +792,10 @@ impl Conclave {
         }
     }
 
-    fn handle_rooms_loaded(&mut self, result: Result<Vec<RoomInfo>, String>) -> Task<Message> {
+    fn handle_rooms_loaded(
+        &mut self,
+        result: Result<Vec<operations::RoomInfo>, String>,
+    ) -> Task<Message> {
         match result {
             Ok(room_infos) => {
                 for info in room_infos {
@@ -995,7 +871,7 @@ impl Conclave {
 
     fn handle_messages_fetched(
         &mut self,
-        result: Result<FetchedMessages, (String, String)>,
+        result: Result<operations::FetchedMessages, (String, String)>,
     ) -> Task<Message> {
         match result {
             Ok(fetched) => {
@@ -1031,11 +907,7 @@ impl Conclave {
                 }
 
                 if !self.window_focused {
-                    let last_msg = fetched
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| !m.is_system);
+                    let last_msg = fetched.messages.iter().rev().find(|m| !m.is_system);
                     if let Some(msg) = last_msg {
                         let room_name = self
                             .rooms
@@ -1057,12 +929,14 @@ impl Conclave {
         Task::none()
     }
 
-    fn handle_message_sent(&mut self, result: Result<MessageSentInfo, String>) -> Task<Message> {
+    fn handle_message_sent(
+        &mut self,
+        result: Result<(operations::MessageSentResult, String), String>,
+    ) -> Task<Message> {
         match result {
-            Ok(info) => {
+            Ok((info, text)) => {
                 let sender = self.username.clone().unwrap_or_default();
-                let msg =
-                    DisplayMessage::user(&sender, &info.text, chrono::Local::now().timestamp());
+                let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
                 self.add_message(Some(&info.group_id), msg);
 
                 if let Some(room) = self.rooms.get_mut(&info.group_id) {
@@ -1083,7 +957,7 @@ impl Conclave {
 
     fn handle_welcomes_processed(
         &mut self,
-        result: Result<Vec<WelcomeResult>, String>,
+        result: Result<Vec<operations::WelcomeJoinResult>, String>,
     ) -> Task<Message> {
         let was_processed = self.welcomes_processed;
         self.welcomes_processed = true;
@@ -1097,23 +971,9 @@ impl Conclave {
                 }
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
-                // Auto-switch to last joined room
                 if let Some(last) = welcomes.last() {
                     self.active_room = Some(last.group_id.clone());
                 }
-
-                // Reload rooms (picks up newly joined groups).
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                let rooms_task = Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                );
 
                 // Defer the missed-message fetch until rooms_task completes
                 // so that newly joined groups are in self.rooms when
@@ -1121,7 +981,7 @@ impl Conclave {
                 if !was_processed {
                     self.fetch_messages_on_rooms_load = true;
                 }
-                rooms_task
+                self.load_rooms_task()
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to process welcomes: {e}"));
@@ -1130,17 +990,7 @@ impl Conclave {
                 // rooms that already have mappings get their messages.
                 if !was_processed {
                     self.fetch_messages_on_rooms_load = true;
-                    let server_url = self.server_url.clone().unwrap_or_default();
-                    let accept_invalid_certs = self.config.accept_invalid_certs;
-                    let token = self.token.clone().unwrap_or_default();
-                    return Task::perform(
-                        async move {
-                            let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                            api.set_token(token);
-                            load_rooms_async(&api).await
-                        },
-                        Message::RoomsLoaded,
-                    );
+                    return self.load_rooms_task();
                 }
                 Task::none()
             }
@@ -1194,33 +1044,19 @@ impl Conclave {
 
         Task::perform(
             async move {
-                let encrypted = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    let mls_group_id = mls_group_id.clone();
-                    let text = text.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.encrypt_message(&mls_group_id, text.as_bytes())
-                            .map_err(|e| e.to_string())
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                let resp = api
-                    .send_message(&group_id, encrypted)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                Ok(MessageSentInfo {
-                    group_id,
-                    sequence_num: resp.sequence_num,
-                    text,
-                })
+                let result = operations::send_message(
+                    &api,
+                    &group_id,
+                    &mls_group_id,
+                    &text,
+                    &data_dir,
+                    &username,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok((result, text))
             },
             Message::MessageSent,
         )
@@ -1238,44 +1074,10 @@ impl Conclave {
         Task::perform(
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token.clone());
-
-                let resp = api
-                    .create_group(&name, members)
+                api.set_token(token);
+                operations::create_group(&api, &name, members, &data_dir, &username)
                     .await
-                    .map_err(|e| e.to_string())?;
-                let server_group_id = resp.group_id.clone();
-
-                let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-                    tokio::task::spawn_blocking({
-                        let data_dir = data_dir.clone();
-                        let username = username.clone();
-                        let member_kps = resp.member_key_packages.clone();
-                        move || {
-                            let mls =
-                                MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            mls.create_group(&member_kps).map_err(|e| e.to_string())
-                        }
-                    })
-                    .await
-                    .map_err(|e| e.to_string())??;
-
-                api.upload_commit(
-                    &server_group_id,
-                    commit_bytes,
-                    welcome_map,
-                    group_info_bytes,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-
-                Ok(GroupCreatedInfo {
-                    server_group_id: server_group_id.clone(),
-                    mls_group_id,
-                    messages: vec![DisplayMessage::system(&format!(
-                        "Created and joined #{name} ({server_group_id})"
-                    ))],
-                })
+                    .map_err(|e| e.to_string())
             },
             Message::GroupCreated,
         )
@@ -1308,41 +1110,25 @@ impl Conclave {
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-
-                let resp = api
-                    .invite_to_group(&group_id, members)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                if resp.member_key_packages.is_empty() {
-                    return Ok(vec![DisplayMessage::system("No new members to invite.")]);
-                }
-
-                let invited: Vec<String> = resp.member_key_packages.keys().cloned().collect();
-
-                let (commit_bytes, welcome_map, group_info_bytes) = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    let mls_group_id = mls_group_id.clone();
-                    let member_kps = resp.member_key_packages.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.invite_to_group(&mls_group_id, &member_kps)
-                            .map_err(|e| e.to_string())
-                    }
-                })
+                let invited = operations::invite_members(
+                    &api,
+                    &group_id,
+                    &mls_group_id,
+                    members,
+                    &data_dir,
+                    &username,
+                )
                 .await
-                .map_err(|e| e.to_string())??;
+                .map_err(|e| e.to_string())?;
 
-                api.upload_commit(&group_id, commit_bytes, welcome_map, group_info_bytes)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                Ok(vec![DisplayMessage::system(&format!(
-                    "Invited {} to the room",
-                    invited.join(", ")
-                ))])
+                if invited.is_empty() {
+                    Ok(vec![DisplayMessage::system("No new members to invite.")])
+                } else {
+                    Ok(vec![DisplayMessage::system(&format!(
+                        "Invited {} to the room",
+                        invited.join(", ")
+                    ))])
+                }
             },
             Message::RefreshRooms,
         )
@@ -1373,32 +1159,18 @@ impl Conclave {
 
         Task::perform(
             async move {
-                let mls = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    let mls_group_id = mls_group_id.clone();
-                    let target = target.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        let member_index = mls
-                            .find_member_index(&mls_group_id, &target)
-                            .map_err(|e| e.to_string())?
-                            .ok_or_else(|| format!("user '{target}' not found in MLS roster"))?;
-                        let (commit_bytes, group_info_bytes) = mls
-                            .remove_member(&mls_group_id, member_index)
-                            .map_err(|e| e.to_string())?;
-                        Ok::<_, String>((commit_bytes, group_info_bytes))
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                api.remove_member(&group_id, &target, mls.0, mls.1)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                operations::kick_member(
+                    &api,
+                    &group_id,
+                    &mls_group_id,
+                    &target,
+                    &data_dir,
+                    &username,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
 
                 Ok(vec![DisplayMessage::system(&format!(
                     "Removed {target} from the room"
@@ -1440,57 +1212,17 @@ impl Conclave {
 
         Task::perform(
             async move {
-                // Produce an MLS self-remove commit so remaining members can
-                // advance their epoch and exclude us from future messages.
-                // This must happen BEFORE deleting the MLS group state.
-                let (commit_bytes, group_info_bytes) = if let Some(mls_gid) = &mls_group_id {
-                    match tokio::task::spawn_blocking({
-                        let data_dir = data_dir.clone();
-                        let username = username.clone();
-                        let mls_gid = mls_gid.clone();
-                        move || {
-                            let mls =
-                                MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                            mls.leave_group(&mls_gid).map_err(|e| e.to_string())
-                        }
-                    })
-                    .await
-                    {
-                        Ok(Ok(Some(data))) => data,
-                        _ => (Vec::new(), Vec::new()),
-                    }
-                } else {
-                    (Vec::new(), Vec::new())
-                };
-
-                // Delete MLS group state after commit is produced
-                if let Some(mls_gid) = &mls_group_id {
-                    match tokio::task::spawn_blocking({
-                        let data_dir = data_dir.clone();
-                        let username = username.clone();
-                        let mls_gid = mls_gid.clone();
-                        move || {
-                            let mls = MlsManager::new(&data_dir, &username)?;
-                            mls.delete_group_state(&mls_gid)
-                        }
-                    })
-                    .await
-                    {
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "failed to delete MLS group state");
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "MLS group state deletion task panicked");
-                        }
-                        Ok(Ok(())) => {}
-                    }
-                }
-
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                api.leave_group(&group_id, commit_bytes, group_info_bytes)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                operations::leave_group(
+                    &api,
+                    &group_id,
+                    mls_group_id.as_deref(),
+                    &data_dir,
+                    &username,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 Ok(vec![])
             },
             Message::CommandResult,
@@ -1522,16 +1254,9 @@ impl Conclave {
 
         Task::perform(
             async move {
-                let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking(move || {
-                    let mls = MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                    mls.rotate_keys(&mls_group_id).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                api.upload_commit(&group_id, commit_bytes, HashMap::new(), group_info_bytes)
+                operations::rotate_keys(&api, &group_id, &mls_group_id, &data_dir, &username)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -1544,18 +1269,16 @@ impl Conclave {
     }
 
     fn reset_account(&mut self) -> Task<Message> {
-        let username = match &self.username {
-            Some(username) => username.clone(),
-            None => {
-                self.push_system_message("Not logged in.");
-                return Task::none();
-            }
-        };
+        if self.username.is_none() {
+            self.push_system_message("Not logged in.");
+            return Task::none();
+        }
 
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
+        let username = self.username.clone().unwrap_or_default();
         let group_mapping = self.group_mapping.clone();
 
         self.push_system_message("Resetting account...");
@@ -1564,127 +1287,9 @@ impl Conclave {
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-
-                // Step 1: Collect groups and find old leaf indices before wiping
-                let groups_to_rejoin: Vec<(String, String)> = group_mapping
-                    .iter()
-                    .map(|(server_id, mls_id)| (server_id.clone(), mls_id.clone()))
-                    .collect();
-
-                let old_indices: HashMap<String, Option<u32>> = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    let groups = groups_to_rejoin.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        let mut indices = HashMap::new();
-                        for (server_id, mls_id) in &groups {
-                            let index =
-                                mls.find_member_index(mls_id, &username).ok().flatten();
-                            indices.insert(server_id.clone(), index);
-                        }
-                        Ok::<_, String>(indices)
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
-                // Step 2: Notify server to clear our key packages
-                api.reset_account().await.map_err(|e| e.to_string())?;
-
-                // Step 3: Wipe local MLS state
-                tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.wipe_local_state().map_err(|e| e.to_string())
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
-                // Step 4: Regenerate identity and upload new key packages
-                let entries = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        generate_initial_key_packages(&mls).map_err(|e| e.to_string())
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
-                api.upload_key_packages(entries)
+                operations::reset_account(&api, &group_mapping, &data_dir, &username)
                     .await
-                    .map_err(|e| e.to_string())?;
-
-                // Step 5: Rejoin each group via external commit
-                let mut new_mapping = HashMap::new();
-                let mut messages = Vec::new();
-                let mut rejoin_count = 0;
-
-                for (server_id, _) in &groups_to_rejoin {
-                    let group_info_response = match api.get_group_info(server_id).await {
-                        Ok(response) => response,
-                        Err(error) => {
-                            messages.push(DisplayMessage::system(&format!(
-                                "Failed to get group info for {server_id}: {error}"
-                            )));
-                            continue;
-                        }
-                    };
-
-                    let old_index = old_indices.get(server_id).copied().flatten();
-                    let group_info_bytes = group_info_response.group_info.clone();
-
-                    let rejoin_result = tokio::task::spawn_blocking({
-                        let data_dir = data_dir.clone();
-                        let username = username.clone();
-                        move || {
-                            let mls = MlsManager::new(&data_dir, &username)
-                                .map_err(|e| e.to_string())?;
-                            mls.external_rejoin_group(&group_info_bytes, old_index)
-                                .map_err(|e| e.to_string())
-                        }
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                    match rejoin_result {
-                        Ok((new_mls_id, commit_bytes)) => {
-                            if let Err(error) =
-                                api.external_join(server_id, commit_bytes).await
-                            {
-                                messages.push(DisplayMessage::system(&format!(
-                                    "Failed to rejoin {server_id}: {error}"
-                                )));
-                                continue;
-                            }
-                            new_mapping.insert(server_id.clone(), new_mls_id);
-                            rejoin_count += 1;
-                        }
-                        Err(error) => {
-                            messages.push(DisplayMessage::system(&format!(
-                                "Failed external commit for {server_id}: {error}"
-                            )));
-                        }
-                    }
-                }
-
-                messages.push(DisplayMessage::system(&format!(
-                    "Account reset complete. Rejoined {rejoin_count}/{} groups.",
-                    groups_to_rejoin.len()
-                )));
-
-                Ok(ResetCompleteInfo {
-                    new_group_mapping: new_mapping,
-                    messages,
-                })
+                    .map_err(|e| e.to_string())
             },
             Message::ResetComplete,
         )
@@ -1692,7 +1297,7 @@ impl Conclave {
 
     fn handle_reset_complete(
         &mut self,
-        result: Result<ResetCompleteInfo, String>,
+        result: Result<operations::ResetResult, String>,
     ) -> Task<Message> {
         match result {
             Ok(info) => {
@@ -1709,22 +1314,15 @@ impl Conclave {
                 // Clear stale fetch state from pre-reset MLS groups
                 self.fetching_groups.clear();
 
-                for message in info.messages {
-                    self.add_message(None, message);
+                for error in &info.errors {
+                    self.push_system_message(error);
                 }
+                self.push_system_message(&format!(
+                    "Account reset complete. Rejoined {}/{} groups.",
+                    info.rejoin_count, info.total_groups
+                ));
 
-                // Reload rooms to pick up any membership changes
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
-                Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        load_rooms_async(&api).await
-                    },
-                    Message::RoomsLoaded,
-                )
+                self.load_rooms_task()
             }
             Err(error) => {
                 self.push_system_message(&format!("Reset failed: {error}"));
@@ -1739,8 +1337,6 @@ impl Conclave {
             .rooms
             .keys()
             .filter(|group_id| {
-                // Skip groups that are already being fetched to prevent
-                // concurrent MLS operations on the same group state.
                 self.group_mapping.contains_key(*group_id)
                     && !self.fetching_groups.contains(*group_id)
             })
@@ -1750,38 +1346,13 @@ impl Conclave {
             .filter_map(|group_id| {
                 let mls_group_id = self.group_mapping.get(&group_id)?.clone();
                 self.fetching_groups.insert(group_id.clone());
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
                 let last_seq = self
                     .rooms
                     .get(&group_id)
                     .map(|r| r.last_seen_seq)
                     .unwrap_or(0);
-                let mls_group_id = Some(mls_group_id);
-                let username = self.username.clone();
-                let data_dir = self.config.data_dir.clone();
 
-                Some(Task::perform(
-                    async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        match fetch_and_decrypt(
-                            &api,
-                            &group_id,
-                            last_seq,
-                            mls_group_id.as_deref(),
-                            username.as_deref(),
-                            &data_dir,
-                        )
-                        .await
-                        {
-                            Ok(fetched) => Ok(fetched),
-                            Err(error) => Err((group_id, error)),
-                        }
-                    },
-                    Message::MessagesFetched,
-                ))
+                Some(self.fetch_messages_task(group_id, last_seq, mls_group_id))
             })
             .collect();
 
@@ -1803,73 +1374,61 @@ impl Conclave {
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                let resp = api
-                    .list_pending_welcomes()
+                operations::accept_welcomes(&api, &data_dir, &username)
                     .await
-                    .map_err(|e| e.to_string())?;
-
-                if resp.welcomes.is_empty() {
-                    return Ok(vec![]);
-                }
-
-                let mut results = Vec::new();
-                for welcome in &resp.welcomes {
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    let welcome_bytes = welcome.welcome_message.clone();
-                    let group_id = welcome.group_id.clone();
-                    let group_name = welcome.group_name.clone();
-
-                    let mls_group_id = tokio::task::spawn_blocking(move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.join_group(&welcome_bytes).map_err(|e| e.to_string())
-                    })
-                    .await
-                    .map_err(|e| e.to_string())??;
-
-                    // Delete the welcome from the server so it is not re-processed.
-                    if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
-                        tracing::warn!(%error, "failed to acknowledge welcome");
-                    }
-
-                    results.push(WelcomeResult {
-                        group_id,
-                        group_name,
-                        mls_group_id,
-                    });
-                }
-
-                // Key packages are single-use (RFC 9420 §10); replenish one
-                // per welcome consumed to maintain 5 regular packages.
-                let consumed_count = results.len();
-                let replacements = tokio::task::spawn_blocking({
-                    let data_dir = data_dir.clone();
-                    let username = username.clone();
-                    move || {
-                        let mls =
-                            MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-                        mls.generate_key_packages(consumed_count)
-                            .map_err(|e| e.to_string())
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-                let entries: Vec<(Vec<u8>, bool)> =
-                    replacements.into_iter().map(|kp| (kp, false)).collect();
-                if !entries.is_empty() {
-                    api.upload_key_packages(entries)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                }
-
-                Ok(results)
+                    .map_err(|e| e.to_string())
             },
             Message::WelcomesProcessed,
         )
     }
 
     // ── Helpers ───────────────────────────────────────────────────
+
+    fn load_rooms_task(&self) -> Task<Message> {
+        let server_url = self.server_url.clone().unwrap_or_default();
+        let accept_invalid_certs = self.config.accept_invalid_certs;
+        let token = self.token.clone().unwrap_or_default();
+        Task::perform(
+            async move {
+                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                api.set_token(token);
+                operations::load_rooms(&api)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::RoomsLoaded,
+        )
+    }
+
+    fn fetch_messages_task(
+        &self,
+        group_id: String,
+        last_seq: u64,
+        mls_group_id: String,
+    ) -> Task<Message> {
+        let server_url = self.server_url.clone().unwrap_or_default();
+        let accept_invalid_certs = self.config.accept_invalid_certs;
+        let token = self.token.clone().unwrap_or_default();
+        let data_dir = self.config.data_dir.clone();
+        let username = self.username.clone().unwrap_or_default();
+        Task::perform(
+            async move {
+                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                api.set_token(token);
+                operations::fetch_and_decrypt(
+                    &api,
+                    &group_id,
+                    last_seq,
+                    &mls_group_id,
+                    &data_dir,
+                    &username,
+                )
+                .await
+                .map_err(|e| (group_id, e.to_string()))
+            },
+            Message::MessagesFetched,
+        )
+    }
 
     fn push_system_message(&mut self, content: &str) {
         let msg = DisplayMessage::system(content);
@@ -2107,123 +1666,4 @@ impl Conclave {
             Task::none()
         }
     }
-}
-
-// ── Free functions ────────────────────────────────────────────────
-
-async fn load_rooms_async(api: &ApiClient) -> Result<Vec<RoomInfo>, String> {
-    let resp = api.list_groups().await.map_err(|e| e.to_string())?;
-    Ok(resp
-        .groups
-        .into_iter()
-        .map(|g| RoomInfo {
-            group_id: g.group_id,
-            name: g.name,
-            members: g.members.into_iter().map(|m| m.username).collect(),
-        })
-        .collect())
-}
-
-async fn fetch_and_decrypt(
-    api: &ApiClient,
-    group_id: &str,
-    last_seq: u64,
-    mls_group_id: Option<&str>,
-    username: Option<&str>,
-    data_dir: &std::path::Path,
-) -> Result<FetchedMessages, String> {
-    let mls_group_id = mls_group_id
-        .ok_or_else(|| "group mapping not found".to_string())?
-        .to_string();
-    let username = username
-        .ok_or_else(|| "not logged in".to_string())?
-        .to_string();
-
-    let resp = api
-        .get_messages(group_id, last_seq as i64)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut messages = Vec::new();
-
-    for stored_msg in &resp.messages {
-        let data_dir = data_dir.to_path_buf();
-        let username = username.clone();
-        let mls_group_id = mls_group_id.clone();
-        let mls_bytes = stored_msg.mls_message.clone();
-
-        let decrypted = match tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
-            mls.decrypt_message(&mls_group_id, &mls_bytes)
-                .map_err(|e| e.to_string())
-        })
-        .await
-        {
-            Ok(Ok(d)) => d,
-            _ => continue,
-        };
-
-        match decrypted {
-            conclave_lib::mls::DecryptedMessage::Application(plaintext) => {
-                let text = String::from_utf8_lossy(&plaintext).to_string();
-                messages.push(DecryptedMsg {
-                    sender: stored_msg.sender_username.clone(),
-                    content: text,
-                    timestamp: stored_msg.created_at as i64,
-                    sequence_num: stored_msg.sequence_num,
-                    is_system: false,
-                });
-            }
-            conclave_lib::mls::DecryptedMessage::Commit(commit_info) => {
-                for added in &commit_info.members_added {
-                    messages.push(DecryptedMsg {
-                        sender: String::new(),
-                        content: format!("{added} joined the group"),
-                        timestamp: stored_msg.created_at as i64,
-                        sequence_num: stored_msg.sequence_num,
-                        is_system: true,
-                    });
-                }
-                for removed in &commit_info.members_removed {
-                    messages.push(DecryptedMsg {
-                        sender: String::new(),
-                        content: format!("{removed} was removed from the group"),
-                        timestamp: stored_msg.created_at as i64,
-                        sequence_num: stored_msg.sequence_num,
-                        is_system: true,
-                    });
-                }
-                if commit_info.members_added.is_empty()
-                    && commit_info.members_removed.is_empty()
-                    && !commit_info.self_removed
-                {
-                    messages.push(DecryptedMsg {
-                        sender: String::new(),
-                        content: "Group keys updated".to_string(),
-                        timestamp: stored_msg.created_at as i64,
-                        sequence_num: stored_msg.sequence_num,
-                        is_system: true,
-                    });
-                }
-            }
-            conclave_lib::mls::DecryptedMessage::Failed(reason) => {
-                messages.push(DecryptedMsg {
-                    sender: String::new(),
-                    content: format!(
-                        "Failed to decrypt message (seq {}): {reason}",
-                        stored_msg.sequence_num
-                    ),
-                    timestamp: stored_msg.created_at as i64,
-                    sequence_num: stored_msg.sequence_num,
-                    is_system: true,
-                });
-            }
-            conclave_lib::mls::DecryptedMessage::None => {}
-        }
-    }
-
-    Ok(FetchedMessages {
-        group_id: group_id.to_string(),
-        messages,
-    })
 }

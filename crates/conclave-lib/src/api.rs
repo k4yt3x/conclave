@@ -14,10 +14,7 @@ pub struct ApiClient {
 /// Normalize a server URL by prepending `https://` if no scheme is present
 /// and stripping any trailing slash.
 pub fn normalize_server_url(url: &str) -> String {
-    let url = if !url.is_empty()
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
-    {
+    let url = if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
         format!("https://{url}")
     } else {
         url.to_string()

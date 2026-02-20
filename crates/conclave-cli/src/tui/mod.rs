@@ -24,6 +24,7 @@ use conclave_lib::config::{
     load_group_mapping, save_group_mapping,
 };
 use conclave_lib::mls::MlsManager;
+use conclave_lib::operations;
 
 use self::commands::Command;
 use self::input::InputLine;
@@ -354,7 +355,15 @@ async fn handle_key_event(
                     match commands::execute(cmd, api, state, mls, config, msg_store).await {
                         Ok((msgs, should_start_sse)) => {
                             for msg in msgs {
-                                add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
+                                add_and_render_message(
+                                    stdout,
+                                    state,
+                                    input,
+                                    None,
+                                    msg,
+                                    msg_store,
+                                    &config.notifications,
+                                );
                             }
                             if should_start_sse {
                                 // Open the message store after a fresh /login
@@ -374,14 +383,30 @@ async fn handle_key_event(
                         }
                         Err(e) => {
                             let msg = DisplayMessage::system(&format!("Error: {e}"));
-                            add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
+                            add_and_render_message(
+                                stdout,
+                                state,
+                                input,
+                                None,
+                                msg,
+                                msg_store,
+                                &config.notifications,
+                            );
                         }
                     }
                     let _ = render::render_full(stdout, state, input);
                 }
                 Err(e) => {
                     let msg = DisplayMessage::system(&format!("{e}"));
-                    add_and_render_message(stdout, state, input, None, msg, msg_store, &config.notifications);
+                    add_and_render_message(
+                        stdout,
+                        state,
+                        input,
+                        None,
+                        msg,
+                        msg_store,
+                        &config.notifications,
+                    );
                     let _ = render::render_full(stdout, state, input);
                 }
             }
@@ -563,92 +588,50 @@ fn add_and_render_message(
 }
 
 /// Accept any pending welcomes (group invitations received while offline).
-/// Processes each welcome via MLS, updates group mapping, uploads a
-/// replacement key package, and reloads the room list.
+/// Processes each welcome via MLS, updates group mapping, replenishes
+/// key packages, and reloads the room list.
 async fn accept_pending_welcomes(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
-    mls: &Option<MlsManager>,
+    _mls: &Option<MlsManager>,
     data_dir: &std::path::Path,
 ) {
     let username = match &state.username {
-        Some(u) => u.clone(),
+        Some(u) => u.as_str(),
         None => return,
     };
 
-    if mls.is_none() {
-        return;
-    }
-
-    let resp = match api.lock().await.list_pending_welcomes().await {
+    let welcome_result = {
+        let api_guard = api.lock().await;
+        operations::accept_welcomes(&api_guard, data_dir, username).await
+    };
+    let results = match welcome_result {
         Ok(r) => r,
-        Err(_) => return,
+        Err(error) => {
+            state.system_messages.push(DisplayMessage::system(&format!(
+                "Failed to accept welcomes: {error}"
+            )));
+            return;
+        }
     };
 
-    if resp.welcomes.is_empty() {
+    if results.is_empty() {
         return;
     }
 
-    let mut joined_any = false;
-    for welcome in &resp.welcomes {
-        let data_dir_clone = data_dir.to_path_buf();
-        let username_clone = username.clone();
-        let welcome_bytes = welcome.welcome_message.clone();
-
-        let mls_group_id = match tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
-            mls.join_group(&welcome_bytes)
-        })
-        .await
-        {
-            Ok(Ok(id)) => id,
-            Ok(Err(e)) => {
-                state.system_messages.push(DisplayMessage::system(&format!(
-                    "Failed to join #{}: {e}",
-                    welcome.group_name
-                )));
-                continue;
-            }
-            Err(_) => continue,
-        };
-
-        // Delete the welcome from the server so it is not re-processed.
-        if let Err(error) = api.lock().await.accept_welcome(welcome.welcome_id).await {
-            tracing::warn!(%error, "failed to acknowledge welcome");
-        }
-
+    for result in &results {
         state
             .group_mapping
-            .insert(welcome.group_id.clone(), mls_group_id);
-        save_group_mapping(data_dir, &state.group_mapping);
+            .insert(result.group_id.clone(), result.mls_group_id.clone());
 
         state.system_messages.push(DisplayMessage::system(&format!(
             "Joined #{} ({})",
-            welcome.group_name, welcome.group_id
+            result.group_name, result.group_id
         )));
-        joined_any = true;
     }
 
-    if joined_any {
-        // Upload a replacement key package.
-        let data_dir_clone = data_dir.to_path_buf();
-        let username_clone = username.clone();
-        if let Ok(Ok(kp)) = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir_clone, &username_clone)?;
-            mls.generate_key_package()
-        })
-        .await
-        {
-            let _ = api
-                .lock()
-                .await
-                .upload_key_packages(vec![(kp, false)])
-                .await;
-        }
-
-        // Reload rooms to include the newly joined groups.
-        let _ = commands::load_rooms(api, state).await;
-    }
+    save_group_mapping(data_dir, &state.group_mapping);
+    let _ = commands::load_rooms(api, state).await;
 }
 
 /// Fetch messages that arrived while the client was offline for all rooms.
@@ -659,78 +642,57 @@ async fn fetch_missed_messages(
     data_dir: &std::path::Path,
     store: &MessageStore,
 ) {
-    let room_ids: Vec<(String, u64)> = state
+    let room_ids: Vec<(String, u64, String)> = state
         .rooms
         .iter()
-        .map(|(id, room)| (id.clone(), room.last_seen_seq))
+        .filter_map(|(id, room)| {
+            state
+                .group_mapping
+                .get(id)
+                .map(|mls_id| (id.clone(), room.last_seen_seq, mls_id.clone()))
+        })
         .collect();
 
-    for (group_id, last_seq) in room_ids {
-        let mls_group_id = match state.group_mapping.get(&group_id) {
-            Some(id) => id.clone(),
-            None => continue,
-        };
+    let username = match &state.username {
+        Some(u) => u.clone(),
+        None => return,
+    };
 
-        let username = match &state.username {
-            Some(u) => u.clone(),
-            None => continue,
+    for (group_id, last_seq, mls_group_id) in &room_ids {
+        let fetch_result = {
+            let api_guard = api.lock().await;
+            operations::fetch_and_decrypt(
+                &api_guard,
+                group_id,
+                *last_seq,
+                mls_group_id,
+                data_dir,
+                &username,
+            )
+            .await
         };
-
-        let resp = match api
-            .lock()
-            .await
-            .get_messages(&group_id, last_seq as i64)
-            .await
-        {
-            Ok(r) => r,
+        let fetched = match fetch_result {
+            Ok(f) => f,
             Err(_) => continue,
         };
 
-        for stored_msg in &resp.messages {
-            let data_dir_owned = data_dir.to_path_buf();
-            let username_clone = username.clone();
-            let mls_group_id_clone = mls_group_id.clone();
-            let mls_bytes = stored_msg.mls_message.clone();
-
-            let decrypted = match tokio::task::spawn_blocking(move || {
-                let mls = MlsManager::new(&data_dir_owned, &username_clone)?;
-                mls.decrypt_message(&mls_group_id_clone, &mls_bytes)
-            })
-            .await
-            {
-                Ok(Ok(d)) => d,
-                _ => continue,
+        for msg in &fetched.messages {
+            let display_msg = if msg.is_system {
+                DisplayMessage::system(&msg.content)
+            } else {
+                let display_msg = DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp);
+                store.push_message(group_id, &display_msg);
+                display_msg
             };
+            state.push_room_message(group_id, display_msg);
 
-            match decrypted {
-                conclave_lib::mls::DecryptedMessage::Application(plaintext) => {
-                    let text = String::from_utf8_lossy(&plaintext).to_string();
-                    let msg = DisplayMessage::user(
-                        &stored_msg.sender_username,
-                        &text,
-                        stored_msg.created_at as i64,
-                    );
-                    store.push_message(&group_id, &msg);
-                    state.push_room_message(&group_id, msg);
-                }
-                conclave_lib::mls::DecryptedMessage::Failed(reason) => {
-                    let msg = DisplayMessage::system(&format!(
-                        "Failed to decrypt message (seq {}): {reason}",
-                        stored_msg.sequence_num
-                    ));
-                    state.push_room_message(&group_id, msg);
-                }
-                _ => {}
-            }
-
-            if let Some(room) = state.rooms.get_mut(&group_id) {
-                room.last_seen_seq = room.last_seen_seq.max(stored_msg.sequence_num);
+            if let Some(room) = state.rooms.get_mut(group_id.as_str()) {
+                room.last_seen_seq = room.last_seen_seq.max(msg.sequence_num);
             }
         }
 
-        // Persist updated last_seen_seq after processing all messages for this room.
-        if let Some(room) = state.rooms.get(&group_id) {
-            store.set_last_seen_seq(&group_id, room.last_seen_seq);
+        if let Some(room) = state.rooms.get(group_id.as_str()) {
+            store.set_last_seen_seq(group_id, room.last_seen_seq);
         }
     }
 }

@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use iced::Subscription;
-use prost::Message;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -110,18 +109,20 @@ fn sse_stream(
 }
 
 fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
-    let bytes = hex::decode(hex_data).ok()?;
-    let event = conclave_proto::ServerEvent::decode(bytes.as_slice()).ok()?;
+    let event = conclave_lib::operations::decode_sse_event(hex_data).ok()?;
 
-    match event.event? {
-        conclave_proto::server_event::Event::NewMessage(msg) => Some(SseUpdate::NewMessage {
-            group_id: msg.group_id,
-        }),
-        conclave_proto::server_event::Event::Welcome(_) => Some(SseUpdate::Welcome),
-        conclave_proto::server_event::Event::GroupUpdate(_) => Some(SseUpdate::GroupUpdate),
-        conclave_proto::server_event::Event::MemberRemoved(r) => Some(SseUpdate::MemberRemoved {
-            group_id: r.group_id,
-            username: r.removed_username,
+    match event {
+        conclave_lib::operations::SseEvent::NewMessage { group_id } => {
+            Some(SseUpdate::NewMessage { group_id })
+        }
+        conclave_lib::operations::SseEvent::Welcome { .. } => Some(SseUpdate::Welcome),
+        conclave_lib::operations::SseEvent::GroupUpdate { .. } => Some(SseUpdate::GroupUpdate),
+        conclave_lib::operations::SseEvent::MemberRemoved {
+            group_id,
+            removed_username,
+        } => Some(SseUpdate::MemberRemoved {
+            group_id,
+            username: removed_username,
         }),
     }
 }

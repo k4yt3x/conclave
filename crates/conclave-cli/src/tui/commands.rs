@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -10,6 +9,7 @@ use conclave_lib::config::{
     save_group_mapping,
 };
 use conclave_lib::mls::MlsManager;
+use conclave_lib::operations;
 
 pub use conclave_lib::command::parse;
 
@@ -111,52 +111,45 @@ pub async fn execute(
         }
 
         Command::Create { name, members } => {
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
-            let resp = api.lock().await.create_group(&name, members).await?;
-            let server_group_id = resp.group_id.clone();
+            let result = {
+                let api_guard = api.lock().await;
+                operations::create_group(&api_guard, &name, members, &config.data_dir, username)
+                    .await?
+            };
 
-            let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-                mls_mgr.create_group(&resp.member_key_packages)?;
-
-            api.lock()
-                .await
-                .upload_commit(
-                    &server_group_id,
-                    commit_bytes,
-                    welcome_map,
-                    group_info_bytes,
-                )
-                .await?;
-
-            // Save group mapping.
             state
                 .group_mapping
-                .insert(server_group_id.clone(), mls_group_id.clone());
-            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+                .insert(result.server_group_id.clone(), result.mls_group_id);
+            save_group_mapping(&config.data_dir, &state.group_mapping);
 
-            // Refresh rooms from server to get member list.
             load_rooms(api, state).await?;
 
-            // Auto-switch to the new room.
-            state.active_room = Some(server_group_id.clone());
+            state.active_room = Some(result.server_group_id.clone());
             state.scroll_offset = 0;
 
             msgs.push(DisplayMessage::system(&format!(
-                "Created and joined #{name} ({server_group_id})"
+                "Created and joined #{name} ({})",
+                result.server_group_id
             )));
         }
 
         Command::Join { target: None } => {
-            // Accept pending welcomes.
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
-            let resp = api.lock().await.list_pending_welcomes().await?;
-            if resp.welcomes.is_empty() {
+            let results = {
+                let api_guard = api.lock().await;
+                operations::accept_welcomes(&api_guard, &config.data_dir, username).await?
+            };
+
+            if results.is_empty() {
                 msgs.push(DisplayMessage::system("No pending invitations."));
                 return Ok((msgs, start_sse));
             }
@@ -164,41 +157,21 @@ pub async fn execute(
             let mut last_group_id = None;
             let mut joined_group_ids = Vec::new();
 
-            for welcome in &resp.welcomes {
-                let mls_group_id = mls_mgr.join_group(&welcome.welcome_message)?;
-
-                // Delete the welcome from the server so it is not re-processed.
-                if let Err(error) = api.lock().await.accept_welcome(welcome.welcome_id).await {
-                    tracing::warn!(%error, "failed to acknowledge welcome");
-                }
-
+            for result in &results {
                 state
                     .group_mapping
-                    .insert(welcome.group_id.clone(), mls_group_id);
-                last_group_id = Some(welcome.group_id.clone());
-                joined_group_ids.push(welcome.group_id.clone());
+                    .insert(result.group_id.clone(), result.mls_group_id.clone());
+                last_group_id = Some(result.group_id.clone());
+                joined_group_ids.push(result.group_id.clone());
 
                 msgs.push(DisplayMessage::system(&format!(
                     "Joined #{} ({})",
-                    welcome.group_name, welcome.group_id
+                    result.group_name, result.group_id
                 )));
             }
 
-            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+            save_group_mapping(&config.data_dir, &state.group_mapping);
 
-            // Key packages are single-use (RFC 9420 §10); replenish one
-            // replacement per welcome consumed to maintain 5 regular packages.
-            let consumed_count = joined_group_ids.len();
-            let replacements = mls_mgr
-                .generate_key_packages(consumed_count)?
-                .into_iter()
-                .map(|kp| (kp, false))
-                .collect::<Vec<_>>();
-            if !replacements.is_empty() {
-                api.lock().await.upload_key_packages(replacements).await?;
-            }
-
-            // Refresh rooms and auto-switch to the last joined room.
             load_rooms(api, state).await?;
             if let Some(gid) = last_group_id {
                 state.active_room = Some(gid);
@@ -209,14 +182,14 @@ pub async fn execute(
             // fetch_missed_messages skips the initial commit (seq 1)
             // which was already processed as part of the welcome.
             for group_id in &joined_group_ids {
-                if let Some(room) = state.rooms.get_mut(group_id) {
-                    if room.last_seen_seq == 0 {
-                        let max_seq = match api.lock().await.get_messages(group_id, 0).await {
-                            Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                            Err(_) => 0,
-                        };
-                        room.last_seen_seq = max_seq;
-                    }
+                if let Some(room) = state.rooms.get_mut(group_id)
+                    && room.last_seen_seq == 0
+                {
+                    let max_seq = match api.lock().await.get_messages(group_id, 0).await {
+                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                        Err(_) => 0,
+                    };
+                    room.last_seen_seq = max_seq;
                 }
             }
         }
@@ -253,8 +226,9 @@ pub async fn execute(
         }
 
         Command::Invite { members } => {
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let group_id = state
@@ -263,40 +237,41 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
                 .clone();
 
-            let resp = api.lock().await.invite_to_group(&group_id, members).await?;
-
-            if resp.member_key_packages.is_empty() {
-                msgs.push(DisplayMessage::system("No new members to invite."));
-                return Ok((msgs, start_sse));
-            }
-
             let mls_group_id = state
                 .group_mapping
                 .get(&group_id)
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let (commit_bytes, welcome_map, group_info_bytes) =
-                mls_mgr.invite_to_group(&mls_group_id, &resp.member_key_packages)?;
+            let invited = {
+                let api_guard = api.lock().await;
+                operations::invite_members(
+                    &api_guard,
+                    &group_id,
+                    &mls_group_id,
+                    members,
+                    &config.data_dir,
+                    username,
+                )
+                .await?
+            };
 
-            api.lock()
-                .await
-                .upload_commit(&group_id, commit_bytes, welcome_map, group_info_bytes)
-                .await?;
+            if invited.is_empty() {
+                msgs.push(DisplayMessage::system("No new members to invite."));
+            } else {
+                msgs.push(DisplayMessage::system(&format!(
+                    "Invited {} to the room",
+                    invited.join(", ")
+                )));
+            }
 
-            let invited: Vec<String> = resp.member_key_packages.keys().cloned().collect();
-            msgs.push(DisplayMessage::system(&format!(
-                "Invited {} to the room",
-                invited.join(", ")
-            )));
-
-            // Refresh room info.
             load_rooms(api, state).await?;
         }
 
-        Command::Kick { username } => {
-            let mls_mgr = mls
-                .as_ref()
+        Command::Kick { username: target } => {
+            let self_username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let group_id = state
@@ -311,38 +286,37 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let member_index = mls_mgr
-                .find_member_index(&mls_group_id, &username)?
-                .ok_or_else(|| {
-                    Error::Other(format!("user '{username}' not found in MLS roster"))
-                })?;
-
-            let (commit_bytes, group_info_bytes) =
-                mls_mgr.remove_member(&mls_group_id, member_index)?;
-
-            api.lock()
-                .await
-                .remove_member(&group_id, &username, commit_bytes, group_info_bytes)
+            {
+                let api_guard = api.lock().await;
+                operations::kick_member(
+                    &api_guard,
+                    &group_id,
+                    &mls_group_id,
+                    &target,
+                    &config.data_dir,
+                    self_username,
+                )
                 .await?;
+            }
 
-            // Refresh room info.
             load_rooms(api, state).await?;
 
             msgs.push(DisplayMessage::system(&format!(
-                "Removed {username} from the room"
+                "Removed {target} from the room"
             )));
         }
 
         Command::Leave => {
+            let username = state
+                .username
+                .as_deref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+
             let group_id = state
                 .active_room
                 .as_ref()
                 .ok_or_else(|| Error::Other("no active room — use /join first".into()))?
                 .clone();
-
-            let mls_mgr = mls
-                .as_ref()
-                .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let name = state
                 .rooms
@@ -350,39 +324,26 @@ pub async fn execute(
                 .map(|r| r.name.clone())
                 .unwrap_or_default();
 
-            // Produce an MLS self-remove commit so remaining members can
-            // advance their epoch and exclude us from future messages.
-            let (commit_bytes, group_info_bytes) =
-                if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
-                    match mls_mgr.leave_group(mls_group_id)? {
-                        Some(data) => data,
-                        None => (Vec::new(), Vec::new()),
-                    }
-                } else {
-                    (Vec::new(), Vec::new())
-                };
+            let mls_group_id = state.group_mapping.get(&group_id).cloned();
 
-            // Notify the server with the commit so remaining members can
-            // process the MLS removal.
-            api.lock()
-                .await
-                .leave_group(&group_id, commit_bytes, group_info_bytes)
+            {
+                let api_guard = api.lock().await;
+                operations::leave_group(
+                    &api_guard,
+                    &group_id,
+                    mls_group_id.as_deref(),
+                    &config.data_dir,
+                    username,
+                )
                 .await?;
-
-            // Delete local MLS group state.
-            if let Some(mls_group_id) = state.group_mapping.get(&group_id) {
-                if let Err(error) = mls_mgr.delete_group_state(mls_group_id) {
-                    tracing::warn!(%error, "failed to delete MLS group state");
-                }
             }
 
-            // Remove from local state.
             state.group_mapping.remove(&group_id);
             state.rooms.remove(&group_id);
             state.active_room = None;
             state.scroll_offset = 0;
 
-            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
+            save_group_mapping(&config.data_dir, &state.group_mapping);
 
             msgs.push(DisplayMessage::system(&format!("Left #{name}")));
         }
@@ -404,8 +365,9 @@ pub async fn execute(
         }
 
         Command::Rotate => {
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let group_id = state
@@ -420,17 +382,17 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let (commit_bytes, group_info_bytes) = mls_mgr.rotate_keys(&mls_group_id)?;
-
-            api.lock()
-                .await
-                .upload_commit(
+            {
+                let api_guard = api.lock().await;
+                operations::rotate_keys(
+                    &api_guard,
                     &group_id,
-                    commit_bytes,
-                    std::collections::HashMap::new(),
-                    group_info_bytes,
+                    &mls_group_id,
+                    &config.data_dir,
+                    username,
                 )
                 .await?;
+            }
 
             msgs.push(DisplayMessage::system(
                 "Keys rotated. Forward secrecy updated.",
@@ -438,90 +400,37 @@ pub async fn execute(
         }
 
         Command::Reset => {
-            let mls_mgr = mls
-                .as_ref()
-                .ok_or_else(|| Error::Other("not logged in".into()))?;
-
             let username = state
                 .username
                 .as_ref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?
                 .clone();
 
-            // Collect groups to rejoin before wiping state.
-            let groups_to_rejoin: Vec<(String, String)> = state
-                .group_mapping
-                .iter()
-                .map(|(server_id, mls_id)| (server_id.clone(), mls_id.clone()))
-                .collect();
+            let result = {
+                let api_guard = api.lock().await;
+                operations::reset_account(
+                    &api_guard,
+                    &state.group_mapping,
+                    &config.data_dir,
+                    &username,
+                )
+                .await?
+            };
 
-            // Collect old leaf indices for each group before wiping.
-            let mut old_indices: HashMap<String, Option<u32>> = HashMap::new();
-            for (server_id, mls_id) in &groups_to_rejoin {
-                let index = mls_mgr.find_member_index(mls_id, &username).ok().flatten();
-                old_indices.insert(server_id.clone(), index);
-            }
-
-            // Notify server to clear our key packages.
-            api.lock().await.reset_account().await?;
-
-            // Wipe local MLS state.
-            mls_mgr.wipe_local_state()?;
-
-            // Regenerate identity.
+            // Refresh the local MLS manager since reset_account wiped and
+            // regenerated state internally.
             *mls = Some(MlsManager::new(&config.data_dir, &username)?);
-            let mls_mgr = mls.as_ref().unwrap();
 
-            // Upload new key packages (1 last-resort + 5 regular).
-            let entries = generate_initial_key_packages(mls_mgr)?;
-            api.lock().await.upload_key_packages(entries).await?;
+            state.group_mapping = result.new_group_mapping;
+            save_group_mapping(&config.data_dir, &state.group_mapping);
 
-            // Rejoin each group via external commit.
-            state.group_mapping.clear();
-            let mut rejoin_count = 0;
-
-            for (server_id, _) in &groups_to_rejoin {
-                let group_info_resp = match api.lock().await.get_group_info(server_id).await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        msgs.push(DisplayMessage::system(&format!(
-                            "Failed to get group info for {server_id}: {e}"
-                        )));
-                        continue;
-                    }
-                };
-
-                let old_index = old_indices.get(server_id).copied().flatten();
-
-                match mls_mgr.external_rejoin_group(&group_info_resp.group_info, old_index) {
-                    Ok((new_mls_id, commit_bytes)) => {
-                        if let Err(e) = api
-                            .lock()
-                            .await
-                            .external_join(server_id, commit_bytes)
-                            .await
-                        {
-                            msgs.push(DisplayMessage::system(&format!(
-                                "Failed to rejoin {server_id}: {e}"
-                            )));
-                            continue;
-                        }
-                        state.group_mapping.insert(server_id.clone(), new_mls_id);
-                        rejoin_count += 1;
-                    }
-                    Err(e) => {
-                        msgs.push(DisplayMessage::system(&format!(
-                            "Failed external commit for {server_id}: {e}"
-                        )));
-                    }
-                }
+            for error in &result.errors {
+                msgs.push(DisplayMessage::system(error));
             }
-
-            save_group_mapping(mls_mgr.data_dir(), &state.group_mapping);
 
             msgs.push(DisplayMessage::system(&format!(
-                "Account reset complete. Rejoined {rejoin_count}/{} groups.",
-                groups_to_rejoin.len()
+                "Account reset complete. Rejoined {}/{} groups.",
+                result.rejoin_count, result.total_groups
             )));
         }
 
@@ -617,8 +526,9 @@ pub async fn execute(
         }
 
         Command::Msg { room, text } => {
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let group_id = if let Some(r) = state.find_room_by_name(&room) {
@@ -635,19 +545,19 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let data_dir = mls_mgr.data_dir().to_path_buf();
-            let username = state.username.clone().unwrap_or_default();
-            let text_bytes = text.as_bytes().to_vec();
-            let mls_gid = mls_group_id.clone();
-            let encrypted = tokio::task::spawn_blocking(move || {
-                let mls = MlsManager::new(&data_dir, &username)?;
-                mls.encrypt_message(&mls_gid, &text_bytes)
-            })
-            .await
-            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
-            let resp = api.lock().await.send_message(&group_id, encrypted).await?;
+            let result = {
+                let api_guard = api.lock().await;
+                operations::send_message(
+                    &api_guard,
+                    &group_id,
+                    &mls_group_id,
+                    &text,
+                    &config.data_dir,
+                    username,
+                )
+                .await?
+            };
 
-            // Show in the target room's messages.
             let sender = state.username.clone().unwrap_or_default();
             let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
             if let Some(store) = msg_store {
@@ -655,9 +565,8 @@ pub async fn execute(
             }
             state.push_room_message(&group_id, msg);
 
-            // Update last_seen_seq so we don't re-display it from SSE.
             if let Some(room_state) = state.rooms.get_mut(&group_id) {
-                room_state.last_seen_seq = room_state.last_seen_seq.max(resp.sequence_num);
+                room_state.last_seen_seq = room_state.last_seen_seq.max(result.sequence_num);
                 if let Some(store) = msg_store {
                     store.set_last_seen_seq(&group_id, room_state.last_seen_seq);
                 }
@@ -786,8 +695,9 @@ pub async fn execute(
         }
 
         Command::Message { text } => {
-            let mls_mgr = mls
-                .as_ref()
+            let username = state
+                .username
+                .as_deref()
                 .ok_or_else(|| Error::Other("not logged in".into()))?;
 
             let group_id = state
@@ -802,19 +712,19 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
-            let data_dir = mls_mgr.data_dir().to_path_buf();
-            let username = state.username.clone().unwrap_or_default();
-            let text_bytes = text.as_bytes().to_vec();
-            let mls_gid = mls_group_id.clone();
-            let encrypted = tokio::task::spawn_blocking(move || {
-                let mls = MlsManager::new(&data_dir, &username)?;
-                mls.encrypt_message(&mls_gid, &text_bytes)
-            })
-            .await
-            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
-            let resp = api.lock().await.send_message(&group_id, encrypted).await?;
+            let result = {
+                let api_guard = api.lock().await;
+                operations::send_message(
+                    &api_guard,
+                    &group_id,
+                    &mls_group_id,
+                    &text,
+                    &config.data_dir,
+                    username,
+                )
+                .await?
+            };
 
-            // Show our own message locally.
             let sender = state.username.clone().unwrap_or_default();
             let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
             if let Some(store) = msg_store {
@@ -822,9 +732,8 @@ pub async fn execute(
             }
             state.push_room_message(&group_id, msg);
 
-            // Update last_seen_seq so we don't re-display it from SSE.
             if let Some(room) = state.rooms.get_mut(&group_id) {
-                room.last_seen_seq = room.last_seen_seq.max(resp.sequence_num);
+                room.last_seen_seq = room.last_seen_seq.max(result.sequence_num);
                 if let Some(store) = msg_store {
                     store.set_last_seen_seq(&group_id, room.last_seen_seq);
                 }
@@ -835,25 +744,26 @@ pub async fn execute(
     Ok((msgs, start_sse))
 }
 
-/// Load rooms from the server and update state.
+/// Load rooms from the server and update state, preserving existing sequence tracking.
 pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Result<()> {
-    let resp = api.lock().await.list_groups().await?;
+    let rooms = {
+        let api_guard = api.lock().await;
+        operations::load_rooms(&api_guard).await?
+    };
 
-    for g in &resp.groups {
-        let members: Vec<String> = g.members.iter().map(|m| m.username.clone()).collect();
-
+    for room_info in rooms {
         let (existing_seq, existing_read) = state
             .rooms
-            .get(&g.group_id)
+            .get(&room_info.group_id)
             .map(|r| (r.last_seen_seq, r.last_read_seq))
             .unwrap_or((0, 0));
 
         state.rooms.insert(
-            g.group_id.clone(),
+            room_info.group_id.clone(),
             Room {
-                server_group_id: g.group_id.clone(),
-                name: g.name.clone(),
-                members,
+                server_group_id: room_info.group_id,
+                name: room_info.name,
+                members: room_info.members,
                 last_seen_seq: existing_seq,
                 last_read_seq: existing_read,
             },

@@ -421,7 +421,8 @@ mod tests {
     fn test_unicode_content() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        let unicode_content = "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
+        let unicode_content =
+            "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
         store.push_message("g1", &DisplayMessage::user("alice", unicode_content, 1));
         let msgs = store.load_messages("g1");
         assert_eq!(msgs.len(), 1);

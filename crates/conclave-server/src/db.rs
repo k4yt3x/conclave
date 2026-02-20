@@ -1085,7 +1085,14 @@ mod tests {
         welcomes.insert("charlie".to_string(), b"welcome_charlie".to_vec());
 
         let (new_members, seq) = db
-            .process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"commit_msg")
+            .process_commit(
+                "g1",
+                "test-group",
+                alice,
+                &welcomes,
+                b"group_info",
+                b"commit_msg",
+            )
             .unwrap();
 
         assert_eq!(new_members.len(), 2);
@@ -1150,8 +1157,14 @@ mod tests {
         let mut welcomes = std::collections::HashMap::new();
         welcomes.insert("nonexistent".to_string(), b"welcome_data".to_vec());
 
-        let result =
-            db.process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"commit_msg");
+        let result = db.process_commit(
+            "g1",
+            "test-group",
+            alice,
+            &welcomes,
+            b"group_info",
+            b"commit_msg",
+        );
 
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());

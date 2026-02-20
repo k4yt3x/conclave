@@ -381,7 +381,10 @@ mod tests {
         // so we verify that load() returns a valid config matching defaults.
         let config = ClientConfig::load();
         let default_config = ClientConfig::default();
-        assert_eq!(config.accept_invalid_certs, default_config.accept_invalid_certs);
+        assert_eq!(
+            config.accept_invalid_certs,
+            default_config.accept_invalid_certs
+        );
     }
 
     #[test]

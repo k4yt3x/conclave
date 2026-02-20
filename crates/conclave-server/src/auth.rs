@@ -169,6 +169,9 @@ mod tests {
     fn test_verify_password_empty_password() {
         let hash = hash_password("real_password").expect("hashing should succeed");
         let result = verify_password("", &hash).expect("verification should succeed");
-        assert!(!result, "empty password should not verify against a real hash");
+        assert!(
+            !result,
+            "empty password should not verify against a real hash"
+        );
     }
 }

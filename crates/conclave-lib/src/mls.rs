@@ -5,12 +5,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use mls_rs::client_builder::MlsConfig;
+use mls_rs::error::MlsError;
 use mls_rs::extension::recommended::LastResortKeyPackageExt;
 use mls_rs::group::proposal::Proposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
-use mls_rs::error::MlsError;
 use mls_rs::{
     CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, KeyPackageRef,
     MlsMessage,
@@ -1833,9 +1833,7 @@ mod tests {
             DecryptedMessage::Application(_) => {
                 panic!("must not decrypt a message from an evicted epoch")
             }
-            other => panic!(
-                "expected Failed for evicted epoch, got {other:?}"
-            ),
+            other => panic!("expected Failed for evicted epoch, got {other:?}"),
         }
     }
 
@@ -2023,9 +2021,8 @@ mod tests {
 
         // Bob does an external rejoin, removing his old leaf.
         let (_dir_b2, bob_new) = create_manager("bob");
-        let (rejoin_gid, rejoin_commit) = bob_new
-            .external_rejoin_group(&gi, Some(bob_index))
-            .unwrap();
+        let (rejoin_gid, rejoin_commit) =
+            bob_new.external_rejoin_group(&gi, Some(bob_index)).unwrap();
 
         assert_eq!(
             rejoin_gid, group_id,
@@ -2080,10 +2077,7 @@ mod tests {
         let (group2_id, _commit2, welcome_map2, _gi2) = alice.create_group(&members2).unwrap();
         let bob_gid2 = bob.join_group(welcome_map2.get("bob").unwrap()).unwrap();
 
-        assert_ne!(
-            group1_id, group2_id,
-            "two groups must have different IDs"
-        );
+        assert_ne!(group1_id, group2_id, "two groups must have different IDs");
 
         // Send a message in group 1.
         let msg1 = b"group 1 only";

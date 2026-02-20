@@ -1,13 +1,18 @@
 mod error;
 mod tui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
 use conclave_lib::api::ApiClient;
-use conclave_lib::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
+use conclave_lib::config::{
+    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
+    save_group_mapping,
+};
+use conclave_lib::error::Error;
 use conclave_lib::mls::MlsManager;
+use conclave_lib::operations;
 
 #[derive(Parser)]
 #[command(name = "conclave-cli", about = "Conclave E2EE messaging client")]
@@ -114,23 +119,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn api_from_session(
+    session: &SessionState,
+    config: &ClientConfig,
+) -> conclave_lib::error::Result<ApiClient> {
+    let server_url = session
+        .server_url
+        .as_ref()
+        .ok_or_else(|| Error::Other("not logged in — run login first".into()))?;
+    let mut api = ApiClient::new(server_url, config.accept_invalid_certs);
+    if let Some(token) = &session.token {
+        api.set_token(token.clone());
+    }
+    Ok(api)
+}
+
+fn require_username(session: &SessionState) -> conclave_lib::error::Result<&str> {
+    session
+        .username
+        .as_deref()
+        .ok_or_else(|| Error::Other("not logged in — run login first".into()))
+}
+
+fn resolve_mls_group_id(data_dir: &Path, group: &str) -> conclave_lib::error::Result<String> {
+    let mapping = load_group_mapping(data_dir);
+    mapping
+        .get(group)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("unknown group '{group}' — run join first")))
+}
+
 async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::error::Result<()> {
     let mut session = SessionState::load(&config.data_dir);
-
-    /// Create an authenticated ApiClient from the saved session.
-    fn api_from_session(
-        session: &SessionState,
-        config: &ClientConfig,
-    ) -> conclave_lib::error::Result<ApiClient> {
-        let server_url = session.server_url.as_ref().ok_or_else(|| {
-            conclave_lib::error::Error::Other("not logged in — run login first".into())
-        })?;
-        let mut api = ApiClient::new(server_url, config.accept_invalid_certs);
-        if let Some(token) = &session.token {
-            api.set_token(token.clone());
-        }
-        Ok(api)
-    }
 
     match cmd {
         Commands::Register {
@@ -151,7 +171,6 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             let api = ApiClient::new(&server, config.accept_invalid_certs);
             let resp = api.login(&username, &password).await?;
 
-            // Set up an authenticated API client before moving values into session.
             let mut login_api = ApiClient::new(&server, config.accept_invalid_certs);
             login_api.set_token(resp.token.clone());
 
@@ -161,17 +180,10 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             session.username = Some(username.clone());
             session.save(&config.data_dir)?;
 
-            // Initialize MLS identity.
             std::fs::create_dir_all(&config.data_dir)?;
             let mls = MlsManager::new(&config.data_dir, &username)?;
 
-            // Auto-generate and upload key packages (1 last-resort + 5 regular).
-            let mut entries = Vec::with_capacity(6);
-            let last_resort = mls.generate_last_resort_key_package()?;
-            entries.push((last_resort, true));
-            for kp in mls.generate_key_packages(5)? {
-                entries.push((kp, false));
-            }
+            let entries = generate_initial_key_packages(&mls)?;
             let count = entries.len();
             login_api.upload_key_packages(entries).await?;
 
@@ -184,87 +196,58 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
 
         Commands::CreateGroup { name, members } => {
             let api = api_from_session(&session, config)?;
+            let username = require_username(&session)?;
             let member_names: Vec<String> =
                 members.split(',').map(|s| s.trim().to_string()).collect();
 
-            let resp = api.create_group(&name, member_names).await?;
-            let server_group_id = resp.group_id.clone();
+            let result =
+                operations::create_group(&api, &name, member_names, &config.data_dir, username)
+                    .await?;
 
-            let username = session
-                .username
-                .as_ref()
-                .ok_or_else(|| conclave_lib::error::Error::Other("not logged in".into()))?;
-            let mls = MlsManager::new(&config.data_dir, username)?;
-
-            let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-                mls.create_group(&resp.member_key_packages)?;
-
-            api.upload_commit(
-                &server_group_id,
-                commit_bytes,
-                welcome_map,
-                group_info_bytes,
-            )
-            .await?;
-
-            // Save group mapping.
             let mut mapping = load_group_mapping(&config.data_dir);
-            mapping.insert(server_group_id.clone(), mls_group_id);
+            mapping.insert(result.server_group_id.clone(), result.mls_group_id);
             save_group_mapping(&config.data_dir, &mapping);
 
-            println!("Group '{name}' created (ID: {server_group_id})");
+            println!("Group '{name}' created (ID: {})", result.server_group_id);
         }
 
         Commands::Invite { group, members } => {
             let api = api_from_session(&session, config)?;
+            let username = require_username(&session)?;
             let member_names: Vec<String> =
                 members.split(',').map(|s| s.trim().to_string()).collect();
 
-            let resp = api.invite_to_group(&group, member_names).await?;
+            let mls_group_id = resolve_mls_group_id(&config.data_dir, &group)?;
 
-            if resp.member_key_packages.is_empty() {
+            let invited = operations::invite_members(
+                &api,
+                &group,
+                &mls_group_id,
+                member_names,
+                &config.data_dir,
+                username,
+            )
+            .await?;
+
+            if invited.is_empty() {
                 println!("No new members to invite.");
-                return Ok(());
+            } else {
+                println!("Invited {} to group {group}", invited.join(", "));
             }
-
-            let username = session
-                .username
-                .as_ref()
-                .ok_or_else(|| conclave_lib::error::Error::Other("not logged in".into()))?;
-
-            let mapping = load_group_mapping(&config.data_dir);
-            let mls_group_id = mapping.get(&group).ok_or_else(|| {
-                conclave_lib::error::Error::Other(format!(
-                    "unknown group '{group}' — run join first"
-                ))
-            })?;
-
-            let mls = MlsManager::new(&config.data_dir, username)?;
-
-            let (commit_bytes, welcome_map, group_info_bytes) =
-                mls.invite_to_group(mls_group_id, &resp.member_key_packages)?;
-
-            api.upload_commit(&group, commit_bytes, welcome_map, group_info_bytes)
-                .await?;
-
-            let invited: Vec<String> = resp.member_key_packages.keys().cloned().collect();
-            println!("Invited {} to group {group}", invited.join(", "));
         }
 
         Commands::Groups => {
             let api = api_from_session(&session, config)?;
-            let resp = api.list_groups().await?;
-            if resp.groups.is_empty() {
+            let rooms = operations::load_rooms(&api).await?;
+            if rooms.is_empty() {
                 println!("No groups.");
             } else {
-                for g in &resp.groups {
-                    let members: Vec<&str> =
-                        g.members.iter().map(|m| m.username.as_str()).collect();
+                for room in &rooms {
                     println!(
                         "  {} - {} [members: {}]",
-                        g.group_id,
-                        g.name,
-                        members.join(", ")
+                        room.group_id,
+                        room.name,
+                        room.members.join(", ")
                     );
                 }
             }
@@ -272,111 +255,65 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
 
         Commands::Join => {
             let api = api_from_session(&session, config)?;
-            let resp = api.list_pending_welcomes().await?;
-            if resp.welcomes.is_empty() {
+            let username = require_username(&session)?;
+
+            let results = operations::accept_welcomes(&api, &config.data_dir, username).await?;
+
+            if results.is_empty() {
                 println!("No pending invitations.");
-                return Ok(());
-            }
-
-            let username = session
-                .username
-                .as_ref()
-                .ok_or_else(|| conclave_lib::error::Error::Other("not logged in".into()))?;
-            let mls = MlsManager::new(&config.data_dir, username)?;
-
-            let mut mapping = load_group_mapping(&config.data_dir);
-
-            for welcome in &resp.welcomes {
-                let mls_group_id = mls.join_group(&welcome.welcome_message)?;
-
-                // Delete the welcome from the server so it is not re-processed.
-                if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
-                    eprintln!("Warning: failed to acknowledge welcome: {error}");
+            } else {
+                let mut mapping = load_group_mapping(&config.data_dir);
+                for result in &results {
+                    mapping.insert(result.group_id.clone(), result.mls_group_id.clone());
+                    println!(
+                        "Joined group '{}' (ID: {})",
+                        result.group_name, result.group_id
+                    );
                 }
-
-                mapping.insert(welcome.group_id.clone(), mls_group_id);
-                println!(
-                    "Joined group '{}' (ID: {})",
-                    welcome.group_name, welcome.group_id
-                );
+                save_group_mapping(&config.data_dir, &mapping);
             }
-
-            save_group_mapping(&config.data_dir, &mapping);
-
-            // Key packages are single-use (RFC 9420 §10); upload a fresh
-            // replacement so we remain available for future group invitations.
-            let kp = mls.generate_key_package()?;
-            api.upload_key_packages(vec![(kp, false)]).await?;
         }
 
         Commands::Send { group, message } => {
             let api = api_from_session(&session, config)?;
-            let username = session
-                .username
-                .as_ref()
-                .ok_or_else(|| conclave_lib::error::Error::Other("not logged in".into()))?;
+            let username = require_username(&session)?;
+            let mls_group_id = resolve_mls_group_id(&config.data_dir, &group)?;
 
-            let mapping = load_group_mapping(&config.data_dir);
-            let mls_group_id = mapping.get(&group).ok_or_else(|| {
-                conclave_lib::error::Error::Other(format!(
-                    "unknown group '{group}' — run join first"
-                ))
-            })?;
-            let mls = MlsManager::new(&config.data_dir, username)?;
-
-            let encrypted = mls.encrypt_message(mls_group_id, message.as_bytes())?;
-
-            let resp = api.send_message(&group, encrypted).await?;
-            println!("Message sent (seq: {})", resp.sequence_num);
+            let result = operations::send_message(
+                &api,
+                &group,
+                &mls_group_id,
+                &message,
+                &config.data_dir,
+                username,
+            )
+            .await?;
+            println!("Message sent (seq: {})", result.sequence_num);
         }
 
         Commands::Messages { group } => {
             let api = api_from_session(&session, config)?;
-            let username = session
-                .username
-                .as_ref()
-                .ok_or_else(|| conclave_lib::error::Error::Other("not logged in".into()))?;
+            let username = require_username(&session)?;
+            let mls_group_id = resolve_mls_group_id(&config.data_dir, &group)?;
 
-            let mapping = load_group_mapping(&config.data_dir);
-            let mls_group_id = mapping.get(&group).ok_or_else(|| {
-                conclave_lib::error::Error::Other(format!(
-                    "unknown group '{group}' — run join first"
-                ))
-            })?;
-            let mls = MlsManager::new(&config.data_dir, username)?;
+            let fetched = operations::fetch_and_decrypt(
+                &api,
+                &group,
+                0,
+                &mls_group_id,
+                &config.data_dir,
+                username,
+            )
+            .await?;
 
-            let resp = api.get_messages(&group, 0).await?;
-
-            if resp.messages.is_empty() {
+            if fetched.messages.is_empty() {
                 println!("No messages.");
             } else {
-                for msg in &resp.messages {
-                    match mls.decrypt_message(mls_group_id, &msg.mls_message) {
-                        Ok(conclave_lib::mls::DecryptedMessage::Application(plaintext)) => {
-                            let text = String::from_utf8_lossy(&plaintext);
-                            println!("  [{}] {}: {}", msg.sequence_num, msg.sender_username, text);
-                        }
-                        Ok(conclave_lib::mls::DecryptedMessage::Commit(info)) => {
-                            for added in &info.members_added {
-                                println!("  [{}] * {added} joined", msg.sequence_num);
-                            }
-                            for removed in &info.members_removed {
-                                println!("  [{}] * {removed} was removed", msg.sequence_num);
-                            }
-                        }
-                        Ok(conclave_lib::mls::DecryptedMessage::Failed(reason)) => {
-                            eprintln!(
-                                "  [{}] {}: <decryption failed: {reason}>",
-                                msg.sequence_num, msg.sender_username
-                            );
-                        }
-                        Ok(conclave_lib::mls::DecryptedMessage::None) => {}
-                        Err(e) => {
-                            eprintln!(
-                                "  [{}] {}: <decryption failed: {}>",
-                                msg.sequence_num, msg.sender_username, e
-                            );
-                        }
+                for msg in &fetched.messages {
+                    if msg.is_system {
+                        println!("  [{}] * {}", msg.sequence_num, msg.content);
+                    } else {
+                        println!("  [{}] {}: {}", msg.sequence_num, msg.sender, msg.content);
                     }
                 }
             }

@@ -4,5 +4,6 @@ pub mod config;
 pub mod error;
 pub mod mls;
 pub mod notification;
+pub mod operations;
 pub mod state;
 pub mod store;

@@ -2925,8 +2925,7 @@ async fn test_leave_group_stores_group_info() {
     let bob_token = login_user(&app, "bob", "password123").await;
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
-    let group_id =
-        create_group_for(&app, &alice_token, "leave-gi", vec!["bob".to_string()]).await;
+    let group_id = create_group_for(&app, &alice_token, "leave-gi", vec!["bob".to_string()]).await;
 
     // Add bob as a member via commit.
     let mut welcomes = HashMap::new();
