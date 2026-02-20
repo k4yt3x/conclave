@@ -1,5 +1,71 @@
 # Conclave Work Log
 
+## 2026-02-20: Consolidate Business Logic into Shared Operations Module
+
+### What Changed
+
+Extracted all duplicated business logic from the CLI (`conclave-cli`) and GUI (`conclave-gui`) into a new `operations` module in the shared library (`conclave-lib`). Both clients are now thin UI shells that delegate all protocol orchestration to the shared library.
+
+#### New Module: `crates/conclave-lib/src/operations.rs`
+
+12 public functions and 8 result types covering all MLS-over-HTTP orchestration:
+
+**Result types**: `RoomInfo`, `ProcessedMessage`, `FetchedMessages`, `GroupCreatedResult`, `WelcomeJoinResult`, `MessageSentResult`, `ResetResult`, `SseEvent`.
+
+**Functions**:
+- `decode_sse_event` — Hex+protobuf SSE event decoding
+- `load_rooms` — Fetch and normalize group list from server
+- `fetch_and_decrypt` — Fetch messages after a sequence number and decrypt via MLS
+- `send_message` — MLS encrypt + API send
+- `create_group` — API create + MLS group creation + commit/welcome upload
+- `invite_members` — API invite + MLS invite + commit/welcome upload
+- `kick_member` — MLS find member index + remove + API notify
+- `rotate_keys` — MLS epoch advancement + commit upload
+- `leave_group` — MLS self-remove commit + API leave + delete local state
+- `delete_mls_group_state` — Delete local MLS group state for a single group
+- `accept_welcomes` — Process pending welcomes + MLS join + key package replenishment
+- `reset_account` — Full account reset: collect indices, wipe state, regen identity, rejoin all groups via external commit
+
+All functions use `tokio::task::spawn_blocking` for MLS operations (MlsManager is not `Send`) and propagate errors via `conclave_lib::error::Result`.
+
+#### CLI Changes
+
+**`crates/conclave-cli/src/main.rs`**:
+- Extracted `api_from_session`, `require_username`, `resolve_mls_group_id` helpers
+- Refactored 6 one-shot commands (CreateGroup, Invite, Groups, Join, Send, Messages) to use `operations::*`
+
+**`crates/conclave-cli/src/tui/commands.rs`**:
+- Refactored 10 TUI commands (Create, Join, Invite, Kick, Leave, Rotate, Reset, Msg, Message, load_rooms) to use `operations::*`
+
+**`crates/conclave-cli/src/tui/events.rs`**:
+- Rewrote `handle_sse_message` to use `operations::decode_sse_event`
+- Rewrote `handle_new_message`, `handle_welcome`, `handle_member_removed` to use `operations::fetch_and_decrypt`, `operations::accept_welcomes`, `operations::delete_mls_group_state`
+
+**`crates/conclave-cli/src/tui/mod.rs`**:
+- Rewrote `accept_pending_welcomes` and `fetch_missed_messages` to use `operations::*`
+
+#### GUI Changes
+
+**`crates/conclave-gui/src/app.rs`**:
+- Removed 7 local type definitions (`RoomInfo`, `MessageSentInfo`, `FetchedMessages`, `DecryptedMsg`, `WelcomeResult`, `GroupCreatedInfo`, `ResetCompleteInfo`) — replaced by `operations::*` types
+- Updated all 6 Message enum variants and their handler functions to use `operations::*` types
+- Refactored 6 business logic methods (`invite_members`, `kick_member`, `leave_group`, `rotate_keys`, `reset_account`, `accept_welcomes`) to call `operations::*`
+- Replaced `MemberRemoved` SSE handler's inline MLS logic with `operations::delete_mls_group_state`
+- Added `load_rooms_task()` and `fetch_messages_task()` helper methods to eliminate boilerplate
+- Replaced all 5 `load_rooms_async` call sites and 2 `fetch_and_decrypt` call sites
+- Removed both free functions (`load_rooms_async`, `fetch_and_decrypt`) — ~120 lines of duplicated logic
+
+**`crates/conclave-gui/src/subscription.rs`**:
+- Replaced local `decode_sse_event` with `operations::decode_sse_event`
+- Removed unused `prost::Message` import
+
+#### Verification
+
+- `cargo build --workspace` — clean
+- `cargo test --workspace` — all 330 tests pass
+- `cargo clippy --workspace` — no new warnings
+- `cargo fmt --all -- --check` — clean
+
 ## 2026-02-20: Fix Missing Messages for Groups Joined While Offline
 
 ### What Changed
