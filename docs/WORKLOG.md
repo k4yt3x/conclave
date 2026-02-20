@@ -1,5 +1,30 @@
 # Conclave Work Log
 
+## 2026-02-20: Fix Missing Messages for Groups Joined While Offline
+
+### What Changed
+
+When the GUI user was offline and another user created a group and invited them, upon coming back online the GUI would join the group but not display messages sent before coming online.
+
+#### Root Cause (two issues)
+
+**Issue 1 — Sequence number over-advance**: During welcome processing, `accept_welcomes()` fetched the maximum sequence number for each newly joined group and stored it as `last_seen_seq` via a `welcome_seqs` map. This was applied to rooms in `handle_rooms_loaded()`, causing `fetch_all_missed_messages()` to request messages after the max sequence — returning nothing. All pre-existing messages (including ones sent while the user was offline) were skipped. The CLI had the same `max_seq` calculation in `accept_pending_welcomes()` but it was accidentally overridden by the store restoration loop (which reset `last_seen_seq` to the persisted value of 0 for new groups), so the CLI was unaffected.
+
+**Issue 2 — Race condition in deferred fetch**: `handle_welcomes_processed()` called `fetch_all_missed_messages()` concurrently with a `rooms_task` reload. Since `fetch_all_missed_messages()` iterates over `self.rooms`, which didn't yet contain the newly joined groups (only populated when the reload completes), the fetch missed them entirely.
+
+#### Fix
+
+**`crates/conclave-gui/src/app.rs`**:
+- Removed the `welcome_seqs` field and all related `last_seen_seq` over-advancement logic. For newly joined groups, `last_seen_seq` now defaults to 0 (from the message store, which has no entry), so `fetch_all_missed_messages()` fetches from the beginning. Commits are handled gracefully by the `DecryptedMessage` variants.
+- Removed the `last_seen_seq` field from `WelcomeResult` and the `get_messages()` call in `accept_welcomes()` that computed `max_seq`.
+- Added `fetch_messages_on_rooms_load` flag. `handle_welcomes_processed()` now sets this flag instead of calling `fetch_all_missed_messages()` concurrently. `handle_rooms_loaded()` checks the flag after rooms are populated and triggers the fetch at that point.
+
+**`crates/conclave-cli/src/tui/mod.rs`**:
+- Removed the dead `max_seq` calculation in `accept_pending_welcomes()` that was always overridden by the store restoration loop.
+
+**`crates/conclave-lib/src/mls.rs`**:
+- In `decrypt_message()`, replaced fragile string matching (`err_str.contains(...)`) with structured `MlsError` enum matching (`MlsError::CantProcessMessageFromSelf`, `MlsError::InvalidEpoch`). Both variants return `DecryptedMessage::None` (silently skip). `InvalidEpoch` handles messages from epochs before the client joined (e.g., the group-creation commit when joining via welcome) — these lack key material and cannot be decrypted. The only other string-based error matching in the codebase (rusqlite "duplicate column" in `db.rs` and `store.rs`) was investigated but rusqlite has no structured error code for this case.
+
 ## 2026-02-19: Fix GUI SSE "Always Disconnected" Bug
 
 ### What Changed

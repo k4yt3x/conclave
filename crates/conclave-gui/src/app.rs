@@ -38,9 +38,9 @@ pub struct Conclave {
     welcomes_processed: bool,
     /// Groups currently being fetched — prevents duplicate concurrent fetches.
     fetching_groups: HashSet<String>,
-    /// Sequence numbers learned during welcome processing, applied to rooms
-    /// once they are loaded so fetch_missed_messages skips initial commits.
-    welcome_seqs: HashMap<String, u64>,
+    /// Set when welcome processing triggers a rooms reload — defers the
+    /// missed-message fetch until the rooms are actually in `self.rooms`.
+    fetch_messages_on_rooms_load: bool,
     window_focused: bool,
 }
 
@@ -123,9 +123,6 @@ pub struct WelcomeResult {
     pub group_id: String,
     pub group_name: String,
     pub mls_group_id: String,
-    /// Highest message sequence number at the time of joining, so
-    /// fetch_missed_messages skips already-processed commits.
-    pub last_seen_seq: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -177,7 +174,7 @@ impl Conclave {
             rooms_loaded: false,
             welcomes_processed: false,
             fetching_groups: HashSet::new(),
-            welcome_seqs: HashMap::new(),
+            fetch_messages_on_rooms_load: false,
             window_focused: true,
         };
 
@@ -969,20 +966,19 @@ impl Conclave {
             }
         }
 
-        // Apply last_seen_seq values from welcome processing to newly
-        // loaded rooms so fetch_missed_messages skips initial commits.
-        for (group_id, seq) in &self.welcome_seqs {
-            if let Some(room) = self.rooms.get_mut(group_id) {
-                room.last_seen_seq = room.last_seen_seq.max(*seq);
-            }
-        }
-
         // On the very first load (startup catch-up), fetch missed messages
         // for all rooms. Subsequent calls (from /rooms, invite, kick, etc.)
         // skip this since SSE is already connected and last_seen_seq is
         // up to date.
         let was_loaded = self.rooms_loaded;
         self.rooms_loaded = true;
+
+        // Deferred fetch: welcome processing triggered a rooms reload and
+        // asked us to fetch missed messages once the rooms are present.
+        if self.fetch_messages_on_rooms_load {
+            self.fetch_messages_on_rooms_load = false;
+            return self.fetch_all_missed_messages();
+        }
 
         if was_loaded || self.rooms.is_empty() {
             return Task::none();
@@ -1097,14 +1093,6 @@ impl Conclave {
                 for w in &welcomes {
                     self.group_mapping
                         .insert(w.group_id.clone(), w.mls_group_id.clone());
-                    // Store the last_seen_seq so it can be applied to rooms
-                    // once they are loaded. Also apply immediately if the
-                    // room already exists.
-                    self.welcome_seqs
-                        .insert(w.group_id.clone(), w.last_seen_seq);
-                    if let Some(room) = self.rooms.get_mut(&w.group_id) {
-                        room.last_seen_seq = room.last_seen_seq.max(w.last_seen_seq);
-                    }
                     self.push_system_message(&format!("Joined #{} ({})", w.group_name, w.group_id));
                 }
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
@@ -1127,22 +1115,32 @@ impl Conclave {
                     Message::RoomsLoaded,
                 );
 
-                // If rooms were already loaded (startup: rooms finished
-                // before welcomes), trigger the initial missed message fetch
-                // now that we have all group mappings.
-                if !was_processed && self.rooms_loaded {
-                    Task::batch([rooms_task, self.fetch_all_missed_messages()])
-                } else {
-                    rooms_task
+                // Defer the missed-message fetch until rooms_task completes
+                // so that newly joined groups are in self.rooms when
+                // fetch_all_missed_messages iterates over them.
+                if !was_processed {
+                    self.fetch_messages_on_rooms_load = true;
                 }
+                rooms_task
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to process welcomes: {e}"));
 
                 // Even on error, the initial fetch should proceed so
                 // rooms that already have mappings get their messages.
-                if !was_processed && self.rooms_loaded {
-                    return self.fetch_all_missed_messages();
+                if !was_processed {
+                    self.fetch_messages_on_rooms_load = true;
+                    let server_url = self.server_url.clone().unwrap_or_default();
+                    let accept_invalid_certs = self.config.accept_invalid_certs;
+                    let token = self.token.clone().unwrap_or_default();
+                    return Task::perform(
+                        async move {
+                            let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                            api.set_token(token);
+                            load_rooms_async(&api).await
+                        },
+                        Message::RoomsLoaded,
+                    );
                 }
                 Task::none()
             }
@@ -1835,19 +1833,10 @@ impl Conclave {
                         tracing::warn!(%error, "failed to acknowledge welcome");
                     }
 
-                    // Advance last_seen_seq past existing messages so that
-                    // fetch_missed_messages skips the initial commit which
-                    // was already processed as part of the welcome.
-                    let max_seq = match api.get_messages(&group_id, 0).await {
-                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                        Err(_) => 0,
-                    };
-
                     results.push(WelcomeResult {
                         group_id,
                         group_name,
                         mls_group_id,
-                        last_seen_seq: max_seq,
                     });
                 }
 
@@ -2088,7 +2077,6 @@ impl Conclave {
         self.msg_store = None;
         self.rooms_loaded = false;
         self.welcomes_processed = false;
-        self.welcome_seqs.clear();
         self.connection_status = ConnectionStatus::Disconnected;
 
         // Delete session file.

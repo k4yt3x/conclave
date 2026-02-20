@@ -648,21 +648,6 @@ async fn accept_pending_welcomes(
 
         // Reload rooms to include the newly joined groups.
         let _ = commands::load_rooms(api, state).await;
-
-        // Advance last_seen_seq for newly joined groups so that
-        // fetch_missed_messages skips the initial commit (seq 1) which
-        // was already processed as part of the welcome.
-        for group_id in state.group_mapping.keys() {
-            if let Some(room) = state.rooms.get_mut(group_id) {
-                if room.last_seen_seq == 0 {
-                    let max_seq = match api.lock().await.get_messages(group_id, 0).await {
-                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                        Err(_) => 0,
-                    };
-                    room.last_seen_seq = max_seq;
-                }
-            }
-        }
     }
 }
 

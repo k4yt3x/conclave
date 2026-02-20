@@ -10,6 +10,7 @@ use mls_rs::group::proposal::Proposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
+use mls_rs::error::MlsError;
 use mls_rs::{
     CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, KeyPackageRef,
     MlsMessage,
@@ -430,19 +431,18 @@ impl MlsManager {
 
         let received = match group.process_incoming_message(msg) {
             Ok(r) => r,
-            Err(e) => {
-                let err_str = e.to_string();
-
-                // Our own commits (e.g., the initial commit already applied via
-                // welcome) produce "can't process message from self" — harmless.
-                if err_str.contains("can't process message from self") {
-                    return Ok(DecryptedMessage::None);
-                }
-
-                // All other errors indicate a real problem: epoch evicted,
-                // key missing, invalid signature, state desync, etc.
-                return Ok(DecryptedMessage::Failed(err_str));
-            }
+            Err(e) => match e {
+                // Our own commits (e.g., the initial commit already applied
+                // via welcome) — harmless, silently skip.
+                MlsError::CantProcessMessageFromSelf => return Ok(DecryptedMessage::None),
+                // Messages from epochs before the client joined (e.g., the
+                // group-creation commit when we joined via welcome) cannot
+                // be decrypted because the key material was never available.
+                MlsError::InvalidEpoch => return Ok(DecryptedMessage::None),
+                // All other errors indicate a real problem: key missing,
+                // invalid signature, state desync, etc.
+                _ => return Ok(DecryptedMessage::Failed(e.to_string())),
+            },
         };
 
         group
