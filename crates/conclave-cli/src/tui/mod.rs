@@ -485,7 +485,10 @@ async fn handle_key_event(
             );
         }
         (KeyCode::PageUp, _) => {
-            state.scroll_offset = state.scroll_offset.saturating_add(10);
+            let msg_rows = state.terminal_rows.saturating_sub(2) as usize;
+            let total = state.active_messages().len();
+            let max_scroll = total.saturating_sub(msg_rows);
+            state.scroll_offset = state.scroll_offset.saturating_add(10).min(max_scroll);
             let _ = render::render_full(stdout, state, input);
         }
         (KeyCode::PageDown, _) => {
