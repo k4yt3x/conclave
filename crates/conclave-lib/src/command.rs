@@ -26,12 +26,16 @@ pub enum Command {
     Kick {
         username: String,
     },
-    Leave,
+    /// Leave the room (MLS removal). IRC: /part
     Part,
+    /// Switch away from the active room without leaving. IRC: /close
+    Close,
     Rotate,
     Reset,
     Info,
-    Rooms,
+    /// List rooms. IRC: /list
+    List,
+    /// List members of the active room. IRC: /who, /names
     Who,
     Msg {
         room: String,
@@ -39,7 +43,8 @@ pub enum Command {
     },
     Unread,
     Logout,
-    Me,
+    /// Show current user info. IRC: /whois
+    Whois,
     Help,
     Quit,
     Message {
@@ -118,12 +123,12 @@ pub fn parse(input: &str) -> Result<Command> {
                 username: parts[1].to_string(),
             })
         }
-        "/leave" => Ok(Command::Leave),
         "/part" => Ok(Command::Part),
+        "/close" => Ok(Command::Close),
         "/rotate" => Ok(Command::Rotate),
         "/reset" => Ok(Command::Reset),
         "/info" => Ok(Command::Info),
-        "/rooms" | "/list" => Ok(Command::Rooms),
+        "/list" => Ok(Command::List),
         "/who" => Ok(Command::Who),
         "/msg" => {
             if parts.len() < 3 {
@@ -136,7 +141,7 @@ pub fn parse(input: &str) -> Result<Command> {
         }
         "/unread" => Ok(Command::Unread),
         "/logout" => Ok(Command::Logout),
-        "/me" => Ok(Command::Me),
+        "/whois" => Ok(Command::Whois),
         "/help" | "/h" => Ok(Command::Help),
         "/quit" | "/exit" | "/q" => Ok(Command::Quit),
         _ => Err(Error::Other(format!(
@@ -264,15 +269,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_leave() {
-        let cmd = parse("/leave").unwrap();
-        assert!(matches!(cmd, Command::Leave));
-    }
-
-    #[test]
     fn test_parse_part() {
         let cmd = parse("/part").unwrap();
         assert!(matches!(cmd, Command::Part));
+    }
+
+    #[test]
+    fn test_parse_close() {
+        let cmd = parse("/close").unwrap();
+        assert!(matches!(cmd, Command::Close));
     }
 
     #[test]
@@ -294,15 +299,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_rooms() {
-        let cmd = parse("/rooms").unwrap();
-        assert!(matches!(cmd, Command::Rooms));
-    }
-
-    #[test]
-    fn test_parse_rooms_alias() {
+    fn test_parse_list() {
         let cmd = parse("/list").unwrap();
-        assert!(matches!(cmd, Command::Rooms));
+        assert!(matches!(cmd, Command::List));
     }
 
     #[test]
@@ -340,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_me() {
-        let cmd = parse("/me").unwrap();
-        assert!(matches!(cmd, Command::Me));
+    fn test_parse_whois() {
+        let cmd = parse("/whois").unwrap();
+        assert!(matches!(cmd, Command::Whois));
     }
 
     #[test]

@@ -551,7 +551,7 @@ impl Conclave {
                 self.show_help();
                 Task::none()
             }
-            Ok(Command::Rooms) => {
+            Ok(Command::List) => {
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
@@ -609,7 +609,7 @@ impl Conclave {
                 self.show_group_info();
                 Task::none()
             }
-            Ok(Command::Part) => {
+            Ok(Command::Close) => {
                 if let Some(room_id) = self.active_room.take() {
                     let name = self
                         .rooms
@@ -617,7 +617,7 @@ impl Conclave {
                         .map(|r| r.name.clone())
                         .unwrap_or_default();
                     self.push_system_message(&format!(
-                        "Switched away from #{name} (use /leave to leave)"
+                        "Switched away from #{name} (use /part to leave)"
                     ));
                 }
                 Task::none()
@@ -626,7 +626,7 @@ impl Conclave {
                 self.show_unread();
                 Task::none()
             }
-            Ok(Command::Me) => {
+            Ok(Command::Whois) => {
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
@@ -651,7 +651,7 @@ impl Conclave {
             Ok(Command::Create { name, members }) => self.create_group(name, members),
             Ok(Command::Invite { members }) => self.invite_members(members),
             Ok(Command::Kick { username }) => self.kick_member(username),
-            Ok(Command::Leave) => self.leave_group(),
+            Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
             Ok(Command::Reset) => self.reset_account(),
             Ok(Command::Msg { room, text }) => self.send_to_room(&room, &text),
@@ -1481,7 +1481,7 @@ impl Conclave {
             self.push_system_message(&format!("Switched to #{name}"));
         } else {
             self.push_system_message(&format!(
-                "Unknown room '{target}'. Use /rooms to list available rooms."
+                "Unknown room '{target}'. Use /list to list available rooms."
             ));
         }
     }
@@ -1511,16 +1511,16 @@ impl Conclave {
             "/join <room>                  Switch to a room",
             "/invite <user1,user2>         Invite to the active room",
             "/kick <username>              Remove a member from the room",
-            "/leave                        Leave the room",
-            "/part                         Switch away without leaving",
+            "/part                         Leave the room (MLS removal)",
+            "/close                        Switch away without leaving",
             "/rotate                       Rotate keys (forward secrecy)",
             "/reset                        Reset account and rejoin groups",
             "/info                         Show MLS group details",
-            "/rooms                        List your rooms",
+            "/list                         List your rooms",
             "/unread                       Check rooms for new messages",
             "/who                          List members of active room",
             "/msg <room> <text>            Send to a room without switching",
-            "/me                           Show current user info",
+            "/whois                        Show current user info",
             "/logout                       Logout and revoke session",
             "/help                         Show this help",
             "/quit                         Exit",

@@ -220,7 +220,7 @@ pub async fn execute(
                 msgs.push(DisplayMessage::system(&format!("Switched to #{name}")));
             } else {
                 msgs.push(DisplayMessage::system(&format!(
-                    "Unknown room '{target}'. Use /rooms to list available rooms."
+                    "Unknown room '{target}'. Use /list to list available rooms."
                 )));
             }
         }
@@ -306,7 +306,7 @@ pub async fn execute(
             )));
         }
 
-        Command::Leave => {
+        Command::Part => {
             let username = state
                 .username
                 .as_deref()
@@ -348,7 +348,7 @@ pub async fn execute(
             msgs.push(DisplayMessage::system(&format!("Left #{name}")));
         }
 
-        Command::Part => {
+        Command::Close => {
             if let Some(room_id) = state.active_room.take() {
                 let name = state
                     .rooms
@@ -357,7 +357,7 @@ pub async fn execute(
                     .unwrap_or_default();
                 state.scroll_offset = 0;
                 msgs.push(DisplayMessage::system(&format!(
-                    "Switched away from #{name} (use /leave to leave the group)"
+                    "Switched away from #{name} (use /part to leave the group)"
                 )));
             } else {
                 msgs.push(DisplayMessage::system("No active room."));
@@ -488,7 +488,7 @@ pub async fn execute(
             }
         }
 
-        Command::Rooms => {
+        Command::List => {
             // Refresh from server.
             load_rooms(api, state).await?;
 
@@ -652,7 +652,7 @@ pub async fn execute(
             msgs.push(DisplayMessage::system("Logged out. Session revoked."));
         }
 
-        Command::Me => {
+        Command::Whois => {
             let resp = api.lock().await.me().await?;
             msgs.push(DisplayMessage::system(&format!(
                 "User: {} (ID: {})",
@@ -669,17 +669,17 @@ pub async fn execute(
                 "/join <room>                  Switch to a room",
                 "/invite <user1,user2>         Invite to the active room",
                 "/kick <username>              Remove a member from the room",
-                "/leave                        Leave the room (MLS removal)",
-                "/part                         Switch away without leaving",
+                "/part                         Leave the room (MLS removal)",
+                "/close                        Switch away without leaving",
                 "/rotate                       Rotate keys (forward secrecy)",
                 "/reset                        Reset account and rejoin groups",
                 "/info                         Show MLS group details",
-                "/rooms                        List your rooms",
+                "/list                         List your rooms",
                 "/unread                       Check rooms for new messages",
                 "/logout                       Logout and revoke session",
                 "/who                          List members of active room",
                 "/msg <room> <text>            Send to a room without switching",
-                "/me                           Show current user info",
+                "/whois                        Show current user info",
                 "/help                         Show this help",
                 "/quit                         Exit",
                 "",
