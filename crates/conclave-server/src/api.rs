@@ -161,6 +161,8 @@ async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<imp
         state.db.update_user_alias(user_id, Some(&request.alias))?;
     }
 
+    tracing::info!(user_id, username = %request.username, "user registered");
+
     Ok(proto_response(
         StatusCode::CREATED,
         &conclave_proto::RegisterResponse { user_id },
@@ -190,6 +192,8 @@ async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl I
     let token = auth::generate_token();
     let expires_at = unix_now() + state.config.token_ttl_seconds;
     state.db.create_session(&token, user_id, expires_at)?;
+
+    tracing::info!(user_id, username = %username, "user logged in");
 
     Ok(proto_response(
         StatusCode::OK,
@@ -1028,6 +1032,8 @@ async fn reset_account(
     // Delete all key packages for this user.
     state.db.delete_key_packages(auth.user_id)?;
 
+    tracing::info!(user_id = auth.user_id, "account reset");
+
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::ResetAccountResponse {},
@@ -1041,6 +1047,7 @@ async fn sse_stream(
     auth: AuthUser,
 ) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
     let user_id = auth.user_id;
+    tracing::debug!(user_id, "SSE client connected");
     let rx = state.sse_tx.subscribe();
 
     let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
@@ -1049,7 +1056,7 @@ async fn sse_stream(
             Some(Ok(Event::default().data(encoded)))
         }
         Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
-            tracing::warn!(user_id, count, "SSE client lagged, events dropped");
+            tracing::warn!(user_id = user_id, count = count, "SSE client lagged, events dropped");
             Some(Ok(Event::default().event("lagged").data(count.to_string())))
         }
         _ => None,

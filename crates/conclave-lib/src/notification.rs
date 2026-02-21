@@ -1,5 +1,3 @@
-use tracing::warn;
-
 use crate::sanitize_control_chars;
 
 const MAX_SUMMARY_LENGTH: usize = 256;
@@ -25,6 +23,6 @@ pub fn send_notification(summary: &str, body: &str) {
         .sound_name("message-new-instant")
         .show()
     {
-        warn!("failed to send desktop notification: {error}");
+        tracing::warn!(%error, "failed to send desktop notification");
     }
 }

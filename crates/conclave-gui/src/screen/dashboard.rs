@@ -124,11 +124,16 @@ impl Dashboard {
                 Box::new(theme::button::sidebar)
             };
 
-            let room_button = button(text(label).size(13).width(Length::Fill))
-                .width(Length::Fill)
-                .padding([6, 10])
-                .class(style)
-                .on_press(Message::RoomSelected(room.server_group_id.clone()));
+            let room_button = button(
+                text(label)
+                    .size(13)
+                    .width(Length::Fill)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .padding([6, 10])
+            .class(style)
+            .on_press(Message::RoomSelected(room.server_group_id.clone()));
 
             room_list = room_list.push(room_button);
         }
@@ -175,6 +180,7 @@ impl Dashboard {
             text(user_display)
                 .size(14)
                 .width(Length::Fill)
+                .wrapping(text::Wrapping::None)
                 .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
         )
         .width(Length::Fill)
@@ -223,6 +229,7 @@ impl Dashboard {
         container(sidebar_content)
             .width(200)
             .height(Length::Fill)
+            .clip(true)
             .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
     }
@@ -392,6 +399,7 @@ impl Dashboard {
                 member_list = member_list.push(
                     text(member_display)
                         .size(13)
+                        .wrapping(text::Wrapping::None)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
                 );
             }
@@ -403,6 +411,7 @@ impl Dashboard {
         container(sidebar_content)
             .width(180)
             .height(Length::Fill)
+            .clip(true)
             .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
     }

@@ -1919,7 +1919,9 @@ impl Conclave {
         // Delete session file.
         let session_path = self.config.data_dir.join("session.toml");
         if let Err(error) = std::fs::remove_file(session_path) {
-            tracing::warn!(%error, "failed to remove session file");
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(%error, "failed to remove session file");
+            }
         }
 
         // Go back to login screen.

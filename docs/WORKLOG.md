@@ -1,5 +1,32 @@
 # Conclave Work Log
 
+## 2026-02-21: Logging Consistency Review
+
+Reviewed all logging statements across the codebase for consistent style, tone, and punctuation. Fixed inconsistencies and added logging where it had debugging value.
+
+### Fixes
+
+1. **Structured fields**: Changed inline formatting (`"message: {e}"`) to structured fields (`error = %e, "message"`) in `error.rs` and `notification.rs`.
+2. **Explicit field names**: Changed bare field shorthand (`user_id, count`) to explicit (`user_id = user_id, count = count`) in `api.rs` SSE lag warning.
+3. **Path-qualified macros**: Removed `use tracing::warn;` import in `notification.rs`, switched to `tracing::warn!(...)`.
+4. **GUI session cleanup**: Added `NotFound` check when removing session file during logout, matching CLI behavior (don't warn if the file is already gone).
+
+### New logging
+
+- `info` for user registration, login, and account reset (security-relevant events)
+- `debug` for SSE client connections
+
+### Documentation
+
+- Added "Logging Conventions" section to `AGENTS.md` codifying the established patterns.
+
+### Files Modified
+
+- `crates/conclave-server/src/error.rs` — structured fields for database/internal errors
+- `crates/conclave-server/src/api.rs` — explicit field names in SSE warning, added registration/login/reset/SSE logging
+- `crates/conclave-lib/src/notification.rs` — path-qualified macro, structured error field
+- `crates/conclave-gui/src/app.rs` — skip warn on NotFound during session removal
+
 ## 2026-02-21: Fix TUI Not Re-rendering on Alias Update SSE Events
 
 When another user changed their alias, the TUI called `load_rooms()` to update state but never re-rendered the screen because the "member_profile" SSE handler returned an empty message vec. The render loop only triggered on non-empty messages.

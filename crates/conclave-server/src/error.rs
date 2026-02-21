@@ -33,14 +33,14 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, client_message) = match &self {
             Error::Database(e) => {
-                tracing::error!("database error: {e}");
+                tracing::error!(error = %e, "database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),
                 )
             }
             Error::Internal(e) => {
-                tracing::error!("internal error: {e}");
+                tracing::error!(error = %e, "internal error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),

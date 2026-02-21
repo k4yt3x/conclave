@@ -102,6 +102,21 @@ Conclave's end-to-end encryption is built on the Messaging Layer Security (MLS) 
 - When uncertain about MLS behavior or conventions, consult the RFC before making assumptions.
 - The mls-rs library source is available under `temp/` for implementation-level reference when the RFC alone is insufficient.
 
+## Logging Conventions
+
+All logging uses the `tracing` crate. Follow these conventions for consistency:
+
+- **Path-qualified macros**: Use `tracing::info!(...)`, `tracing::warn!(...)`, etc. Do not import macros with bare `use tracing::warn;`.
+- **Structured fields**: Use `tracing::warn!(%error, "message")` or `tracing::error!(error = %e, "message")`, not inline formatting like `tracing::warn!("message: {error}")`.
+- **Explicit field names**: Use `tracing::warn!(user_id = user_id, count = count, "message")`, not bare `tracing::warn!(user_id, count, "message")`.
+- **No trailing punctuation** in log messages. Use lowercase for the message text.
+- **Log levels**:
+  - `trace` — best-effort or high-frequency operations (e.g., DB deletes that may no-op)
+  - `debug` — connection events, routine internal state (e.g., SSE client connected)
+  - `info` — server lifecycle and security-relevant events (startup, shutdown, registration, login, account reset)
+  - `warn` — recoverable failures (notification errors, SSE lag, config issues)
+  - `error` — internal failures, encoding errors, database errors
+
 ## Conventions
 
 - Run `cargo build --release` after completing a task to verify the release build succeeds.
