@@ -1,5 +1,50 @@
 # Conclave Work Log
 
+## 2026-02-21: Fix TUI Not Re-rendering on Alias Update SSE Events
+
+When another user changed their alias, the TUI called `load_rooms()` to update state but never re-rendered the screen because the "member_profile" SSE handler returned an empty message vec. The render loop only triggered on non-empty messages.
+
+Fixed by calling `render_full()` when SSE event processing returns no display messages but state was updated.
+
+### Files Modified
+
+- `crates/conclave-cli/src/tui/mod.rs` — call `render_full` when SSE handler returns empty messages
+
+## 2026-02-21: Auto-Login on Registration
+
+All clients (CLI, TUI, GUI) now automatically log in and establish a full session after registration. Previously, users had to manually log in after registering.
+
+### Changes
+
+1. **GUI**: Register task returns `LoginInfo` instead of `RegisterInfo`. `handle_register_result` calls `handle_login_result` with a `skip_keygen` flag to avoid duplicate key package uploads (registration already generates and uploads them).
+
+2. **CLI one-shot**: After registration and key package upload, the session is now saved (server URL, token, user ID, username) so the user is fully logged in.
+
+3. **TUI**: After registration and key package upload, the TUI now updates shared state, saves session, initializes MLS, loads rooms, builds group mapping, and starts SSE — the same flow as `/login` but without re-generating key packages.
+
+### Files Modified
+
+- `crates/conclave-gui/src/app.rs` — Register returns LoginInfo, skip_keygen flag, removed RegisterInfo
+- `crates/conclave-cli/src/main.rs` — Register saves session
+- `crates/conclave-cli/src/tui/commands.rs` — Register does full login flow
+
+## 2026-02-21: Split Server Config and Default Port by TLS Mode
+
+Replaced the single `bind_address` config field with separate `listen_address` and `listen_port` fields. The port now defaults based on TLS mode: 8443 for HTTPS, 8080 for plain HTTP.
+
+### Config format
+
+```toml
+listen_address = "0.0.0.0"    # default
+listen_port = 8443             # optional; defaults to 8443 (TLS) or 8080 (HTTP)
+```
+
+### Changes
+
+- `crates/conclave-server/src/config.rs` — Split into `listen_address: String` + `listen_port: Option<u16>`, added `socket_address()` method
+- `crates/conclave-server/src/main.rs` — Use `config.socket_address()` instead of `config.bind_address`
+- `docs/SPEC.md` — Updated config example and transport security docs
+
 ## 2026-02-21: Add MLS Epoch to Message Tooltip
 
 Added MLS epoch tracking per message and rewrote the GUI tooltip format to show structured key-value metadata.

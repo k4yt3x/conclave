@@ -16,7 +16,6 @@ pub enum Status {
     Idle,
     Loading,
     Error(String),
-    Success(String),
 }
 
 #[derive(Debug, Clone)]
@@ -133,10 +132,6 @@ impl Login {
             Status::Error(msg) => text(msg.clone())
                 .size(13)
                 .class(Box::new(theme::text::error) as Box<dyn Fn(&theme::Theme) -> _>)
-                .into(),
-            Status::Success(msg) => text(msg.clone())
-                .size(13)
-                .class(Box::new(theme::text::success) as Box<dyn Fn(&theme::Theme) -> _>)
                 .into(),
         };
 

@@ -171,20 +171,36 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
         } => {
             let api = ApiClient::new(&server, config.accept_invalid_certs);
             let resp = api.register(&username, &password, None).await?;
-            println!("Registered as user ID {}", resp.user_id);
 
-            // Auto-login to upload initial key packages so the user can be
-            // immediately invited to groups.
             let login_resp = api.login(&username, &password).await?;
+            let canonical_username = if login_resp.username.is_empty() {
+                username
+            } else {
+                login_resp.username
+            };
             let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
-            auth_api.set_token(login_resp.token);
+            auth_api.set_token(login_resp.token.clone());
 
             std::fs::create_dir_all(&config.data_dir)?;
             let mls = MlsManager::new(&config.data_dir, resp.user_id)?;
             let entries = generate_initial_key_packages(&mls)?;
             let count = entries.len();
             auth_api.upload_key_packages(entries).await?;
-            println!("{count} key packages uploaded.");
+
+            session.server_url = Some(server);
+            session.token = Some(login_resp.token);
+            session.user_id = Some(resp.user_id);
+            session.username = Some(canonical_username.clone());
+            session.save(&config.data_dir)?;
+
+            println!(
+                "Registered and logged in as {} (user ID {})",
+                canonical_username, resp.user_id
+            );
+            println!(
+                "{count} key packages uploaded (1 last-resort + {} regular).",
+                count - 1
+            );
         }
 
         Commands::Login {

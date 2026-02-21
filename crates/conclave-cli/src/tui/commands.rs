@@ -39,23 +39,26 @@ pub async fn execute(
         } => {
             let reg_api = ApiClient::new(&server, config.accept_invalid_certs);
             let resp = reg_api.register(&username, &password, None).await?;
-            msgs.push(DisplayMessage::system(&format!(
-                "Registered as user ID {} on {server}",
-                resp.user_id
-            )));
+            let user_id = resp.user_id;
 
-            // Auto-login to upload initial key packages so the user can be
-            // immediately invited to groups.
             let login_resp = reg_api.login(&username, &password).await?;
+            let canonical_username = if login_resp.username.is_empty() {
+                username
+            } else {
+                login_resp.username
+            };
+
             let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
-            auth_api.set_token(login_resp.token);
+            auth_api.set_token(login_resp.token.clone());
 
             std::fs::create_dir_all(&config.data_dir)?;
             let data_dir = config.data_dir.clone();
-            let user_id = resp.user_id;
-            let entries = tokio::task::spawn_blocking(move || {
-                let mls_mgr = MlsManager::new(&data_dir, user_id)?;
-                generate_initial_key_packages(&mls_mgr)
+            let entries = tokio::task::spawn_blocking({
+                let data_dir = data_dir.clone();
+                move || {
+                    let mls_mgr = MlsManager::new(&data_dir, user_id)?;
+                    generate_initial_key_packages(&mls_mgr)
+                }
             })
             .await
             .map_err(|e| Error::Other(format!("task join error: {e}")))??;
@@ -64,6 +67,29 @@ pub async fn execute(
             msgs.push(DisplayMessage::system(&format!(
                 "{count} key packages uploaded."
             )));
+
+            *api.lock().await = auth_api;
+            state.username = Some(canonical_username.clone());
+            state.user_id = Some(user_id);
+            state.logged_in = true;
+
+            let session = SessionState {
+                server_url: Some(server),
+                token: Some(login_resp.token),
+                user_id: Some(user_id),
+                username: Some(canonical_username.clone()),
+            };
+            session.save(&config.data_dir)?;
+
+            *mls = Some(MlsManager::new(&config.data_dir, user_id)?);
+
+            let room_infos = load_rooms(api, state).await?;
+            state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Registered and logged in as {canonical_username} (user ID {user_id})"
+            )));
+            start_sse = true;
         }
 
         Command::Login {

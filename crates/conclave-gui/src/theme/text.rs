@@ -38,12 +38,6 @@ pub fn error(theme: &Theme) -> Style {
     }
 }
 
-pub fn success(theme: &Theme) -> Style {
-    Style {
-        color: Some(theme.success),
-    }
-}
-
 pub fn on_primary(theme: &Theme) -> Style {
     Style {
         color: Some(theme.surface),

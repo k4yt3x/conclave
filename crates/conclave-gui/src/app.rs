@@ -42,6 +42,7 @@ pub struct Conclave {
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     fetch_messages_on_rooms_load: bool,
     window_focused: bool,
+    skip_keygen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +52,7 @@ pub enum Message {
     Dashboard(screen::dashboard::Message),
     // Async results
     LoginResult(Result<LoginInfo, String>),
-    RegisterResult(Result<RegisterInfo, String>),
+    RegisterResult(Result<LoginInfo, String>),
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
     MessagesFetched(Result<operations::FetchedMessages, (i64, String)>),
@@ -90,11 +91,6 @@ pub struct LoginInfo {
     pub token: String,
     pub user_id: i64,
     pub username: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisterInfo {
-    pub user_id: i64,
 }
 
 impl Conclave {
@@ -136,6 +132,7 @@ impl Conclave {
             fetching_groups: HashSet::new(),
             fetch_messages_on_rooms_load: false,
             window_focused: true,
+            skip_keygen: false,
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -438,15 +435,20 @@ impl Conclave {
                                     .map_err(|e| e.to_string())?;
                                 let user_id = resp.user_id;
 
-                                // Auto-login to upload initial key packages so
-                                // the user can be immediately invited to groups.
                                 let login_resp = api
                                     .login(&username, &password)
                                     .await
                                     .map_err(|e| e.to_string())?;
+                                let canonical_username = if login_resp.username.is_empty() {
+                                    username
+                                } else {
+                                    login_resp.username
+                                };
+                                let token = login_resp.token;
+
                                 let mut auth_api =
                                     ApiClient::new(&server_url, accept_invalid_certs);
-                                auth_api.set_token(login_resp.token);
+                                auth_api.set_token(token.clone());
 
                                 std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
                                 let entries = tokio::task::spawn_blocking({
@@ -466,7 +468,12 @@ impl Conclave {
                                     .await
                                     .map_err(|e| e.to_string())?;
 
-                                Ok(RegisterInfo { user_id })
+                                Ok(LoginInfo {
+                                    server_url,
+                                    token,
+                                    user_id,
+                                    username: canonical_username,
+                                })
                             }
                         },
                         Message::RegisterResult,
@@ -516,25 +523,29 @@ impl Conclave {
                     info.username, info.user_id
                 ))];
 
-                let data_dir = self.config.data_dir.clone();
-                let keygen_user_id = info.user_id;
-                let keygen_task = Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let mls = MlsManager::new(&data_dir, keygen_user_id)
-                                .map_err(|e| e.to_string())?;
-                            generate_initial_key_packages(&mls).map_err(|e| e.to_string())
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
-                    },
-                    Message::KeygenDone,
-                );
-
                 let rooms_task = self.load_rooms_task();
                 let alias_task = self.fetch_user_alias();
 
-                Task::batch([keygen_task, rooms_task, alias_task])
+                if self.skip_keygen {
+                    self.skip_keygen = false;
+                    Task::batch([rooms_task, alias_task])
+                } else {
+                    let data_dir = self.config.data_dir.clone();
+                    let keygen_user_id = info.user_id;
+                    let keygen_task = Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                let mls = MlsManager::new(&data_dir, keygen_user_id)
+                                    .map_err(|e| e.to_string())?;
+                                generate_initial_key_packages(&mls).map_err(|e| e.to_string())
+                            })
+                            .await
+                            .map_err(|e| e.to_string())?
+                        },
+                        Message::KeygenDone,
+                    );
+                    Task::batch([keygen_task, rooms_task, alias_task])
+                }
             }
             Err(e) => {
                 if let screen::Screen::Login(login) = &mut self.screen {
@@ -545,22 +556,19 @@ impl Conclave {
         }
     }
 
-    fn handle_register_result(&mut self, result: Result<RegisterInfo, String>) -> Task<Message> {
-        if let screen::Screen::Login(login) = &mut self.screen {
-            match result {
-                Ok(info) => {
-                    login.status = screen::login::Status::Success(format!(
-                        "Registered as user ID {}. You can now login.",
-                        info.user_id
-                    ));
-                    login.mode = screen::login::Mode::Login;
-                }
-                Err(e) => {
+    fn handle_register_result(&mut self, result: Result<LoginInfo, String>) -> Task<Message> {
+        match result {
+            Ok(info) => {
+                self.skip_keygen = true;
+                self.handle_login_result(Ok(info))
+            }
+            Err(e) => {
+                if let screen::Screen::Login(login) = &mut self.screen {
                     login.status = screen::login::Status::Error(e);
                 }
+                Task::none()
             }
         }
-        Task::none()
     }
 
     fn handle_keygen_done(

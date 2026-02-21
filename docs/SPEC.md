@@ -137,8 +137,11 @@ conclave/
 Server configuration is loaded from a TOML file (default: `conclave-server.toml`). If the file does not exist, defaults are used.
 
 ```toml
-# Address to bind the server to.
-bind_address = "127.0.0.1:8443"
+# Address to listen on (default: "0.0.0.0").
+listen_address = "0.0.0.0"
+
+# Port to listen on. Defaults to 8443 when TLS is configured, 8080 otherwise.
+# listen_port = 8443
 
 # Path to the SQLite database file.
 database_path = "conclave.db"
@@ -147,8 +150,8 @@ database_path = "conclave.db"
 token_ttl_seconds = 604800
 
 # TLS certificate and key paths (PEM format).
-# If both are set, the server listens with TLS (HTTPS).
-# If omitted, the server listens on plain HTTP.
+# If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
+# If omitted, the server listens on plain HTTP on port 8080 by default.
 # tls_cert_path = "/path/to/cert.pem"
 # tls_key_path = "/path/to/key.pem"
 ```
@@ -157,9 +160,9 @@ token_ttl_seconds = 604800
 
 The server supports two transport modes:
 
-1. **Plain HTTP** (default): When `tls_cert_path` and `tls_key_path` are not set, the server listens on plain HTTP. This mode is suitable when running behind a TLS-terminating reverse proxy (e.g., nginx, Cloudflare).
+1. **Plain HTTP** (default): When `tls_cert_path` and `tls_key_path` are not set, the server listens on plain HTTP. The default port is **8080**. This mode is suitable when running behind a TLS-terminating reverse proxy (e.g., nginx, Cloudflare).
 
-2. **Native TLS**: When both `tls_cert_path` and `tls_key_path` are set, the server uses `axum-server` with `rustls` to serve HTTPS directly. The certificate and key must be in PEM format. This mode is suitable for direct exposure without a reverse proxy.
+2. **Native TLS**: When both `tls_cert_path` and `tls_key_path` are set, the server uses `axum-server` with `rustls` to serve HTTPS directly. The default port is **8443**. The certificate and key must be in PEM format. This mode is suitable for direct exposure without a reverse proxy.
 
 Clients validate the server's TLS certificate by default. For development with self-signed certificates, clients can set `accept_invalid_certs = true` in their configuration.
 
@@ -235,7 +238,7 @@ CREATE TABLE group_infos (
 
 ### 3.3 Authentication
 
-- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored.
+- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored. After registration, all clients (CLI, TUI, GUI) automatically log in, upload initial key packages, and establish a full session — the user does not need to log in separately.
 - **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it. To prevent username enumeration via timing analysis, the server runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist, ensuring both code paths have equivalent computational profiles.
 - **Authenticated requests**: Client sends `Authorization: Bearer <token>` header. Server validates against the `sessions` table, checking expiry. An `AuthUser` axum extractor handles this transparently for all protected endpoints.
 - **Key packages**: Each user maintains up to 10 regular key packages plus 1 last-resort package. Regular packages are consumed FIFO (oldest first) and deleted on consumption. The last-resort package is returned but never deleted when all regular packages are exhausted, ensuring the user is always reachable (RFC 9420 Section 16.6). Uploading a new last-resort package replaces the previous one. Clients pre-publish 5 regular + 1 last-resort on registration/login/reset and replenish after each consumption. The server validates key package uploads by checking the MLS wire format header (version must be MLS 1.0, wire format must be `mls_key_package`) per RFC 9420 Section 6.

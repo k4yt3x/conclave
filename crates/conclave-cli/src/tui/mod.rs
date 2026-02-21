@@ -270,12 +270,16 @@ async fn main_loop(
                             &msg.data, api, state, &config.data_dir,
                         ).await {
                             Ok(messages) => {
-                                for (group_id, display_msg) in messages {
-                                    add_and_render_message(
-                                        stdout, state, input,
-                                        Some(group_id), display_msg,
-                                        msg_store, &config.notifications,
-                                    );
+                                if messages.is_empty() {
+                                    let _ = render::render_full(stdout, state, input);
+                                } else {
+                                    for (group_id, display_msg) in messages {
+                                        add_and_render_message(
+                                            stdout, state, input,
+                                            Some(group_id), display_msg,
+                                            msg_store, &config.notifications,
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {

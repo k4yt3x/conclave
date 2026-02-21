@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     info!("opening database at {}", config.database_path.display());
     let database = db::Database::open(&config.database_path)?;
 
-    let bind_address = config.bind_address.clone();
+    let socket_address = config.socket_address();
     let tls_cert_path = config.tls_cert_path.clone();
     let tls_key_path = config.tls_key_path.clone();
     let app_state = Arc::new(state::AppState::new(database, config));
@@ -67,15 +67,15 @@ async fn main() -> anyhow::Result<()> {
         (Some(cert_path), Some(key_path)) => {
             let tls_config =
                 axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await?;
-            let addr: std::net::SocketAddr = bind_address.parse()?;
-            info!("listening on https://{bind_address}");
+            let addr: std::net::SocketAddr = socket_address.parse()?;
+            info!("listening on https://{socket_address}");
             axum_server::bind_rustls(addr, tls_config)
                 .serve(app.into_make_service())
                 .await?;
         }
         (None, None) => {
-            let listener = tokio::net::TcpListener::bind(&bind_address).await?;
-            info!("listening on http://{bind_address}");
+            let listener = tokio::net::TcpListener::bind(&socket_address).await?;
+            info!("listening on http://{socket_address}");
             axum::serve(listener, app).await?;
         }
         _ => {
