@@ -238,7 +238,9 @@ impl Conclave {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     if dashboard.show_user_popover {
                         dashboard.show_user_popover = false;
-                    } else if let Some(room_id) = self.active_room.take() {
+                    } else if self.active_room.is_some() {
+                        dashboard.show_members_sidebar = false;
+                        let room_id = self.active_room.take().unwrap_or_default();
                         let name = self
                             .rooms
                             .get(&room_id)
@@ -575,6 +577,12 @@ impl Conclave {
             screen::dashboard::Message::CloseUserPopover => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.show_user_popover = false;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::ToggleMembersSidebar => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_members_sidebar = !dashboard.show_members_sidebar;
                 }
                 Task::none()
             }

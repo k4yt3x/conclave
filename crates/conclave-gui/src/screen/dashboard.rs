@@ -19,12 +19,14 @@ pub enum Message {
     InputSubmitted,
     ToggleUserPopover,
     CloseUserPopover,
+    ToggleMembersSidebar,
     Logout,
 }
 
 pub struct Dashboard {
     pub input_value: String,
     pub show_user_popover: bool,
+    pub show_members_sidebar: bool,
 }
 
 impl Dashboard {
@@ -32,6 +34,7 @@ impl Dashboard {
         Self {
             input_value: String::new(),
             show_user_popover: false,
+            show_members_sidebar: false,
         }
     }
 
@@ -48,7 +51,10 @@ impl Dashboard {
         let sidebar = self.view_sidebar(rooms, active_room, connection_status, username);
         let main_area = self.view_main_area(rooms, active_room, room_messages, system_messages);
 
-        let base = row![sidebar, main_area];
+        let mut base = row![sidebar, main_area];
+        if self.show_members_sidebar && active_room.is_some() {
+            base = base.push(self.view_members_sidebar(rooms, active_room));
+        }
 
         if self.show_user_popover {
             let popover = self.view_user_popover(username, server_url);
@@ -214,14 +220,15 @@ impl Dashboard {
         room_messages: &'a HashMap<String, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
     ) -> Element<'a, Message> {
-        let title_bar = self.view_title_bar(rooms, active_room);
         let messages = self.view_messages(active_room, room_messages, system_messages);
         let input = self.view_input();
 
-        column![title_bar, messages, input]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let mut main_column = column![].width(Length::Fill).height(Length::Fill);
+        if active_room.is_some() {
+            main_column = main_column.push(self.view_title_bar(rooms, active_room));
+        }
+        main_column = main_column.push(messages).push(input);
+        main_column.into()
     }
 
     fn view_title_bar<'a>(
@@ -229,6 +236,16 @@ impl Dashboard {
         rooms: &'a HashMap<String, Room>,
         active_room: &'a Option<String>,
     ) -> Element<'a, Message> {
+        let toggle_label = if self.show_members_sidebar { ">" } else { "<" };
+        let toggle_btn = button(
+            text(toggle_label)
+                .size(14)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+        )
+        .padding([4, 8])
+        .class(Box::new(theme::button::sidebar) as Box<dyn Fn(&theme::Theme, _) -> _>)
+        .on_press(Message::ToggleMembersSidebar);
+
         let content: Element<'a, Message> = match active_room {
             Some(room_id) => {
                 if let Some(room) = rooms.get(room_id) {
@@ -238,24 +255,59 @@ impl Dashboard {
                     let members = text(format!("  ({} members)", room.members.len()))
                         .size(12)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>);
-                    row![name, members].align_y(Vertical::Center).into()
+                    row![
+                        name,
+                        members,
+                        iced::widget::Space::new().width(Length::Fill),
+                        toggle_btn
+                    ]
+                    .align_y(Vertical::Center)
+                    .into()
                 } else {
-                    text("Unknown room")
-                        .size(14)
-                        .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>)
-                        .into()
+                    row![
+                        text("Unknown room")
+                            .size(14)
+                            .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
+                        iced::widget::Space::new().width(Length::Fill),
+                        toggle_btn,
+                    ]
+                    .align_y(Vertical::Center)
+                    .into()
                 }
             }
-            None => text("No room selected — use /join or click a room")
-                .size(14)
-                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>)
-                .into(),
+            None => text("").size(14).into(),
         };
 
         container(content)
             .padding([8, 12])
             .width(Length::Fill)
             .class(Box::new(theme::container::title_bar) as Box<dyn Fn(&theme::Theme) -> _>)
+            .into()
+    }
+
+    fn view_members_sidebar<'a>(
+        &'a self,
+        rooms: &'a HashMap<String, Room>,
+        active_room: &'a Option<String>,
+    ) -> Element<'a, Message> {
+        let mut member_list = column![].spacing(2).padding([8, 12]);
+
+        if let Some(room) = active_room.as_ref().and_then(|id| rooms.get(id)) {
+            let mut sorted_indices: Vec<usize> = (0..room.members.len()).collect();
+            sorted_indices.sort_by(|a, b| room.members[*a].cmp(&room.members[*b]));
+            for index in sorted_indices {
+                member_list = member_list.push(
+                    text(&room.members[index])
+                        .size(13)
+                        .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+                );
+            }
+        }
+
+        container(scrollable(member_list).height(Length::Fill))
+            .width(180)
+            .height(Length::Fill)
+            .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
     }
 
