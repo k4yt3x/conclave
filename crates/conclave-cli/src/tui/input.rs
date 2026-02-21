@@ -8,6 +8,10 @@ pub struct InputLine {
     saved_current: String,
 }
 
+fn is_word_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
 impl InputLine {
     pub fn new() -> Self {
         Self {
@@ -55,6 +59,58 @@ impl InputLine {
 
     pub fn end(&mut self) {
         self.cursor = self.buffer.len();
+    }
+
+    pub fn move_word_left(&mut self) {
+        while self.cursor > 0 && !is_word_char(self.buffer[self.cursor - 1]) {
+            self.cursor -= 1;
+        }
+        while self.cursor > 0 && is_word_char(self.buffer[self.cursor - 1]) {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_word_right(&mut self) {
+        let length = self.buffer.len();
+        while self.cursor < length && is_word_char(self.buffer[self.cursor]) {
+            self.cursor += 1;
+        }
+        while self.cursor < length && !is_word_char(self.buffer[self.cursor]) {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn kill_to_end(&mut self) {
+        self.buffer.truncate(self.cursor);
+    }
+
+    pub fn kill_to_start(&mut self) {
+        self.buffer.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub fn kill_word_backward(&mut self) {
+        let original = self.cursor;
+        while self.cursor > 0 && !is_word_char(self.buffer[self.cursor - 1]) {
+            self.cursor -= 1;
+        }
+        while self.cursor > 0 && is_word_char(self.buffer[self.cursor - 1]) {
+            self.cursor -= 1;
+        }
+        self.buffer.drain(self.cursor..original);
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let start = self.cursor;
+        let length = self.buffer.len();
+        let mut end = self.cursor;
+        while end < length && is_word_char(self.buffer[end]) {
+            end += 1;
+        }
+        while end < length && !is_word_char(self.buffer[end]) {
+            end += 1;
+        }
+        self.buffer.drain(start..end);
     }
 
     pub fn history_up(&mut self) {
@@ -332,6 +388,179 @@ mod tests {
         let mut input = InputLine::new();
         input.submit();
         input.history_up();
+        assert_eq!(input.content(), "");
+    }
+
+    fn input_from(text: &str) -> InputLine {
+        let mut input = InputLine::new();
+        for ch in text.chars() {
+            input.insert(ch);
+        }
+        input
+    }
+
+    #[test]
+    fn test_move_word_left() {
+        let mut input = input_from("hello world");
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 6);
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_move_word_left_at_start() {
+        let mut input = input_from("hello");
+        input.home();
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_move_word_left_multiple_spaces() {
+        let mut input = input_from("hello   world");
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 8);
+    }
+
+    #[test]
+    fn test_move_word_right() {
+        let mut input = input_from("hello world");
+        input.home();
+        input.move_word_right();
+        assert_eq!(input.cursor_position(), 6);
+        input.move_word_right();
+        assert_eq!(input.cursor_position(), 11);
+    }
+
+    #[test]
+    fn test_move_word_right_at_end() {
+        let mut input = input_from("hello");
+        input.move_word_right();
+        assert_eq!(input.cursor_position(), 5);
+    }
+
+    #[test]
+    fn test_move_word_right_multiple_spaces() {
+        let mut input = input_from("hello   world");
+        input.home();
+        input.move_word_right();
+        assert_eq!(input.cursor_position(), 8);
+    }
+
+    #[test]
+    fn test_kill_to_end() {
+        let mut input = input_from("hello world");
+        input.home();
+        for _ in 0..5 {
+            input.move_right();
+        }
+        input.kill_to_end();
+        assert_eq!(input.content(), "hello");
+        assert_eq!(input.cursor_position(), 5);
+    }
+
+    #[test]
+    fn test_kill_to_end_at_end() {
+        let mut input = input_from("hello");
+        input.kill_to_end();
+        assert_eq!(input.content(), "hello");
+    }
+
+    #[test]
+    fn test_kill_to_start() {
+        let mut input = input_from("hello world");
+        input.home();
+        for _ in 0..5 {
+            input.move_right();
+        }
+        input.kill_to_start();
+        assert_eq!(input.content(), " world");
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_kill_to_start_at_start() {
+        let mut input = input_from("hello");
+        input.home();
+        input.kill_to_start();
+        assert_eq!(input.content(), "hello");
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_kill_word_backward() {
+        let mut input = input_from("hello world");
+        input.kill_word_backward();
+        assert_eq!(input.content(), "hello ");
+        assert_eq!(input.cursor_position(), 6);
+    }
+
+    #[test]
+    fn test_kill_word_backward_multiple_spaces() {
+        let mut input = input_from("hello   world");
+        input.kill_word_backward();
+        assert_eq!(input.content(), "hello   ");
+        assert_eq!(input.cursor_position(), 8);
+    }
+
+    #[test]
+    fn test_kill_word_backward_at_start() {
+        let mut input = input_from("hello");
+        input.home();
+        input.kill_word_backward();
+        assert_eq!(input.content(), "hello");
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_delete_word_forward() {
+        let mut input = input_from("hello world");
+        input.home();
+        input.delete_word_forward();
+        assert_eq!(input.content(), "world");
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_delete_word_forward_at_end() {
+        let mut input = input_from("hello");
+        input.delete_word_forward();
+        assert_eq!(input.content(), "hello");
+    }
+
+    #[test]
+    fn test_delete_word_forward_with_punctuation() {
+        let mut input = input_from("hello, world");
+        input.home();
+        input.delete_word_forward();
+        assert_eq!(input.content(), "world");
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_word_operations_with_underscores() {
+        let mut input = input_from("hello_world foo");
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 12);
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn test_word_operations_empty_buffer() {
+        let mut input = InputLine::new();
+        input.move_word_left();
+        assert_eq!(input.cursor_position(), 0);
+        input.move_word_right();
+        assert_eq!(input.cursor_position(), 0);
+        input.kill_word_backward();
+        assert_eq!(input.content(), "");
+        input.delete_word_forward();
+        assert_eq!(input.content(), "");
+        input.kill_to_end();
+        assert_eq!(input.content(), "");
+        input.kill_to_start();
         assert_eq!(input.content(), "");
     }
 }

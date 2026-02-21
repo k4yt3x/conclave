@@ -336,9 +336,109 @@ async fn handle_key_event(
     msg_store: &mut Option<MessageStore>,
 ) -> crate::error::Result<LoopAction> {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL)
-        | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
             return Ok(LoopAction::Quit);
+        }
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+            if !input.is_empty() {
+                input.delete();
+                let _ = render::render_input_line(
+                    stdout,
+                    state,
+                    input,
+                    state.terminal_rows.saturating_sub(1),
+                );
+            }
+        }
+        (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+            input.home();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+            input.end();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            input.move_left();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            input.move_right();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+            input.kill_to_end();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+            input.kill_to_start();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+            input.kill_word_backward();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('b'), KeyModifiers::ALT) => {
+            input.move_word_left();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('f'), KeyModifiers::ALT) => {
+            input.move_word_right();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
+        (KeyCode::Char('d'), KeyModifiers::ALT) => {
+            input.delete_word_forward();
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
         }
 
         (KeyCode::Enter, _) => {
