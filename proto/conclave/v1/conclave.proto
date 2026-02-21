@@ -70,6 +70,7 @@ message GroupInfo {
   repeated GroupMember members = 4;
   uint64 created_at = 5;
   string group_name = 6;
+  string mls_group_id = 7;
 }
 
 message GroupMember {
@@ -92,6 +93,8 @@ message UploadCommitRequest {
   map<string, bytes> welcome_messages = 2;
   // Group info for server-side ExternalClient observation
   bytes group_info = 3;
+  // Hex-encoded MLS group ID (set on group creation commit)
+  string mls_group_id = 4;
 }
 
 message UploadCommitResponse {}
@@ -177,6 +180,8 @@ message ResetAccountResponse {}
 
 message ExternalJoinRequest {
   bytes commit_message = 1;
+  // Hex-encoded MLS group ID (set on external rejoin)
+  string mls_group_id = 2;
 }
 
 message ExternalJoinResponse {}
@@ -208,6 +213,7 @@ message ServerEvent {
     GroupUpdateEvent group_update = 2;
     WelcomeEvent welcome = 3;
     MemberRemovedEvent member_removed = 4;
+    IdentityResetEvent identity_reset = 5;
   }
 }
 
@@ -230,6 +236,11 @@ message WelcomeEvent {
 message MemberRemovedEvent {
   int64 group_id = 1;
   string removed_username = 2;
+}
+
+message IdentityResetEvent {
+  int64 group_id = 1;
+  string username = 2;
 }
 
 // ============================================================

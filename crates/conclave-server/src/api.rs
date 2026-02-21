@@ -384,7 +384,7 @@ async fn list_groups(
     let groups = state.db.list_user_groups(auth.user_id)?;
 
     let mut group_infos = Vec::new();
-    for (group_id, group_name, alias, creator_id, created_at) in groups {
+    for (group_id, group_name, alias, creator_id, created_at, mls_group_id) in groups {
         let members = state.db.get_group_members(group_id)?;
         let member_protos = members
             .into_iter()
@@ -402,6 +402,7 @@ async fn list_groups(
             creator_id,
             members: member_protos,
             created_at: created_at as u64,
+            mls_group_id: mls_group_id.unwrap_or_default(),
         });
     }
 
@@ -526,6 +527,10 @@ async fn upload_commit(
         &request.group_info,
         &request.commit_message,
     )?;
+
+    if !request.mls_group_id.is_empty() {
+        state.db.set_mls_group_id(group_id, &request.mls_group_id)?;
+    }
 
     // Send SSE notifications after the transaction has committed.
     for (user_id, _) in &new_members {
@@ -909,13 +914,17 @@ async fn external_join(
         ));
     }
 
+    if !request.mls_group_id.is_empty() {
+        state.db.set_mls_group_id(group_id, &request.mls_group_id)?;
+    }
+
     // Store the external commit as a message for other members to process.
     if !request.commit_message.is_empty() {
         state
             .db
             .store_message(group_id, auth.user_id, &request.commit_message)?;
 
-        // Notify existing members.
+        // Notify existing members about the identity reset.
         let members = state.db.get_group_members(group_id)?;
         let member_ids: Vec<i64> = members
             .iter()
@@ -923,11 +932,17 @@ async fn external_join(
             .filter(|id| *id != auth.user_id)
             .collect();
 
+        let reset_username = state
+            .db
+            .get_user_by_id(auth.user_id)?
+            .map(|(_, username, _)| username)
+            .unwrap_or_else(|| format!("user#{}", auth.user_id));
+
         let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::GroupUpdate(
-                conclave_proto::GroupUpdateEvent {
+            event: Some(conclave_proto::server_event::Event::IdentityReset(
+                conclave_proto::IdentityResetEvent {
                     group_id,
-                    update_type: "commit".into(),
+                    username: reset_username,
                 },
             )),
         };

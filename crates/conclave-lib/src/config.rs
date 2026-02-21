@@ -151,6 +151,27 @@ pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<i64, String>) {
     }
 }
 
+/// Build a group mapping from server-provided room data.
+///
+/// For groups where the server has the MLS group ID, use it directly.
+/// Falls back to the local `group_mapping.toml` for groups that predate
+/// server-side mapping storage.
+pub fn build_group_mapping(
+    rooms: &[crate::operations::RoomInfo],
+    data_dir: &Path,
+) -> HashMap<i64, String> {
+    let local_fallback = load_group_mapping(data_dir);
+    let mut mapping = HashMap::new();
+    for room in rooms {
+        if let Some(mls_id) = &room.mls_group_id {
+            mapping.insert(room.group_id, mls_id.clone());
+        } else if let Some(mls_id) = local_fallback.get(&room.group_id) {
+            mapping.insert(room.group_id, mls_id.clone());
+        }
+    }
+    mapping
+}
+
 pub fn generate_initial_key_packages(
     mls: &MlsManager,
 ) -> crate::error::Result<Vec<(Vec<u8>, bool)>> {

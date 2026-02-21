@@ -90,7 +90,8 @@ impl Database {
                 group_name TEXT UNIQUE,
                 alias TEXT,
                 creator_id INTEGER NOT NULL REFERENCES users(id),
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                mls_group_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS group_members (
@@ -127,6 +128,9 @@ impl Database {
             );
             ",
         )?;
+
+        // Migration: add mls_group_id column to existing databases.
+        let _ = conn.execute_batch("ALTER TABLE groups ADD COLUMN mls_group_id TEXT;");
 
         Ok(())
     }
@@ -395,10 +399,19 @@ impl Database {
     pub fn list_user_groups(
         &self,
         user_id: i64,
-    ) -> Result<Vec<(i64, Option<String>, Option<String>, i64, i64)>> {
+    ) -> Result<
+        Vec<(
+            i64,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            Option<String>,
+        )>,
+    > {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.group_name, g.alias, g.creator_id, g.created_at
+            "SELECT g.id, g.group_name, g.alias, g.creator_id, g.created_at, g.mls_group_id
              FROM groups g
              JOIN group_members gm ON g.id = gm.group_id
              WHERE gm.user_id = ?1
@@ -412,10 +425,20 @@ impl Database {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    pub fn set_mls_group_id(&self, group_id: i64, mls_group_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE groups SET mls_group_id = ?2 WHERE id = ?1 AND mls_group_id IS NULL",
+            params![group_id, mls_group_id],
+        )?;
+        Ok(())
     }
 
     pub fn remove_group_member(&self, group_id: i64, user_id: i64) -> Result<()> {

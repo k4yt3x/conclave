@@ -1,5 +1,66 @@
 # Conclave Work Log
 
+## 2026-02-21: Server-Side Group Mapping and Registration Key Packages
+
+Three interrelated fixes making the system more robust: server-side group mapping storage, registration key package upload, and `/reset` reliability.
+
+### Changes
+
+1. **Server-side MLS group ID storage**: The `groups` table now has an `mls_group_id TEXT` column. The server returns `mls_group_id` in the `ListGroupsResponse` (`GroupInfo` message) and stores it from `UploadCommitRequest` (on group creation) and `ExternalJoinRequest` (on rejoin). Clients build their in-memory group mapping from the server response on login/reconnect instead of relying on the local `group_mapping.toml` file. A local file fallback exists for migration (groups created before the server stored `mls_group_id`).
+
+2. **Registration uploads key packages**: All three registration paths (CLI one-shot, TUI, GUI) now auto-login after registration, create an MLS identity, and upload initial key packages (1 last-resort + 5 regular). Previously, newly registered users couldn't be invited to groups until they logged out and back in.
+
+3. **`/reset` fetches groups from server**: `reset_account()` now calls `load_rooms()` to discover groups from the server instead of relying on the local `group_mapping` parameter. This fixes `/reset` showing "rejoined 0/0 groups" when the local data directory was lost (the scenario that makes reset necessary). The function also passes `mls_group_id` in `external_join()` calls so the server stores the new MLS group ID after rejoin.
+
+4. **TUI/GUI stop writing `group_mapping.toml`**: The TUI and GUI no longer call `save_group_mapping()`. The mapping is ephemeral in memory, rebuilt from the server on each login/reconnect. One-shot CLI commands still read/write the file for backward compatibility.
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto` — Added `mls_group_id` to `GroupInfo`, `UploadCommitRequest`, `ExternalJoinRequest`
+- `crates/conclave-server/src/db.rs` — Added `mls_group_id TEXT` column, migration, `set_mls_group_id()`, updated `list_user_groups()` return type
+- `crates/conclave-server/src/api.rs` — `list_groups` returns `mls_group_id`; `upload_commit`/`external_join` store it
+- `crates/conclave-lib/src/api.rs` — Added `mls_group_id` param to `upload_commit()` and `external_join()`
+- `crates/conclave-lib/src/operations.rs` — Added `mls_group_id` to `RoomInfo`; rewrote `reset_account()` to fetch groups from server
+- `crates/conclave-lib/src/config.rs` — Added `build_group_mapping()` helper
+- `crates/conclave-cli/src/main.rs` — Registration auto-login + key packages; kept file I/O for one-shot commands
+- `crates/conclave-cli/src/tui/commands.rs` — Registration auto-login + key packages; login builds mapping from server; removed `save_group_mapping` calls
+- `crates/conclave-cli/src/tui/mod.rs` — Build mapping from server rooms instead of file
+- `crates/conclave-cli/src/tui/events.rs` — Removed `save_group_mapping` calls
+- `crates/conclave-gui/src/app.rs` — Registration auto-login + key packages; build mapping from server; removed all `save_group_mapping` calls; updated reset flow
+- `crates/conclave-server/tests/api_tests.rs` — Added `mls_group_id` field to 21 proto struct initializers
+- `crates/conclave-server/tests/protocol_flow_tests.rs` — Added `mls_group_id` field to 2 proto struct initializers
+
+### Verification
+
+- `cargo build --release` — clean
+- `cargo test --workspace` — all 418 tests pass
+- `cargo clippy --workspace` — no new warnings
+- `cargo fmt --all -- --check` — clean
+
+## 2026-02-21: Add Identity Reset Notifications
+
+Added Signal/Matrix-style identity change warnings. When a user resets their encryption identity (via `/reset` or after data loss), all shared rooms now display a clear warning to other members.
+
+### Changes
+
+1. **New `IdentityResetEvent` SSE event**: Added to protobuf schema (`ServerEvent` oneof field 5). Carries `group_id` and `username` of the user who reset.
+
+2. **Server `external_join` handler**: Now sends `IdentityResetEvent` instead of generic `GroupUpdateEvent` when a user rejoins via external commit. Looks up the resetting user's username for the notification.
+
+3. **Client handling (CLI + GUI)**: Both frontends process the new event by showing a warning message ("{username} has reset their encryption identity. New messages are secured with their new keys.") and processing the underlying external commit to advance MLS epoch state.
+
+4. **Login-time stale group detection**: When a user logs in and the server returns groups that have no local MLS mapping, both CLI and GUI now show a warning suggesting `/reset` to rejoin with a new identity.
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto` -- `IdentityResetEvent` message + `ServerEvent` variant
+- `crates/conclave-server/src/api.rs` -- `external_join` sends `IdentityResetEvent`
+- `crates/conclave-lib/src/operations.rs` -- `SseEvent::IdentityReset` variant + decode + test
+- `crates/conclave-cli/src/tui/events.rs` -- Handle `IdentityReset` SSE
+- `crates/conclave-cli/src/tui/commands.rs` -- Stale group detection on login
+- `crates/conclave-gui/src/subscription.rs` -- `SseUpdate::IdentityReset` variant + decode
+- `crates/conclave-gui/src/app.rs` -- Handle `IdentityReset` SSE + stale group detection
+
 ## 2026-02-21: Fix Group Mapping and Adapt ID Types to Integer Design
 
 Fixed multiple bugs from the incomplete UUID-to-integer ID migration that prevented group joining and message processing.

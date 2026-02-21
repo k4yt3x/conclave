@@ -629,9 +629,28 @@ impl MlsManager {
             builder = builder.with_removal(old_index);
         }
 
-        let (mut group, commit_msg) = builder
-            .build(group_info_msg)
-            .map_err(|e| Error::Mls(format!("external commit build failed: {e}")))?;
+        let build_result = builder.build(group_info_msg.clone());
+
+        // If the build failed because our identity already exists in the tree
+        // (e.g., after data loss where we couldn't look up our old leaf index),
+        // mls-rs reports DuplicateLeafData with the conflicting leaf index.
+        // Retry with that index removed.
+        let (mut group, commit_msg) = match build_result {
+            Ok(result) => result,
+            Err(MlsError::DuplicateLeafData(existing_index))
+                if old_leaf_index != Some(existing_index) =>
+            {
+                let retry_builder = client
+                    .external_commit_builder()
+                    .map_err(|e| Error::Mls(format!("external commit builder failed: {e}")))?
+                    .with_removal(existing_index);
+
+                retry_builder
+                    .build(group_info_msg)
+                    .map_err(|e| Error::Mls(format!("external commit build failed: {e}")))?
+            }
+            Err(e) => return Err(Error::Mls(format!("external commit build failed: {e}"))),
+        };
 
         group
             .write_to_storage()

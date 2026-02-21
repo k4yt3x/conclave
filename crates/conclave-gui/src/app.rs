@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use conclave_lib::api::{ApiClient, normalize_server_url};
 use conclave_lib::command::Command;
 use conclave_lib::config::{
-    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
-    save_group_mapping,
+    ClientConfig, SessionState, build_group_mapping, generate_initial_key_packages,
 };
 use conclave_lib::mls::MlsManager;
 use conclave_lib::operations;
@@ -148,9 +147,6 @@ impl Conclave {
             if let Ok(mls) = MlsManager::new(&app.config.data_dir, user_id) {
                 app.mls = Some(mls);
             }
-
-            // Load group mapping
-            app.group_mapping = load_group_mapping(&app.config.data_dir);
 
             // Open message store
             if let Ok(store) = MessageStore::open(&app.config.data_dir) {
@@ -391,15 +387,46 @@ impl Conclave {
                         Message::LoginResult,
                     ),
                     screen::login::Mode::Register => Task::perform(
-                        async move {
-                            let api = ApiClient::new(&server_url, accept_invalid_certs);
-                            let resp = api
-                                .register(&username, &password, None)
+                        {
+                            let data_dir = self.config.data_dir.clone();
+                            async move {
+                                let api = ApiClient::new(&server_url, accept_invalid_certs);
+                                let resp = api
+                                    .register(&username, &password, None)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                let user_id = resp.user_id;
+
+                                // Auto-login to upload initial key packages so
+                                // the user can be immediately invited to groups.
+                                let login_resp = api
+                                    .login(&username, &password)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                let mut auth_api =
+                                    ApiClient::new(&server_url, accept_invalid_certs);
+                                auth_api.set_token(login_resp.token);
+
+                                std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+                                let entries = tokio::task::spawn_blocking({
+                                    let data_dir = data_dir.clone();
+                                    move || {
+                                        let mls = MlsManager::new(&data_dir, user_id)
+                                            .map_err(|e| e.to_string())?;
+                                        generate_initial_key_packages(&mls)
+                                            .map_err(|e| e.to_string())
+                                    }
+                                })
                                 .await
-                                .map_err(|e| e.to_string())?;
-                            Ok(RegisterInfo {
-                                user_id: resp.user_id,
-                            })
+                                .map_err(|e| e.to_string())??;
+
+                                auth_api
+                                    .upload_key_packages(entries)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+
+                                Ok(RegisterInfo { user_id })
+                            }
                         },
                         Message::RegisterResult,
                     ),
@@ -435,9 +462,6 @@ impl Conclave {
                 if let Ok(mls) = MlsManager::new(&self.config.data_dir, info.user_id) {
                     self.mls = Some(mls);
                 }
-
-                // Load group mapping
-                self.group_mapping = load_group_mapping(&self.config.data_dir);
 
                 // Open message store
                 if let Ok(store) = MessageStore::open(&self.config.data_dir) {
@@ -755,6 +779,16 @@ impl Conclave {
             }
             SseUpdate::Welcome => self.accept_welcomes(),
             SseUpdate::GroupUpdate => self.load_rooms_task(),
+            SseUpdate::IdentityReset { group_id, username } => {
+                self.add_message_to_room(
+                    group_id,
+                    DisplayMessage::system(&format!(
+                        "{username} has reset their encryption identity. \
+                         New messages are secured with their new keys."
+                    )),
+                );
+                self.handle_sse_event(SseUpdate::NewMessage { group_id })
+            }
             SseUpdate::MemberRemoved { group_id, username } => {
                 let is_self = self.username.as_deref() == Some(&username);
                 if is_self {
@@ -766,7 +800,6 @@ impl Conclave {
                     let mls_group_id = self.group_mapping.get(&group_id).cloned();
 
                     self.group_mapping.remove(&group_id);
-                    save_group_mapping(&self.config.data_dir, &self.group_mapping);
                     self.rooms.remove(&group_id);
                     if self.active_room == Some(group_id) {
                         self.active_room = None;
@@ -818,7 +851,6 @@ impl Conclave {
             Ok(info) => {
                 self.group_mapping
                     .insert(info.server_group_id, info.mls_group_id);
-                save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
                 self.active_room = Some(info.server_group_id);
                 self.push_system_message(&format!("Group created ({})", info.server_group_id));
@@ -838,6 +870,9 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok(room_infos) => {
+                // Build group mapping from server-provided MLS group IDs.
+                self.group_mapping = build_group_mapping(&room_infos, &self.config.data_dir);
+
                 let mut server_group_ids = HashSet::new();
 
                 for info in room_infos {
@@ -892,7 +927,6 @@ impl Conclave {
                         self.rooms.remove(id);
                         self.group_mapping.remove(id);
                     }
-                    save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
                     if let Some(active) = self.active_room {
                         if stale_ids.contains(&active) {
@@ -913,6 +947,21 @@ impl Conclave {
         // up to date.
         let was_loaded = self.rooms_loaded;
         self.rooms_loaded = true;
+
+        // On first load, detect groups with no local MLS state (stale after data loss).
+        if !was_loaded {
+            let unmapped_count = self
+                .rooms
+                .keys()
+                .filter(|gid| !self.group_mapping.contains_key(gid))
+                .count();
+            if unmapped_count > 0 {
+                self.push_system_message(&format!(
+                    "{unmapped_count} group(s) have no local encryption state. \
+                     Run /reset to rejoin them with a new identity."
+                ));
+            }
+        }
 
         // Deferred fetch: welcome processing triggered a rooms reload and
         // asked us to fetch missed messages once the rooms are present.
@@ -1037,7 +1086,6 @@ impl Conclave {
                         .unwrap_or(&group_id_str);
                     self.push_system_message(&format!("Joined #{display} ({})", w.group_id));
                 }
-                save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
                 if let Some(last) = welcomes.last() {
                     self.active_room = Some(last.group_id);
@@ -1289,7 +1337,6 @@ impl Conclave {
         let user_id = self.user_id.unwrap_or(0);
 
         self.group_mapping.remove(&group_id);
-        save_group_mapping(&self.config.data_dir, &self.group_mapping);
         self.rooms.remove(&group_id);
         self.active_room = None;
         self.push_system_message(&format!("Left #{room_name}"));
@@ -1363,7 +1410,6 @@ impl Conclave {
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
-        let group_mapping = self.group_mapping.clone();
 
         self.push_system_message("Resetting account...");
 
@@ -1371,7 +1417,7 @@ impl Conclave {
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                operations::reset_account(&api, &group_mapping, &data_dir, user_id)
+                operations::reset_account(&api, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -1386,7 +1432,6 @@ impl Conclave {
         match result {
             Ok(info) => {
                 self.group_mapping = info.new_group_mapping;
-                save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
                 if let Some(uid) = self.user_id {
                     if let Ok(mls) = MlsManager::new(&self.config.data_dir, uid) {

@@ -228,11 +228,13 @@ impl ApiClient {
         commit_message: Vec<u8>,
         welcome_messages: std::collections::HashMap<String, Vec<u8>>,
         group_info: Vec<u8>,
+        mls_group_id: Option<&str>,
     ) -> Result<()> {
         let request = conclave_proto::UploadCommitRequest {
             commit_message,
             welcome_messages,
             group_info,
+            mls_group_id: mls_group_id.unwrap_or_default().to_string(),
         };
         self.post(&format!("/api/v1/groups/{group_id}/commit"), &request)
             .await?;
@@ -354,8 +356,16 @@ impl ApiClient {
         )?)
     }
 
-    pub async fn external_join(&self, group_id: i64, commit_message: Vec<u8>) -> Result<()> {
-        let request = conclave_proto::ExternalJoinRequest { commit_message };
+    pub async fn external_join(
+        &self,
+        group_id: i64,
+        commit_message: Vec<u8>,
+        mls_group_id: &str,
+    ) -> Result<()> {
+        let request = conclave_proto::ExternalJoinRequest {
+            commit_message,
+            mls_group_id: mls_group_id.to_string(),
+        };
         self.post(
             &format!("/api/v1/groups/{group_id}/external-join"),
             &request,

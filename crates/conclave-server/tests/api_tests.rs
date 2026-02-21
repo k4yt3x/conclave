@@ -890,6 +890,7 @@ async fn test_remove_member_success() {
         commit_message: b"add_bob_commit".to_vec(),
         welcome_messages: welcomes,
         group_info: b"info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1056,6 +1057,7 @@ async fn test_leave_group_success() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1135,6 +1137,7 @@ async fn test_get_group_info_success() {
         commit_message: b"commit".to_vec(),
         welcome_messages: HashMap::new(),
         group_info: b"group_info_data".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1224,6 +1227,7 @@ async fn test_external_join_success() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages,
         group_info: b"fake_group_info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut cbody = Vec::new();
     commit_body.encode(&mut cbody).unwrap();
@@ -1240,6 +1244,7 @@ async fn test_external_join_success() {
     // Bob (an existing member) performs an external join (e.g., after account reset).
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"ext_commit".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1322,6 +1327,7 @@ async fn test_upload_commit_stores_group_info() {
         commit_message: b"commit_msg".to_vec(),
         welcome_messages: HashMap::new(),
         group_info: b"stored_group_info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1367,6 +1373,7 @@ async fn test_upload_commit_not_member() {
         commit_message: b"commit".to_vec(),
         welcome_messages: HashMap::new(),
         group_info: b"info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1406,6 +1413,7 @@ async fn test_accept_welcome_success() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1823,6 +1831,7 @@ async fn test_invite_existing_member_conflict() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1896,6 +1905,7 @@ async fn test_upload_commit_with_welcome_creates_pending_welcome() {
         commit_message: b"add_bob_commit".to_vec(),
         welcome_messages: welcomes,
         group_info: b"gi_data".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1943,6 +1953,7 @@ async fn test_leave_group_stores_commit_message() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2007,6 +2018,7 @@ async fn test_remove_member_stores_group_info() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2246,6 +2258,7 @@ async fn test_list_groups_includes_members() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2505,6 +2518,7 @@ async fn test_external_join_nonexistent_group() {
 
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"ext_commit".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2725,6 +2739,7 @@ async fn test_external_join_no_group_info_stored() {
     // Alice (a member) attempts external join but no group_info has been uploaded.
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"ext_commit".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2863,6 +2878,7 @@ async fn test_upload_commit_with_multiple_welcomes() {
         commit_message: b"add_both".to_vec(),
         welcome_messages: welcomes,
         group_info: b"group_info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2950,6 +2966,7 @@ async fn test_leave_group_stores_group_info() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages: welcomes,
         group_info: b"initial_gi".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -3011,6 +3028,7 @@ async fn test_external_join_commit_stored_as_message() {
         commit_message: b"add_bob".to_vec(),
         welcome_messages,
         group_info: b"ext_group_info".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -3027,6 +3045,7 @@ async fn test_external_join_commit_stored_as_message() {
     // Bob (existing member) performs an external join with a commit_message.
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"external_join_commit_data".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -3077,6 +3096,7 @@ async fn test_external_join_requires_membership() {
         commit_message: vec![],
         welcome_messages: HashMap::new(),
         group_info: b"group_info_data".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut cbody = Vec::new();
     commit_body.encode(&mut cbody).unwrap();
@@ -3096,6 +3116,7 @@ async fn test_external_join_requires_membership() {
 
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"eve_commit".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();

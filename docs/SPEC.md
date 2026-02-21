@@ -195,6 +195,7 @@ CREATE TABLE groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_name TEXT UNIQUE,
     alias TEXT,
+    mls_group_id TEXT,
     creator_id INTEGER NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -281,9 +282,9 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 
 - **`POST /api/v1/key-packages`**: Supports both single-upload (via `key_package_data` field) and batch-upload (via `entries` repeated field with `KeyPackageEntry` messages containing `data` and `is_last_resort` flag). All uploads are validated for MLS wire format correctness (version 0x0001, wire format 0x0005 for `mls_key_package` per RFC 9420 Section 6). Uploading a last-resort package replaces any existing last-resort package for that user.
 - **`GET /api/v1/key-packages/{user_id}`**: Rate-limited to 10 requests per minute per target user. Consumes the oldest regular key package (FIFO). Falls back to the last-resort package (without deleting it) when no regular packages remain.
-- **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`.
+- **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, on group creation).
 - **`POST /api/v1/groups/{id}/leave`**: Accepts an optional `commit_message` and `group_info` in the request body. If a commit message is provided, it is stored as a group message so remaining members can process the MLS removal and advance their epoch. If group info is provided, it is stored for potential external rejoin. The user is then removed from the server's group membership, and remaining members are notified via `MemberRemovedEvent`.
-- **`POST /api/v1/groups/{id}/external-join`**: Requires the group to exist and have a stored `GroupInfo` (set by prior `upload_commit` or `remove` operations). This prevents arbitrary users from joining groups they were never associated with — only groups whose authorized members have published a GroupInfo can be externally joined. The external commit is stored as a group message and existing members receive a `GroupUpdateEvent`.
+- **`POST /api/v1/groups/{id}/external-join`**: Requires the group to exist and have a stored `GroupInfo` (set by prior `upload_commit` or `remove` operations). This prevents arbitrary users from joining groups they were never associated with — only groups whose authorized members have published a GroupInfo can be externally joined. The external commit is stored as a group message and existing members receive an `IdentityResetEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, preserving the original).
 
 ### 3.5 SSE Events
 
@@ -294,6 +295,7 @@ Event types:
 - **GroupUpdateEvent**: Group state changed, e.g., a commit was uploaded (group_id, update_type).
 - **WelcomeEvent**: User was invited to a group (group_id, group_alias).
 - **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_user_id, removed_username). Sent to both remaining members and the removed user.
+- **IdentityResetEvent**: A member reset their encryption identity via external rejoin (group_id, username). Sent to other group members when a user performs an account reset. Clients display a warning that the user's encryption keys have changed.
 - **lagged** (transport-level): Sent when the client's SSE stream falls behind the broadcast channel buffer. The `event` field is `"lagged"` and the `data` field contains the number of dropped events as a string. Clients should treat this as a signal to re-fetch group state. This is not a protobuf `ServerEvent` — it is a raw SSE event emitted by the transport layer.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
@@ -330,7 +332,7 @@ The client persists the following files in `data_dir`:
 | `mls_identity.bin`    | MLS codec     | Serialized `SigningIdentity` (public key + credential)      |
 | `mls_signing_key.bin` | Raw bytes     | `SignatureSecretKey` (private key material)                  |
 | `mls_state.db`        | SQLite        | mls-rs group state, key packages, PSKs (via mls-rs-provider-sqlite) |
-| `group_mapping.toml`  | TOML          | Map of server group ID (i64) to MLS group ID (hex string)   |
+| `group_mapping.toml`  | TOML          | Local cache of server group ID (i64) to MLS group ID (hex string). Used as fallback by one-shot CLI commands; TUI/GUI build mapping from server on login. |
 | `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking    |
 
 ### 4.3 MLS Integration
@@ -519,4 +521,4 @@ Alice                               Server                              Bob
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `GroupMember` (with `user_id`, `username`, `alias`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response` (with `mls_group_id` set on group creation), `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`), `ErrorResponse`, `UserInfoResponse`.

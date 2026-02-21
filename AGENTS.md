@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~417 tests across 9 suites)
+cargo test --workspace                   # Run all tests (~418 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-lib               # Client library tests only
 cargo clippy --workspace                 # Lint
@@ -74,9 +74,9 @@ Five crates in `crates/`:
 
 **Key package lifecycle**: 5 regular + 1 last-resort per user. Regular packages consumed FIFO; last-resort never deleted. Server caps at 10 regular. Clients auto-replenish after consumption.
 
-**Group ID mapping**: Server uses auto-increment integer IDs (`i64`); MLS uses opaque byte IDs. Clients maintain `group_mapping.toml` (`HashMap<i64, String>`) per user to map server group IDs to hex-encoded MLS group IDs.
+**Group ID mapping**: Server uses auto-increment integer IDs (`i64`); MLS uses opaque byte IDs. The server stores `mls_group_id` in the `groups` table and returns it in `ListGroupsResponse`. TUI/GUI clients build the in-memory mapping (`HashMap<i64, String>`) from the server response on login/reconnect via `build_group_mapping()`. One-shot CLI commands still read/write `group_mapping.toml` per user as a local fallback.
 
-**SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent.
+**SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent, IdentityResetEvent.
 
 **Protobuf over HTTP**: Requests use `Content-Type: application/x-protobuf` with raw protobuf bytes. Server helpers: `proto_response()` encodes, `decode_proto()` decodes.
 

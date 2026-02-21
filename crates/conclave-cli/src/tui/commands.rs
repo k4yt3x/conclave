@@ -5,8 +5,7 @@ use tokio::sync::Mutex;
 use conclave_lib::api::ApiClient;
 pub use conclave_lib::command::Command;
 use conclave_lib::config::{
-    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
-    save_group_mapping,
+    ClientConfig, SessionState, build_group_mapping, generate_initial_key_packages,
 };
 use conclave_lib::mls::MlsManager;
 use conclave_lib::operations;
@@ -43,6 +42,27 @@ pub async fn execute(
             msgs.push(DisplayMessage::system(&format!(
                 "Registered as user ID {} on {server}",
                 resp.user_id
+            )));
+
+            // Auto-login to upload initial key packages so the user can be
+            // immediately invited to groups.
+            let login_resp = reg_api.login(&username, &password).await?;
+            let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
+            auth_api.set_token(login_resp.token);
+
+            std::fs::create_dir_all(&config.data_dir)?;
+            let data_dir = config.data_dir.clone();
+            let user_id = resp.user_id;
+            let entries = tokio::task::spawn_blocking(move || {
+                let mls_mgr = MlsManager::new(&data_dir, user_id)?;
+                generate_initial_key_packages(&mls_mgr)
+            })
+            .await
+            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+            let count = entries.len();
+            auth_api.upload_key_packages(entries).await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "{count} key packages uploaded."
             )));
         }
 
@@ -97,11 +117,22 @@ pub async fn execute(
                 }
             }
 
-            // Load group mapping.
-            state.group_mapping = load_group_mapping(&config.data_dir);
+            // Load rooms from server and build group mapping.
+            let room_infos = load_rooms(api, state).await?;
+            state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
-            // Load rooms from server.
-            load_rooms(api, state).await?;
+            // Detect groups with no local MLS state (stale after data loss).
+            let unmapped_count = state
+                .rooms
+                .keys()
+                .filter(|gid| !state.group_mapping.contains_key(gid))
+                .count();
+            if unmapped_count > 0 {
+                msgs.push(DisplayMessage::system(&format!(
+                    "{unmapped_count} group(s) have no local encryption state. \
+                     Run /reset to rejoin them with a new identity."
+                )));
+            }
 
             msgs.push(DisplayMessage::system(&format!(
                 "Logged in as {username} (user ID {})",
@@ -129,7 +160,6 @@ pub async fn execute(
             state
                 .group_mapping
                 .insert(result.server_group_id, result.mls_group_id);
-            save_group_mapping(&config.data_dir, &state.group_mapping);
 
             load_rooms(api, state).await?;
 
@@ -172,8 +202,6 @@ pub async fn execute(
                     result.group_id
                 )));
             }
-
-            save_group_mapping(&config.data_dir, &state.group_mapping);
 
             load_rooms(api, state).await?;
             if let Some(gid) = last_group_id {
@@ -342,8 +370,6 @@ pub async fn execute(
             state.active_room = None;
             state.scroll_offset = 0;
 
-            save_group_mapping(&config.data_dir, &state.group_mapping);
-
             msgs.push(DisplayMessage::system(&format!("Left #{name}")));
         }
 
@@ -398,13 +424,7 @@ pub async fn execute(
 
             let result = {
                 let api_guard = api.lock().await;
-                operations::reset_account(
-                    &api_guard,
-                    &state.group_mapping,
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?
+                operations::reset_account(&api_guard, &config.data_dir, user_id).await?
             };
 
             // Refresh the local MLS manager since reset_account wiped and
@@ -412,7 +432,6 @@ pub async fn execute(
             *mls = Some(MlsManager::new(&config.data_dir, user_id)?);
 
             state.group_mapping = result.new_group_mapping;
-            save_group_mapping(&config.data_dir, &state.group_mapping);
 
             for error in &result.errors {
                 msgs.push(DisplayMessage::system(error));
@@ -745,7 +764,11 @@ fn require_user_id(state: &AppState) -> Result<i64> {
 
 /// Load rooms from the server and update state, preserving existing sequence tracking.
 /// Prunes rooms that the server no longer returns (e.g., user was removed while offline).
-pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Result<()> {
+/// Returns the raw `RoomInfo` list for use in building the group mapping.
+pub async fn load_rooms(
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+) -> Result<Vec<operations::RoomInfo>> {
     let rooms = {
         let api_guard = api.lock().await;
         operations::load_rooms(&api_guard).await?
@@ -753,7 +776,7 @@ pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Re
 
     let mut server_group_ids = std::collections::HashSet::new();
 
-    for room_info in rooms {
+    for room_info in &rooms {
         server_group_ids.insert(room_info.group_id);
 
         let (existing_seq, existing_read) = state
@@ -766,8 +789,8 @@ pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Re
             room_info.group_id,
             Room {
                 server_group_id: room_info.group_id,
-                group_name: room_info.group_name,
-                alias: room_info.alias,
+                group_name: room_info.group_name.clone(),
+                alias: room_info.alias.clone(),
                 members: room_info
                     .members
                     .iter()
@@ -800,5 +823,5 @@ pub async fn load_rooms(api: &Arc<Mutex<ApiClient>>, state: &mut AppState) -> Re
         }
     }
 
-    Ok(())
+    Ok(rooms)
 }

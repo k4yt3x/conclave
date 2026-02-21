@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
-use conclave_lib::config::save_group_mapping;
 use conclave_lib::error::Result;
 use conclave_lib::operations::{self, SseEvent};
 
@@ -40,6 +39,17 @@ pub async fn handle_sse_message(
             group_id,
             removed_username,
         } => handle_member_removed(group_id, &removed_username, api, state, data_dir).await,
+        SseEvent::IdentityReset { group_id, username } => {
+            // Process the external commit to advance our MLS epoch state.
+            let _ = handle_new_message(group_id, api, state, data_dir).await;
+
+            Ok(vec![(
+                group_id,
+                DisplayMessage::system(&format!(
+                    "Caution: {username} has reset their encryption identity."
+                )),
+            )])
+        }
     }
 }
 
@@ -128,7 +138,6 @@ async fn handle_welcome(
     }
 
     if !results.is_empty() {
-        save_group_mapping(data_dir, &state.group_mapping);
         commands::load_rooms(api, state).await?;
 
         // Advance last_seen_seq so fetch_missed_messages skips the initial
@@ -184,7 +193,6 @@ async fn handle_member_removed(
         }
 
         state.group_mapping.remove(&group_id);
-        save_group_mapping(data_dir, &state.group_mapping);
         state.rooms.remove(&group_id);
         if state.active_room == Some(group_id) {
             state.active_room = None;

@@ -18,6 +18,7 @@ pub struct RoomInfo {
     pub group_name: Option<String>,
     pub alias: Option<String>,
     pub members: Vec<MemberInfo>,
+    pub mls_group_id: Option<String>,
 }
 
 impl RoomInfo {
@@ -128,6 +129,10 @@ pub enum SseEvent {
         group_id: i64,
         removed_username: String,
     },
+    IdentityReset {
+        group_id: i64,
+        username: String,
+    },
 }
 
 // ── SSE event decoding ───────────────────────────────────────────
@@ -156,6 +161,12 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
             Ok(SseEvent::MemberRemoved {
                 group_id: removed.group_id,
                 removed_username: removed.removed_username,
+            })
+        }
+        Some(conclave_proto::server_event::Event::IdentityReset(reset)) => {
+            Ok(SseEvent::IdentityReset {
+                group_id: reset.group_id,
+                username: reset.username,
             })
         }
         None => Err(Error::Other("empty SSE event".into())),
@@ -195,6 +206,11 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
                     },
                 })
                 .collect(),
+            mls_group_id: if group.mls_group_id.is_empty() {
+                None
+            } else {
+                Some(group.mls_group_id)
+            },
         })
         .collect())
 }
@@ -392,8 +408,14 @@ pub async fn create_group(
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-    api.upload_commit(server_group_id, commit_bytes, welcome_map, group_info_bytes)
-        .await?;
+    api.upload_commit(
+        server_group_id,
+        commit_bytes,
+        welcome_map,
+        group_info_bytes,
+        Some(&mls_group_id),
+    )
+    .await?;
 
     Ok(GroupCreatedResult {
         server_group_id,
@@ -433,8 +455,14 @@ pub async fn invite_members(
     .await
     .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-    api.upload_commit(server_group_id, commit_bytes, welcome_map, group_info_bytes)
-        .await?;
+    api.upload_commit(
+        server_group_id,
+        commit_bytes,
+        welcome_map,
+        group_info_bytes,
+        None,
+    )
+    .await?;
 
     Ok(invited)
 }
@@ -502,6 +530,7 @@ pub async fn rotate_keys(
         commit_bytes,
         HashMap::new(),
         group_info_bytes,
+        None,
     )
     .await?;
 
@@ -656,29 +685,33 @@ pub async fn accept_welcomes(
 
 /// Reset the account: wipe all local MLS state, regenerate identity and key
 /// packages, then rejoin each group via external commit.
-pub async fn reset_account(
-    api: &ApiClient,
-    group_mapping: &HashMap<i64, String>,
-    data_dir: &Path,
-    user_id: i64,
-) -> Result<ResetResult> {
-    let groups_to_rejoin: Vec<(i64, String)> = group_mapping
-        .iter()
-        .map(|(server_id, mls_id)| (*server_id, mls_id.clone()))
-        .collect();
+///
+/// Groups are discovered from the server (not from local state), so this works
+/// even when the user has lost their local data directory.
+pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: i64) -> Result<ResetResult> {
+    // Step 1: Fetch group list from the server.
+    let rooms = load_rooms(api).await?;
+    let groups_to_rejoin: Vec<i64> = rooms.iter().map(|r| r.group_id).collect();
     let total_groups = groups_to_rejoin.len();
 
-    // Step 1: Collect old leaf indices before wiping state.
+    // Step 2: Collect old leaf indices before wiping state (best-effort;
+    // the mapping and MLS state may be missing after data loss).
     let old_indices: HashMap<i64, Option<u32>> = {
         let data_dir = data_dir.to_path_buf();
         let groups = groups_to_rejoin.clone();
+        let group_mapping = crate::config::build_group_mapping(&rooms, &data_dir);
 
         tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, user_id)?;
+            let mls = match MlsManager::new(&data_dir, user_id) {
+                Ok(mls) => mls,
+                Err(_) => return Ok(HashMap::new()),
+            };
             let mut indices = HashMap::new();
-            for (server_id, mls_id) in &groups {
-                let index = mls.find_member_index(mls_id, user_id).ok().flatten();
-                indices.insert(*server_id, index);
+            for server_id in &groups {
+                if let Some(mls_id) = group_mapping.get(server_id) {
+                    let index = mls.find_member_index(mls_id, user_id).ok().flatten();
+                    indices.insert(*server_id, index);
+                }
             }
             Ok::<_, Error>(indices)
         })
@@ -686,22 +719,25 @@ pub async fn reset_account(
         .map_err(|e| Error::Other(format!("task join error: {e}")))?
     }?;
 
-    // Step 2: Notify server to clear our key packages.
+    // Step 3: Notify server to clear our key packages.
     api.reset_account().await?;
 
-    // Step 3: Wipe local MLS state.
+    // Step 4: Wipe local MLS state.
     {
         let data_dir = data_dir.to_path_buf();
 
         tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, user_id)?;
+            let mls = match MlsManager::new(&data_dir, user_id) {
+                Ok(mls) => mls,
+                Err(_) => return Ok(()),
+            };
             mls.wipe_local_state()
         })
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))?
     }?;
 
-    // Step 4: Regenerate identity and upload new key packages.
+    // Step 5: Regenerate identity and upload new key packages.
     {
         let data_dir = data_dir.to_path_buf();
 
@@ -715,12 +751,12 @@ pub async fn reset_account(
         api.upload_key_packages(entries).await?;
     }
 
-    // Step 5: Rejoin each group via external commit.
+    // Step 6: Rejoin each group via external commit.
     let mut new_group_mapping = HashMap::new();
     let mut errors = Vec::new();
     let mut rejoin_count = 0;
 
-    for (server_group_id, _) in &groups_to_rejoin {
+    for server_group_id in &groups_to_rejoin {
         let server_group_id = *server_group_id;
 
         let group_info_response = match api.get_group_info(server_group_id).await {
@@ -747,7 +783,10 @@ pub async fn reset_account(
 
         match rejoin_result {
             Ok((new_mls_id, commit_bytes)) => {
-                if let Err(error) = api.external_join(server_group_id, commit_bytes).await {
+                if let Err(error) = api
+                    .external_join(server_group_id, commit_bytes, &new_mls_id)
+                    .await
+                {
                     errors.push(format!("Failed to rejoin {server_group_id}: {error}"));
                     continue;
                 }
@@ -781,6 +820,7 @@ mod tests {
             group_name: Some("devs".into()),
             alias: Some("Dev Team".into()),
             members: vec![],
+            mls_group_id: None,
         };
         assert_eq!(info.display_name(), "Dev Team");
     }
@@ -792,6 +832,7 @@ mod tests {
             group_name: Some("devs".into()),
             alias: None,
             members: vec![],
+            mls_group_id: None,
         };
         assert_eq!(info.display_name(), "devs");
     }
@@ -803,6 +844,7 @@ mod tests {
             group_name: None,
             alias: None,
             members: vec![],
+            mls_group_id: None,
         };
         assert_eq!(info.display_name(), "99");
     }
@@ -814,6 +856,7 @@ mod tests {
             group_name: Some("devs".into()),
             alias: Some(String::new()),
             members: vec![],
+            mls_group_id: None,
         };
         assert_eq!(info.display_name(), "devs");
     }
@@ -825,6 +868,7 @@ mod tests {
             group_name: Some(String::new()),
             alias: None,
             members: vec![],
+            mls_group_id: None,
         };
         assert_eq!(info.display_name(), "7");
     }
@@ -968,6 +1012,29 @@ mod tests {
                 assert_eq!(removed_username, "charlie");
             }
             other => panic!("expected MemberRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sse_event_identity_reset() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::IdentityReset(
+                conclave_proto::IdentityResetEvent {
+                    group_id: 7,
+                    username: "alice".into(),
+                },
+            )),
+        };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        match decode_sse_event(&hex_data).unwrap() {
+            SseEvent::IdentityReset { group_id, username } => {
+                assert_eq!(group_id, 7);
+                assert_eq!(username, "alice");
+            }
+            other => panic!("expected IdentityReset, got {other:?}"),
         }
     }
 

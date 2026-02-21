@@ -130,6 +130,7 @@ async fn upload_commit(
         commit_message,
         welcome_messages,
         group_info,
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -751,6 +752,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     // The server should reject this since Bob is no longer a group member.
     let req_body = conclave_proto::ExternalJoinRequest {
         commit_message: b"bob_rejoin_commit".to_vec(),
+        mls_group_id: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();

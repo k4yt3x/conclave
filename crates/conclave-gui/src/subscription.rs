@@ -17,6 +17,7 @@ pub enum SseUpdate {
     Welcome,
     GroupUpdate,
     MemberRemoved { group_id: i64, username: String },
+    IdentityReset { group_id: i64, username: String },
 }
 
 /// State key for the SSE subscription. Keyed by token so the subscription
@@ -124,5 +125,8 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
             group_id,
             username: removed_username,
         }),
+        conclave_lib::operations::SseEvent::IdentityReset { group_id, username } => {
+            Some(SseUpdate::IdentityReset { group_id, username })
+        }
     }
 }

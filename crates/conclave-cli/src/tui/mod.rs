@@ -20,8 +20,8 @@ use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
 use conclave_lib::config::{
-    ClientConfig, NotificationMethod, SessionState, generate_initial_key_packages,
-    load_group_mapping, save_group_mapping,
+    ClientConfig, NotificationMethod, SessionState, build_group_mapping,
+    generate_initial_key_packages,
 };
 use conclave_lib::mls::MlsManager;
 use conclave_lib::operations;
@@ -76,18 +76,21 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
                 }
             }
 
-            state.group_mapping = load_group_mapping(&config.data_dir);
-
             // Open message store and restore persisted last_seen_seq values
             // *before* loading rooms so that load_rooms preserves them.
             if let Ok(store) = MessageStore::open(&config.data_dir) {
                 msg_store = Some(store);
             }
 
-            if let Err(e) = commands::load_rooms(&api, &mut state).await {
-                state.system_messages.push(DisplayMessage::system(&format!(
-                    "Failed to load rooms: {e}"
-                )));
+            match commands::load_rooms(&api, &mut state).await {
+                Ok(room_infos) => {
+                    state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
+                }
+                Err(e) => {
+                    state.system_messages.push(DisplayMessage::system(&format!(
+                        "Failed to load rooms: {e}"
+                    )));
+                }
             }
 
             // Accept pending welcomes (invites received while offline) so
@@ -730,7 +733,6 @@ async fn accept_pending_welcomes(
         )));
     }
 
-    save_group_mapping(data_dir, &state.group_mapping);
     let _ = commands::load_rooms(api, state).await;
 }
 
