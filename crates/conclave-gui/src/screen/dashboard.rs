@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use iced::Length;
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, tooltip};
+use iced::widget::{
+    button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
+};
 
 use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
 
@@ -15,17 +17,21 @@ pub enum Message {
     RoomSelected(String),
     InputChanged(String),
     InputSubmitted,
+    ToggleUserPopover,
+    CloseUserPopover,
     Logout,
 }
 
 pub struct Dashboard {
     pub input_value: String,
+    pub show_user_popover: bool,
 }
 
 impl Dashboard {
     pub fn new() -> Self {
         Self {
             input_value: String::new(),
+            show_user_popover: false,
         }
     }
 
@@ -39,11 +45,17 @@ impl Dashboard {
         username: &'a Option<String>,
         server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
-        let sidebar =
-            self.view_sidebar(rooms, active_room, connection_status, username, server_url);
+        let sidebar = self.view_sidebar(rooms, active_room, connection_status, username);
         let main_area = self.view_main_area(rooms, active_room, room_messages, system_messages);
 
-        row![sidebar, main_area].into()
+        let base = row![sidebar, main_area];
+
+        if self.show_user_popover {
+            let popover = self.view_user_popover(username, server_url);
+            stack![base, popover].into()
+        } else {
+            base.into()
+        }
     }
 
     fn view_sidebar<'a>(
@@ -52,7 +64,6 @@ impl Dashboard {
         active_room: &'a Option<String>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
-        server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
         let header = container(
             text("Rooms")
@@ -100,60 +111,45 @@ impl Dashboard {
             text(label).size(11).class(style)
         };
 
-        // Sidebar is 200px with 12px padding each side → ~176px usable.
-        // At font size 12 a character is ~7px wide.
-        const USER_MAX_CHARS: usize = 24;
-        const URL_MAX_CHARS: usize = 24;
-
-        let user_full = username
+        let user_display = username
             .as_ref()
             .map(|u| format!("@{u}"))
             .unwrap_or_default();
-        let user_label: Element<'a, Message> = if user_full.len() > USER_MAX_CHARS {
-            let mut truncated = user_full.chars().take(USER_MAX_CHARS).collect::<String>();
-            truncated.push('…');
-            tooltip(
-                text(truncated)
-                    .size(12)
-                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
-                text(user_full.clone()).size(11),
-                tooltip::Position::Top,
-            )
-            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>)
-            .padding(6)
-            .gap(4)
-            .into()
-        } else {
-            text(user_full)
-                .size(12)
-                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>)
-                .into()
-        };
+        let user_button = button(
+            text(user_display)
+                .size(14)
+                .width(Length::Fill)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+        )
+        .width(Length::Fill)
+        .padding([8, 10])
+        .class(Box::new(theme::button::sidebar) as Box<dyn Fn(&theme::Theme, _) -> _>)
+        .on_press(Message::ToggleUserPopover);
 
-        let server_url_str = server_url.as_deref().unwrap_or("");
-        let server_label: Element<'a, Message> = if server_url_str.len() > URL_MAX_CHARS {
-            let mut truncated = server_url_str
-                .chars()
-                .take(URL_MAX_CHARS)
-                .collect::<String>();
-            truncated.push('…');
-            tooltip(
-                text(truncated)
-                    .size(12)
-                    .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
-                text(server_url_str).size(12),
-                tooltip::Position::Top,
-            )
-            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>)
-            .padding(6)
-            .gap(4)
+        let footer = column![container(status_indicator).padding([0, 12]), user_button,]
+            .spacing(4)
+            .padding([8, 0]);
+
+        let sidebar_content = column![header, scrollable(room_list).height(Length::Fill), footer]
+            .height(Length::Fill);
+
+        container(sidebar_content)
+            .width(200)
+            .height(Length::Fill)
+            .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
-        } else {
-            text(server_url_str)
-                .size(12)
-                .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>)
-                .into()
-        };
+    }
+
+    fn view_user_popover<'a>(
+        &'a self,
+        username: &'a Option<String>,
+        server_url: &'a Option<String>,
+    ) -> Element<'a, Message> {
+        let identity_display = format!(
+            "{}@{}",
+            username.as_deref().unwrap_or(""),
+            server_url.as_deref().unwrap_or("")
+        );
 
         let logout_btn = button(
             text("Logout")
@@ -166,18 +162,26 @@ impl Dashboard {
         .class(Box::new(theme::button::danger) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press(Message::Logout);
 
-        let footer = column![status_indicator, user_label, server_label, logout_btn]
-            .spacing(4)
-            .padding(12);
+        let card_content = column![
+            text(identity_display)
+                .size(13)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            logout_btn,
+        ]
+        .spacing(6)
+        .padding(12)
+        .width(176);
 
-        let sidebar_content = column![header, scrollable(room_list).height(Length::Fill), footer,]
-            .height(Length::Fill);
+        let card = container(card_content)
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>);
 
-        container(sidebar_content)
-            .width(200)
+        let positioned_card = container(opaque(card))
+            .width(Length::Fill)
             .height(Length::Fill)
-            .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
-            .into()
+            .align_y(Vertical::Bottom)
+            .padding(iced::Padding::ZERO.bottom(40).left(12));
+
+        opaque(mouse_area(positioned_card).on_press(Message::CloseUserPopover)).into()
     }
 
     fn view_main_area<'a>(

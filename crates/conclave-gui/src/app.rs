@@ -71,6 +71,8 @@ pub enum Message {
     ResetComplete(Result<operations::ResetResult, String>),
     /// Tab key pressed (for login field navigation).
     TabPressed,
+    /// Escape key pressed (close popover, etc.).
+    EscapePressed,
     /// Quit the application (e.g. Ctrl+Q).
     Quit,
     WindowFocused,
@@ -232,6 +234,23 @@ impl Conclave {
                     Task::none()
                 }
             }
+            Message::EscapePressed => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    if dashboard.show_user_popover {
+                        dashboard.show_user_popover = false;
+                    } else if let Some(room_id) = self.active_room.take() {
+                        let name = self
+                            .rooms
+                            .get(&room_id)
+                            .map(|r| r.name.clone())
+                            .unwrap_or_default();
+                        self.push_system_message(&format!(
+                            "Switched away from #{name} (use /part to leave)"
+                        ));
+                    }
+                }
+                Task::none()
+            }
             Message::Quit => iced::exit(),
             Message::WindowFocused => {
                 self.window_focused = true;
@@ -285,6 +304,10 @@ impl Conclave {
                 key: keyboard::Key::Named(keyboard::key::Named::Tab),
                 ..
             }) => Some(Message::TabPressed),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => Some(Message::EscapePressed),
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
             _ => None,
@@ -508,6 +531,10 @@ impl Conclave {
             screen::dashboard::Message::RoomSelected(room_id) => {
                 self.active_room = Some(room_id.clone());
 
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_user_popover = false;
+                }
+
                 // Mark messages as read
                 if let Some(room) = self.rooms.get_mut(&room_id) {
                     room.last_read_seq = room.last_seen_seq;
@@ -538,6 +565,18 @@ impl Conclave {
                 }
 
                 self.handle_input_text(text)
+            }
+            screen::dashboard::Message::ToggleUserPopover => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_user_popover = !dashboard.show_user_popover;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::CloseUserPopover => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_user_popover = false;
+                }
+                Task::none()
             }
             screen::dashboard::Message::Logout => self.perform_logout(),
         }
