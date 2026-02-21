@@ -290,6 +290,7 @@ impl Conclave {
                     &self.connection_status,
                     &self.username,
                     &self.server_url,
+                    self.config.accept_invalid_certs,
                 )
                 .map(Message::Dashboard),
         }

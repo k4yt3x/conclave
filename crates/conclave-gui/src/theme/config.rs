@@ -40,6 +40,9 @@ pub struct ThemeConfig {
     text_secondary: Option<HexColor>,
     text_muted: Option<HexColor>,
     error: Option<HexColor>,
+    on_error: Option<HexColor>,
+    warning: Option<HexColor>,
+    on_warning: Option<HexColor>,
     success: Option<HexColor>,
     border: Option<HexColor>,
     scrollbar: Option<HexColor>,
@@ -95,6 +98,15 @@ impl ThemeConfig {
         }
         if let Some(c) = self.error {
             theme.error = c.0;
+        }
+        if let Some(c) = self.on_error {
+            theme.on_error = c.0;
+        }
+        if let Some(c) = self.warning {
+            theme.warning = c.0;
+        }
+        if let Some(c) = self.on_warning {
+            theme.on_warning = c.0;
         }
         if let Some(c) = self.success {
             theme.success = c.0;

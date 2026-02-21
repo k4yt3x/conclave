@@ -47,8 +47,16 @@ impl Dashboard {
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
         server_url: &'a Option<String>,
+        accept_invalid_certs: bool,
     ) -> Element<'a, Message> {
-        let sidebar = self.view_sidebar(rooms, active_room, connection_status, username);
+        let sidebar = self.view_sidebar(
+            rooms,
+            active_room,
+            connection_status,
+            username,
+            server_url,
+            accept_invalid_certs,
+        );
         let main_area = self.view_main_area(rooms, active_room, room_messages, system_messages);
 
         let mut base = row![sidebar, main_area];
@@ -70,6 +78,8 @@ impl Dashboard {
         active_room: &'a Option<String>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
+        server_url: &'a Option<String>,
+        accept_invalid_certs: bool,
     ) -> Element<'a, Message> {
         let header = container(
             text("Rooms")
@@ -116,11 +126,11 @@ impl Dashboard {
                         .size(12)
                         .width(Length::Fill)
                         .align_x(Horizontal::Center)
-                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                        .class(Box::new(theme::text::on_error) as Box<dyn Fn(&theme::Theme) -> _>),
                 )
                 .width(Length::Fill)
                 .padding([6, 10])
-                .class(Box::new(theme::container::status_banner) as Box<dyn Fn(&theme::Theme) -> _>)
+                .class(Box::new(theme::container::error_banner) as Box<dyn Fn(&theme::Theme) -> _>)
                 .into(),
             ),
             ConnectionStatus::Disconnected => Some(
@@ -129,11 +139,11 @@ impl Dashboard {
                         .size(12)
                         .width(Length::Fill)
                         .align_x(Horizontal::Center)
-                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                        .class(Box::new(theme::text::on_error) as Box<dyn Fn(&theme::Theme) -> _>),
                 )
                 .width(Length::Fill)
                 .padding([6, 10])
-                .class(Box::new(theme::container::status_banner) as Box<dyn Fn(&theme::Theme) -> _>)
+                .class(Box::new(theme::container::error_banner) as Box<dyn Fn(&theme::Theme) -> _>)
                 .into(),
             ),
         };
@@ -153,8 +163,37 @@ impl Dashboard {
         .class(Box::new(theme::button::sidebar) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press(Message::ToggleUserPopover);
 
+        let is_insecure = accept_invalid_certs
+            || server_url
+                .as_ref()
+                .is_some_and(|u| u.starts_with("http://"));
+
+        let warning_banner: Option<Element<'a, Message>> =
+            if is_insecure && matches!(connection_status, ConnectionStatus::Connected) {
+                Some(
+                    container(
+                        text("Insecure")
+                            .size(12)
+                            .width(Length::Fill)
+                            .align_x(Horizontal::Center)
+                            .class(Box::new(theme::text::on_warning)
+                                as Box<dyn Fn(&theme::Theme) -> _>),
+                    )
+                    .width(Length::Fill)
+                    .padding([6, 10])
+                    .class(Box::new(theme::container::warning_banner)
+                        as Box<dyn Fn(&theme::Theme) -> _>)
+                    .into(),
+                )
+            } else {
+                None
+            };
+
         let mut footer = column![].spacing(4).padding([8, 0]);
         if let Some(banner) = status_banner {
+            footer = footer.push(banner);
+        }
+        if let Some(banner) = warning_banner {
             footer = footer.push(banner);
         }
         footer = footer.push(user_button);

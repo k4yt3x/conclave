@@ -57,10 +57,18 @@ pub fn card(theme: &Theme) -> Style {
     }
 }
 
-pub fn status_banner(theme: &Theme) -> Style {
+pub fn error_banner(theme: &Theme) -> Style {
     Style {
         background: Some(Background::Color(theme.error)),
-        text_color: Some(theme.primary),
+        text_color: Some(theme.on_error),
+        ..Style::default()
+    }
+}
+
+pub fn warning_banner(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.warning)),
+        text_color: Some(theme.on_warning),
         ..Style::default()
     }
 }

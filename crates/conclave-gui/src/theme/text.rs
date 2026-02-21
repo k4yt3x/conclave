@@ -49,3 +49,15 @@ pub fn on_primary(theme: &Theme) -> Style {
         color: Some(theme.surface),
     }
 }
+
+pub fn on_error(theme: &Theme) -> Style {
+    Style {
+        color: Some(theme.on_error),
+    }
+}
+
+pub fn on_warning(theme: &Theme) -> Style {
+    Style {
+        color: Some(theme.on_warning),
+    }
+}
