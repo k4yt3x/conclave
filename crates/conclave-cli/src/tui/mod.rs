@@ -784,13 +784,16 @@ async fn fetch_missed_messages(
         };
 
         for msg in &fetched.messages {
-            let display_msg = if msg.is_system {
+            let mut display_msg = if msg.is_system {
                 DisplayMessage::system(&msg.content)
             } else {
-                let display_msg = DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp);
-                store.push_message(*group_id, &display_msg);
-                display_msg
+                DisplayMessage::user(msg.sender_id, &msg.sender, &msg.content, msg.timestamp)
             };
+            display_msg.sequence_num = Some(msg.sequence_num);
+            display_msg.epoch = Some(msg.epoch);
+            if !msg.is_system {
+                store.push_message(*group_id, &display_msg);
+            }
             state.push_room_message(*group_id, display_msg);
 
             if let Some(room) = state.rooms.get_mut(group_id) {

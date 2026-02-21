@@ -60,6 +60,26 @@ impl ApiClient {
         Self::handle_response(response).await
     }
 
+    /// Send a PATCH request with a protobuf body, returning raw response bytes.
+    async fn patch(&self, path: &str, body: &impl Message) -> Result<Vec<u8>> {
+        let url = format!("{}{path}", self.base_url);
+        let mut request = self
+            .client
+            .patch(&url)
+            .header("Content-Type", "application/x-protobuf");
+
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let mut buf = Vec::new();
+        body.encode(&mut buf)
+            .map_err(|e| Error::Other(format!("protobuf encode failed: {e}")))?;
+
+        let response = request.body(buf).send().await?;
+        Self::handle_response(response).await
+    }
+
     /// Send a GET request, returning raw response bytes.
     async fn get(&self, path: &str) -> Result<Vec<u8>> {
         let url = format!("{}{path}", self.base_url);
@@ -152,6 +172,24 @@ impl ApiClient {
     pub async fn me(&self) -> Result<conclave_proto::UserInfoResponse> {
         let bytes = self.get("/api/v1/me").await?;
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
+    }
+
+    pub async fn update_profile(&self, alias: &str) -> Result<()> {
+        let request = conclave_proto::UpdateProfileRequest {
+            alias: alias.to_string(),
+        };
+        self.patch("/api/v1/me", &request).await?;
+        Ok(())
+    }
+
+    pub async fn update_group(&self, group_id: i64, alias: Option<&str>) -> Result<()> {
+        let request = conclave_proto::UpdateGroupRequest {
+            alias: alias.unwrap_or_default().to_string(),
+            group_name: String::new(),
+        };
+        self.patch(&format!("/api/v1/groups/{group_id}"), &request)
+            .await?;
+        Ok(())
     }
 
     // ── Key Packages ──────────────────────────────────────────────

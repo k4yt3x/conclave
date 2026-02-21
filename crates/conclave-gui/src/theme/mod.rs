@@ -76,9 +76,8 @@ impl iced::theme::Base for Theme {
     }
 }
 
-/// Assign a consistent color to a username based on hash.
-/// Same algorithm as the TUI's username_color function.
-pub fn nick_color(username: &str) -> Color {
+/// Assign a consistent color to a sender based on their user ID.
+pub fn nick_color(sender_id: i64) -> Color {
     let colors = [
         Color::from_rgb8(0xe0, 0x6b, 0x75), // red
         Color::from_rgb8(0xb1, 0xb6, 0x95), // green
@@ -93,8 +92,6 @@ pub fn nick_color(username: &str) -> Color {
         Color::from_rgb8(0xe5, 0xc8, 0x90), // gold
         Color::from_rgb8(0x8c, 0xaa, 0xee), // periwinkle
     ];
-    let hash: usize = username.bytes().fold(0usize, |acc, b| {
-        acc.wrapping_mul(31).wrapping_add(b as usize)
-    });
+    let hash = (sender_id as usize).wrapping_mul(2654435761);
     colors[hash % colors.len()]
 }

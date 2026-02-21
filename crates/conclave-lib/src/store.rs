@@ -62,20 +62,59 @@ impl MessageStore {
             }
         }
 
+        // Migrate: add sender_id column if upgrading from older schema.
+        if let Err(error) = conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN sender_id INTEGER NOT NULL DEFAULT 0;")
+        {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(crate::error::Error::Other(format!(
+                    "migration failed: {msg}"
+                )));
+            }
+        }
+
+        // Migrate: add sequence_num column if upgrading from older schema.
+        if let Err(error) = conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN sequence_num INTEGER NOT NULL DEFAULT 0;",
+        ) {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(crate::error::Error::Other(format!(
+                    "migration failed: {msg}"
+                )));
+            }
+        }
+
+        // Migrate: add epoch column if upgrading from older schema.
+        if let Err(error) =
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0;")
+        {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(crate::error::Error::Other(format!(
+                    "migration failed: {msg}"
+                )));
+            }
+        }
+
         Ok(Self { conn })
     }
 
     /// Append a message to the history for a room.
     pub fn push_message(&self, group_id: i64, msg: &DisplayMessage) {
         if let Err(error) = self.conn.execute(
-            "INSERT INTO messages (group_id, sender, content, timestamp, is_system)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO messages (group_id, sender, content, timestamp, is_system, sender_id, sequence_num, epoch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 group_id,
                 msg.sender,
                 msg.content,
                 msg.timestamp,
                 msg.is_system as i32,
+                msg.sender_id.unwrap_or(0),
+                msg.sequence_num.unwrap_or(0),
+                msg.epoch.unwrap_or(0),
             ],
         ) {
             tracing::trace!(%error, "failed to persist message to local store");
@@ -85,7 +124,7 @@ impl MessageStore {
     /// Load recent messages for a room (last 1000), ordered chronologically.
     pub fn load_messages(&self, group_id: i64) -> Vec<DisplayMessage> {
         let mut stmt = match self.conn.prepare(
-            "SELECT sender, content, timestamp, is_system
+            "SELECT sender, content, timestamp, is_system, sender_id, sequence_num, epoch
              FROM (SELECT * FROM messages WHERE group_id = ?1 ORDER BY id DESC LIMIT 1000)
              ORDER BY id ASC",
         ) {
@@ -94,10 +133,24 @@ impl MessageStore {
         };
 
         let rows = match stmt.query_map(params![group_id], |row| {
+            let sender_id_raw: i64 = row.get(4)?;
+            let seq_raw: u64 = row.get(5)?;
+            let epoch_raw: u64 = row.get(6)?;
             Ok(DisplayMessage {
+                sender_id: if sender_id_raw == 0 {
+                    None
+                } else {
+                    Some(sender_id_raw)
+                },
                 sender: row.get(0)?,
                 content: row.get(1)?,
                 timestamp: row.get(2)?,
+                sequence_num: if seq_raw == 0 { None } else { Some(seq_raw) },
+                epoch: if epoch_raw == 0 {
+                    None
+                } else {
+                    Some(epoch_raw)
+                },
                 is_system: row.get::<_, i32>(3)? != 0,
             })
         }) {
@@ -169,8 +222,8 @@ mod tests {
     fn test_push_and_load_messages() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user("alice", "hello", 1));
-        store.push_message(1, &DisplayMessage::user("bob", "world", 2));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "hello", 1));
+        store.push_message(1, &DisplayMessage::user(2, "bob", "world", 2));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].sender, "alice");
@@ -194,7 +247,7 @@ mod tests {
         for i in 0..1001 {
             store.push_message(
                 1,
-                &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
+                &DisplayMessage::user(1, "alice", &format!("msg{i}"), i as i64),
             );
         }
         let msgs = store.load_messages(1);
@@ -264,8 +317,8 @@ mod tests {
     fn test_messages_isolated_by_group() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user("alice", "for g1", 1));
-        store.push_message(2, &DisplayMessage::user("bob", "for g2", 2));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "for g1", 1));
+        store.push_message(2, &DisplayMessage::user(2, "bob", "for g2", 2));
         let g1_msgs = store.load_messages(1);
         assert_eq!(g1_msgs.len(), 1);
         assert_eq!(g1_msgs[0].content, "for g1");
@@ -290,9 +343,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
         store.push_message(1, &DisplayMessage::system("group created"));
-        store.push_message(1, &DisplayMessage::user("alice", "hello!", 100));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "hello!", 100));
         store.push_message(1, &DisplayMessage::system("bob joined"));
-        store.push_message(1, &DisplayMessage::user("bob", "hi!", 200));
+        store.push_message(1, &DisplayMessage::user(2, "bob", "hi!", 200));
 
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 4);
@@ -307,7 +360,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.push_message(1, &DisplayMessage::user("alice", "persisted", 1));
+            store.push_message(1, &DisplayMessage::user(1, "alice", "persisted", 1));
             store.set_last_seen_seq(1, 99);
             store.set_last_read_seq(1, 50);
         }
@@ -348,9 +401,9 @@ mod tests {
     fn test_messages_ordered_chronologically() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user("alice", "first", 300));
-        store.push_message(1, &DisplayMessage::user("bob", "second", 100));
-        store.push_message(1, &DisplayMessage::user("carol", "third", 200));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "first", 300));
+        store.push_message(1, &DisplayMessage::user(2, "bob", "second", 100));
+        store.push_message(1, &DisplayMessage::user(3, "carol", "third", 200));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].content, "first");
@@ -365,7 +418,7 @@ mod tests {
         for i in 0..1100 {
             store.push_message(
                 1,
-                &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
+                &DisplayMessage::user(1, "alice", &format!("msg{i}"), i as i64),
             );
         }
         let msgs = store.load_messages(1);
@@ -411,7 +464,7 @@ mod tests {
     fn test_empty_content_message() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user("alice", "", 1));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "", 1));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "");
@@ -423,7 +476,7 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         let unicode_content =
             "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
-        store.push_message(1, &DisplayMessage::user("alice", unicode_content, 1));
+        store.push_message(1, &DisplayMessage::user(1, "alice", unicode_content, 1));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, unicode_content);
@@ -434,7 +487,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
         let large_content = "A".repeat(100 * 1024);
-        store.push_message(1, &DisplayMessage::user("alice", &large_content, 1));
+        store.push_message(1, &DisplayMessage::user(1, "alice", &large_content, 1));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, large_content);
@@ -447,8 +500,8 @@ mod tests {
         store.push_message(1, &DisplayMessage::system("system msg 1"));
         store.push_message(1, &DisplayMessage::system("system msg 2"));
         store.push_message(1, &DisplayMessage::system("system msg 3"));
-        store.push_message(1, &DisplayMessage::user("alice", "user msg 1", 100));
-        store.push_message(1, &DisplayMessage::user("bob", "user msg 2", 200));
+        store.push_message(1, &DisplayMessage::user(1, "alice", "user msg 1", 100));
+        store.push_message(1, &DisplayMessage::user(2, "bob", "user msg 2", 200));
         let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 5);
         assert!(msgs[0].is_system);

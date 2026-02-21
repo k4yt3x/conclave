@@ -26,6 +26,14 @@ fn setup() -> Router {
     api::router().with_state(app_state)
 }
 
+fn setup_with_state() -> (Router, Arc<state::AppState>) {
+    let database = db::Database::open_in_memory().unwrap();
+    let config = config::ServerConfig::default();
+    let app_state = Arc::new(state::AppState::new(database, config));
+    let router = api::router().with_state(app_state.clone());
+    (router, app_state)
+}
+
 async fn register_user(app: &Router, username: &str, password: &str) -> i64 {
     let req_body = conclave_proto::RegisterRequest {
         username: username.to_string(),
@@ -3485,4 +3493,165 @@ async fn test_update_group_invalid_alias() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_profile_broadcasts_to_group_members() {
+    let (app, app_state) = setup_with_state();
+    let mut rx = app_state.sse_tx.subscribe();
+
+    register_user(&app, "alice", "password123").await;
+    register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
+    let group_id = create_group_for(&app, &alice_token, "test", vec!["bob".into()]).await;
+
+    // Upload a commit with welcome to add bob as a group member.
+    let mut welcomes = HashMap::new();
+    welcomes.insert("bob".to_string(), b"welcome".to_vec());
+    let commit_body = conclave_proto::UploadCommitRequest {
+        commit_message: b"add_bob".to_vec(),
+        welcome_messages: welcomes,
+        group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
+    };
+    let mut body = Vec::new();
+    commit_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/commit"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap();
+
+    // Drain any events from group creation and commit.
+    while rx.try_recv().is_ok() {}
+
+    // Alice updates her profile.
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "Alice W.".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Bob should receive a GroupUpdateEvent with update_type "member_profile".
+    let event = rx.try_recv().expect("expected SSE event for bob");
+    let server_event = conclave_proto::ServerEvent::decode(event.data.as_slice()).unwrap();
+    match server_event.event {
+        Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
+            assert_eq!(update.update_type, "member_profile");
+        }
+        other => panic!("expected GroupUpdate event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_update_profile_no_broadcast_without_groups() {
+    let (app, app_state) = setup_with_state();
+    let mut rx = app_state.sse_tx.subscribe();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "Alice W.".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // No groups → no broadcast.
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_update_group_broadcasts_to_members() {
+    let (app, app_state) = setup_with_state();
+    let mut rx = app_state.sse_tx.subscribe();
+
+    register_user(&app, "alice", "password123").await;
+    register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
+    let group_id = create_group_for(&app, &alice_token, "test", vec!["bob".into()]).await;
+
+    // Upload a commit with welcome to add bob as a group member.
+    let mut welcomes = HashMap::new();
+    welcomes.insert("bob".to_string(), b"welcome".to_vec());
+    let commit_body = conclave_proto::UploadCommitRequest {
+        commit_message: b"add_bob".to_vec(),
+        welcome_messages: welcomes,
+        group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
+    };
+    let mut body = Vec::new();
+    commit_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/commit"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap();
+
+    // Drain any events from group creation and commit.
+    while rx.try_recv().is_ok() {}
+
+    // Alice updates the group alias.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: "new-topic".to_string(),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Bob should receive a GroupUpdateEvent with update_type "group_settings".
+    let event = rx.try_recv().expect("expected SSE event for bob");
+    let server_event = conclave_proto::ServerEvent::decode(event.data.as_slice()).unwrap();
+    match server_event.event {
+        Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
+            assert_eq!(update.group_id, group_id);
+            assert_eq!(update.update_type, "group_settings");
+        }
+        other => panic!("expected GroupUpdate event, got {other:?}"),
+    }
 }

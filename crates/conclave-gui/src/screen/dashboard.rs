@@ -46,6 +46,8 @@ impl Dashboard {
         system_messages: &'a [DisplayMessage],
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
+        user_alias: &'a Option<String>,
+        user_id: &'a Option<i64>,
         server_url: &'a Option<String>,
         accept_invalid_certs: bool,
     ) -> Element<'a, Message> {
@@ -54,6 +56,7 @@ impl Dashboard {
             active_room,
             connection_status,
             username,
+            user_alias,
             server_url,
             accept_invalid_certs,
         );
@@ -65,7 +68,7 @@ impl Dashboard {
         }
 
         if self.show_user_popover {
-            let popover = self.view_user_popover(username, server_url);
+            let popover = self.view_user_popover(username, user_alias, user_id, server_url);
             stack![base, popover].into()
         } else {
             base.into()
@@ -78,6 +81,7 @@ impl Dashboard {
         active_room: &'a Option<i64>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
+        user_alias: &'a Option<String>,
         server_url: &'a Option<String>,
         accept_invalid_certs: bool,
     ) -> Element<'a, Message> {
@@ -96,12 +100,22 @@ impl Dashboard {
         for room in sorted_rooms {
             let is_active = active_room == &Some(room.server_group_id);
             let unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
-            let display_name = room.display_name();
+
+            let unique_name = room
+                .group_name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| room.server_group_id.to_string());
+            let room_display = match room.alias.as_deref().filter(|a| !a.is_empty()) {
+                Some(alias) => format!("{alias} (#{unique_name})"),
+                None => format!("#{unique_name}"),
+            };
 
             let label = if unread > 0 {
-                format!("# {display_name} ({unread})")
+                format!("{room_display} ({unread})")
             } else {
-                format!("# {display_name}")
+                room_display
             };
 
             let style: Box<dyn Fn(&theme::Theme, _) -> _> = if is_active {
@@ -149,10 +163,14 @@ impl Dashboard {
             ),
         };
 
-        let user_display = username
-            .as_ref()
-            .map(|u| format!("@{u}"))
-            .unwrap_or_default();
+        let user_display = match (
+            user_alias.as_deref().filter(|a| !a.is_empty()),
+            username.as_deref(),
+        ) {
+            (Some(alias), Some(uname)) => format!("{alias} (@{uname})"),
+            (None, Some(uname)) => format!("@{uname}"),
+            _ => String::new(),
+        };
         let user_button = button(
             text(user_display)
                 .size(14)
@@ -212,14 +230,10 @@ impl Dashboard {
     fn view_user_popover<'a>(
         &'a self,
         username: &'a Option<String>,
+        user_alias: &'a Option<String>,
+        user_id: &'a Option<i64>,
         server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
-        let identity_display = format!(
-            "{}@{}",
-            username.as_deref().unwrap_or(""),
-            server_url.as_deref().unwrap_or("")
-        );
-
         let logout_btn = button(
             text("Logout")
                 .size(12)
@@ -231,17 +245,40 @@ impl Dashboard {
         .class(Box::new(theme::button::danger) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press(Message::Logout);
 
-        let card_content = column![
-            text(identity_display)
-                .size(13)
-                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
-            logout_btn,
-        ]
-        .spacing(6)
-        .padding(12)
-        .width(176);
+        let mut card_content = column![].spacing(4).padding(12);
+
+        if let Some(alias) = user_alias.as_deref().filter(|a| !a.is_empty()) {
+            card_content = card_content.push(
+                text(alias)
+                    .size(14)
+                    .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+        }
+
+        if let Some(uname) = username.as_deref() {
+            let label = match user_id {
+                Some(uid) => format!("@{uname} ({uid})"),
+                None => format!("@{uname}"),
+            };
+            card_content = card_content.push(
+                text(label)
+                    .size(13)
+                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+        }
+
+        if let Some(url) = server_url.as_deref() {
+            card_content = card_content.push(
+                text(url)
+                    .size(12)
+                    .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+        }
+
+        card_content = card_content.push(logout_btn);
 
         let card = container(card_content)
+            .width(Length::Shrink)
             .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>);
 
         let positioned_card = container(opaque(card))
@@ -260,7 +297,7 @@ impl Dashboard {
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
     ) -> Element<'a, Message> {
-        let messages = self.view_messages(active_room, room_messages, system_messages);
+        let messages = self.view_messages(rooms, active_room, room_messages, system_messages);
         let input = self.view_input();
 
         let mut main_column = column![].width(Length::Fill).height(Length::Fill);
@@ -330,21 +367,40 @@ impl Dashboard {
         rooms: &'a HashMap<i64, Room>,
         active_room: &'a Option<i64>,
     ) -> Element<'a, Message> {
-        let mut member_list = column![].spacing(2).padding([8, 12]);
+        let member_count = active_room
+            .and_then(|id| rooms.get(&id))
+            .map(|r| r.members.len())
+            .unwrap_or(0);
+
+        let header = container(
+            text(format!("{member_count} Members"))
+                .size(14)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+        )
+        .padding(12);
+
+        let mut member_list = column![].spacing(2).padding([0, 12]);
 
         if let Some(room) = active_room.and_then(|id| rooms.get(&id)) {
             let mut sorted_members: Vec<&_> = room.members.iter().collect();
             sorted_members.sort_by(|a, b| a.display_name().cmp(b.display_name()));
             for member in sorted_members {
+                let member_display = match member.alias.as_deref().filter(|a| !a.is_empty()) {
+                    Some(alias) => format!("{alias} (@{})", member.username),
+                    None => format!("@{}", member.username),
+                };
                 member_list = member_list.push(
-                    text(member.display_name())
+                    text(member_display)
                         .size(13)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
                 );
             }
         }
 
-        container(scrollable(member_list).height(Length::Fill))
+        let sidebar_content =
+            column![header, scrollable(member_list).height(Length::Fill)].height(Length::Fill);
+
+        container(sidebar_content)
             .width(180)
             .height(Length::Fill)
             .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
@@ -353,6 +409,7 @@ impl Dashboard {
 
     fn view_messages<'a>(
         &'a self,
+        rooms: &'a HashMap<i64, Room>,
         active_room: &'a Option<i64>,
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
@@ -365,8 +422,16 @@ impl Dashboard {
             None => system_messages,
         };
 
+        let members: &[conclave_lib::state::RoomMember] = match active_room {
+            Some(room_id) => rooms
+                .get(room_id)
+                .map(|r| r.members.as_slice())
+                .unwrap_or(&[]),
+            None => &[],
+        };
+
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
-            message_view::message_list(messages);
+            message_view::message_list(messages, members, *active_room);
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 

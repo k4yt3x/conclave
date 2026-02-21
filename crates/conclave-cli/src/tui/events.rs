@@ -32,8 +32,15 @@ pub async fn handle_sse_message(
             group_id,
             update_type,
         } => {
-            let msg = DisplayMessage::system(&format!("Group {group_id} updated ({update_type})"));
-            Ok(vec![(group_id, msg)])
+            commands::load_rooms(api, state).await?;
+
+            if update_type == "member_profile" {
+                Ok(vec![])
+            } else {
+                let msg =
+                    DisplayMessage::system(&format!("Group {group_id} updated ({update_type})"));
+                Ok(vec![(group_id, msg)])
+            }
         }
         SseEvent::MemberRemoved {
             group_id,
@@ -97,11 +104,13 @@ async fn handle_new_message(
 
     let mut results = Vec::new();
     for msg in &fetched.messages {
-        let display_msg = if msg.is_system {
+        let mut display_msg = if msg.is_system {
             DisplayMessage::system(&msg.content)
         } else {
-            DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp)
+            DisplayMessage::user(msg.sender_id, &msg.sender, &msg.content, msg.timestamp)
         };
+        display_msg.sequence_num = Some(msg.sequence_num);
+        display_msg.epoch = Some(msg.epoch);
         results.push((group_id, display_msg));
 
         if let Some(room) = state.rooms.get_mut(&group_id) {

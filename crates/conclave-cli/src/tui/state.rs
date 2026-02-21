@@ -142,7 +142,7 @@ mod tests {
     fn test_active_messages_with_room() {
         let mut state = AppState::new();
         state.active_room = Some(1);
-        state.push_room_message(1, DisplayMessage::user("alice", "hi", 100));
+        state.push_room_message(1, DisplayMessage::user(1, "alice", "hi", 100));
         let msgs = state.active_messages();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hi");
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn test_push_room_message() {
         let mut state = AppState::new();
-        state.push_room_message(1, DisplayMessage::user("alice", "hi", 100));
+        state.push_room_message(1, DisplayMessage::user(1, "alice", "hi", 100));
         assert_eq!(state.room_messages[&1].len(), 1);
     }
 
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_display_message_user() {
-        let msg = DisplayMessage::user("alice", "hi", 123);
+        let msg = DisplayMessage::user(1, "alice", "hi", 123);
         assert!(!msg.is_system);
         assert_eq!(msg.sender, "alice");
         assert_eq!(msg.content, "hi");

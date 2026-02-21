@@ -73,6 +73,18 @@ pub fn warning_banner(theme: &Theme) -> Style {
     }
 }
 
+pub fn tooltip(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.surface)),
+        border: Border {
+            color: theme.border,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Style::default()
+    }
+}
+
 pub fn input_area(theme: &Theme) -> Style {
     Style {
         background: Some(Background::Color(theme.surface)),

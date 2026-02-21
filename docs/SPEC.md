@@ -292,7 +292,7 @@ The `/api/v1/events` endpoint provides a Server-Sent Events stream. Events are h
 
 Event types:
 - **NewMessageEvent**: New message in a group (group_id, sequence_num, sender_id).
-- **GroupUpdateEvent**: Group state changed, e.g., a commit was uploaded (group_id, update_type).
+- **GroupUpdateEvent**: Group state changed (group_id, update_type). Emitted for MLS commits (`update_type: "commit"`) and member profile changes (`update_type: "member_profile"`). Profile updates are broadcast to all co-members when a user changes their alias via `PATCH /api/v1/me`.
 - **WelcomeEvent**: User was invited to a group (group_id, group_alias).
 - **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_user_id, removed_username). Sent to both remaining members and the removed user.
 - **IdentityResetEvent**: A member reset their encryption identity via external rejoin (group_id, username). Sent to other group members when a user performs an account reset. Clients display a warning that the user's encryption keys have changed.
@@ -333,7 +333,7 @@ The client persists the following files in `data_dir`:
 | `mls_signing_key.bin` | Raw bytes     | `SignatureSecretKey` (private key material)                  |
 | `mls_state.db`        | SQLite        | mls-rs group state, key packages, PSKs (via mls-rs-provider-sqlite) |
 | `group_mapping.toml`  | TOML          | Local cache of server group ID (i64) to MLS group ID (hex string). Used as fallback by one-shot CLI commands; TUI/GUI build mapping from server on login. |
-| `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking    |
+| `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking. Messages store `sender_id` to enable render-time display name resolution from room member lists. |
 
 ### 4.3 MLS Integration
 

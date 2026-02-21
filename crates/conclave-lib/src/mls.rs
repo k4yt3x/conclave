@@ -732,6 +732,17 @@ impl MlsManager {
         })
     }
 
+    /// Get the current MLS epoch for a group.
+    pub fn group_epoch(&self, mls_group_id: &str) -> Result<u64> {
+        let client = self.build_client()?;
+        let group_id_bytes =
+            hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
+        let group = client
+            .load_group(&group_id_bytes)
+            .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
+        Ok(group.current_epoch())
+    }
+
     /// Delete local group state (for when we've been removed or left).
     pub fn delete_group_state(&self, mls_group_id: &str) -> Result<()> {
         let group_id_bytes =

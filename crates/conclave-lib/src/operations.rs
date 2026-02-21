@@ -66,10 +66,15 @@ impl MemberInfo {
 /// A decrypted and classified message ready for display.
 #[derive(Debug, Clone)]
 pub struct ProcessedMessage {
+    /// Sender's user ID (0 for system messages).
+    pub sender_id: i64,
+    /// Fallback display name (alias or username from the server at fetch time).
     pub sender: String,
     pub content: String,
     pub timestamp: i64,
     pub sequence_num: u64,
+    /// MLS epoch after processing this message.
+    pub epoch: u64,
     pub is_system: bool,
 }
 
@@ -100,6 +105,8 @@ pub struct WelcomeJoinResult {
 pub struct MessageSentResult {
     pub group_id: i64,
     pub sequence_num: u64,
+    /// MLS epoch at the time the message was sent.
+    pub epoch: u64,
 }
 
 /// Result of an account reset.
@@ -241,12 +248,17 @@ pub async fn fetch_and_decrypt(
         let mls_group_id = mls_group_id.to_string();
         let mls_bytes = stored_message.mls_message.clone();
 
-        let decrypted = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, user_id)?;
-            mls.decrypt_message(&mls_group_id, &mls_bytes)
-        })
-        .await
-        .map_err(|e| Error::Other(format!("task join error: {e}")))?;
+        let (decrypted, epoch) =
+            tokio::task::spawn_blocking(move || match MlsManager::new(&data_dir, user_id) {
+                Ok(mls) => {
+                    let result = mls.decrypt_message(&mls_group_id, &mls_bytes);
+                    let epoch = mls.group_epoch(&mls_group_id).unwrap_or(0);
+                    (result, epoch)
+                }
+                Err(e) => (Err(e), 0),
+            })
+            .await
+            .map_err(|e| Error::Other(format!("task join error: {e}")))?;
 
         let sender_display = if !stored_message.sender_alias.is_empty() {
             stored_message.sender_alias.clone()
@@ -258,10 +270,12 @@ pub async fn fetch_and_decrypt(
             Ok(DecryptedMessage::Application(plaintext)) => {
                 let text = String::from_utf8_lossy(&plaintext).to_string();
                 messages.push(ProcessedMessage {
+                    sender_id: stored_message.sender_id,
                     sender: sender_display,
                     content: text,
                     timestamp: stored_message.created_at as i64,
                     sequence_num: stored_message.sequence_num,
+                    epoch,
                     is_system: false,
                 });
             }
@@ -269,28 +283,34 @@ pub async fn fetch_and_decrypt(
                 for added_uid in &commit_info.members_added {
                     let name = resolve_user_display_name(*added_uid, members);
                     messages.push(ProcessedMessage {
+                        sender_id: 0,
                         sender: String::new(),
                         content: format!("{name} joined the group"),
                         timestamp: stored_message.created_at as i64,
                         sequence_num: stored_message.sequence_num,
+                        epoch,
                         is_system: true,
                     });
                 }
                 for removed in &commit_info.members_removed {
                     messages.push(ProcessedMessage {
+                        sender_id: 0,
                         sender: String::new(),
                         content: format!("{removed} was removed from the group"),
                         timestamp: stored_message.created_at as i64,
                         sequence_num: stored_message.sequence_num,
+                        epoch,
                         is_system: true,
                     });
                 }
                 if commit_info.self_removed {
                     messages.push(ProcessedMessage {
+                        sender_id: 0,
                         sender: String::new(),
                         content: "You were removed from this group".to_string(),
                         timestamp: stored_message.created_at as i64,
                         sequence_num: stored_message.sequence_num,
+                        epoch,
                         is_system: true,
                     });
                 }
@@ -299,16 +319,19 @@ pub async fn fetch_and_decrypt(
                     && !commit_info.self_removed
                 {
                     messages.push(ProcessedMessage {
+                        sender_id: 0,
                         sender: String::new(),
                         content: "Group keys updated".to_string(),
                         timestamp: stored_message.created_at as i64,
                         sequence_num: stored_message.sequence_num,
+                        epoch,
                         is_system: true,
                     });
                 }
             }
             Ok(DecryptedMessage::Failed(reason)) => {
                 messages.push(ProcessedMessage {
+                    sender_id: 0,
                     sender: String::new(),
                     content: format!(
                         "Failed to decrypt message (seq {}): {reason}",
@@ -316,6 +339,7 @@ pub async fn fetch_and_decrypt(
                     ),
                     timestamp: stored_message.created_at as i64,
                     sequence_num: stored_message.sequence_num,
+                    epoch,
                     is_system: true,
                 });
             }
@@ -323,6 +347,7 @@ pub async fn fetch_and_decrypt(
             Err(error) => {
                 tracing::warn!(%error, seq = stored_message.sequence_num, "message decryption failed");
                 messages.push(ProcessedMessage {
+                    sender_id: 0,
                     sender: String::new(),
                     content: format!(
                         "Failed to decrypt message (seq {}): {error}",
@@ -330,6 +355,7 @@ pub async fn fetch_and_decrypt(
                     ),
                     timestamp: stored_message.created_at as i64,
                     sequence_num: stored_message.sequence_num,
+                    epoch,
                     is_system: true,
                 });
             }
@@ -367,9 +393,11 @@ pub async fn send_message(
     let mls_group_id = mls_group_id.to_string();
     let text_bytes = text.as_bytes().to_vec();
 
-    let encrypted = tokio::task::spawn_blocking(move || {
+    let (encrypted, epoch) = tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
-        mls.encrypt_message(&mls_group_id, &text_bytes)
+        let ciphertext = mls.encrypt_message(&mls_group_id, &text_bytes)?;
+        let epoch = mls.group_epoch(&mls_group_id).unwrap_or(0);
+        Ok::<_, Error>((ciphertext, epoch))
     })
     .await
     .map_err(|e| Error::Other(format!("task join error: {e}")))??;
@@ -379,6 +407,7 @@ pub async fn send_message(
     Ok(MessageSentResult {
         group_id: server_group_id,
         sequence_num: response.sequence_num,
+        epoch,
     })
 }
 

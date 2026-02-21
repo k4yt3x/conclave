@@ -6,6 +6,8 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 
+use conclave_lib::state::{RoomMember, resolve_sender_name};
+
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage};
 
@@ -24,6 +26,8 @@ pub fn render_full(
 
     queue!(stdout, Clear(ClearType::All))?;
 
+    let members = active_room_members(state);
+
     // Message area: rows 0..rows-2
     let msg_rows = rows.saturating_sub(2) as usize;
     let messages = state.active_messages();
@@ -33,7 +37,7 @@ pub fn render_full(
 
     for (i, msg) in messages[start..end].iter().enumerate() {
         queue!(stdout, cursor::MoveTo(0, i as u16))?;
-        write_message(stdout, msg, cols)?;
+        write_message(stdout, msg, cols, &members)?;
     }
 
     render_status_line(stdout, state, rows.saturating_sub(2))?;
@@ -120,8 +124,22 @@ pub fn render_new_message(
     render_full(stdout, state, input)
 }
 
+/// Get the active room's member list (empty slice if no active room).
+fn active_room_members(state: &AppState) -> Vec<RoomMember> {
+    state
+        .active_room
+        .and_then(|id| state.rooms.get(&id))
+        .map(|r| r.members.clone())
+        .unwrap_or_default()
+}
+
 /// Write a single formatted message at the current cursor position.
-fn write_message(stdout: &mut impl Write, msg: &DisplayMessage, _cols: u16) -> std::io::Result<()> {
+fn write_message(
+    stdout: &mut impl Write,
+    msg: &DisplayMessage,
+    _cols: u16,
+    members: &[RoomMember],
+) -> std::io::Result<()> {
     let time = chrono::DateTime::from_timestamp(msg.timestamp, 0)
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_else(|| "??:??".to_string());
@@ -133,8 +151,8 @@ fn write_message(stdout: &mut impl Write, msg: &DisplayMessage, _cols: u16) -> s
         write!(stdout, "[{time}] *** {content}")?;
         queue!(stdout, ResetColor)?;
     } else {
-        let sender = sanitize_for_terminal(&msg.sender);
-        let nick_color = username_color(&sender);
+        let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
+        let nick_color = username_color(msg.sender_id.unwrap_or(0));
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "[{time}] ")?;
         queue!(stdout, SetForegroundColor(nick_color))?;
@@ -146,8 +164,8 @@ fn write_message(stdout: &mut impl Write, msg: &DisplayMessage, _cols: u16) -> s
     Ok(())
 }
 
-/// Assign a consistent ANSI color to a username based on hash.
-fn username_color(username: &str) -> Color {
+/// Assign a consistent ANSI color to a sender based on their user ID.
+fn username_color(sender_id: i64) -> Color {
     let colors = [
         Color::Red,
         Color::Green,
@@ -162,9 +180,7 @@ fn username_color(username: &str) -> Color {
         Color::DarkMagenta,
         Color::DarkCyan,
     ];
-    let hash: usize = username.bytes().fold(0usize, |acc, b| {
-        acc.wrapping_mul(31).wrapping_add(b as usize)
-    });
+    let hash = (sender_id as usize).wrapping_mul(2654435761);
     colors[hash % colors.len()]
 }
 

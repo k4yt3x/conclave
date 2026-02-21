@@ -1,5 +1,172 @@
 # Conclave Work Log
 
+## 2026-02-21: Add MLS Epoch to Message Tooltip
+
+Added MLS epoch tracking per message and rewrote the GUI tooltip format to show structured key-value metadata.
+
+### Tooltip format
+
+```
+Timestamp: 2026-02-21 14:30:45
+Sender ID: 42
+Sender username: alice
+Sender alias: Alice W.
+Group ID: 3
+Sequence: 157
+Epoch: 5
+```
+
+Sender fields only shown for user messages. Alias line only shown when set. Removed the E2EE cipher suite display.
+
+### Changes
+
+1. **MLS epoch capture**: Added `MlsManager::group_epoch()` method. In `fetch_and_decrypt`, epoch is captured after each message decryption. In `send_message`, epoch is captured after encryption.
+
+2. **Data pipeline**: Added `epoch: u64` to `ProcessedMessage` and `MessageSentResult`. Added `epoch: Option<u64>` to `DisplayMessage`. Added `epoch` column migration to local SQLite message store.
+
+3. **Tooltip rewrite**: `format_tooltip()` now outputs labeled key-value lines instead of the previous compact format.
+
+### Files Modified
+
+- `crates/conclave-lib/src/mls.rs` — Added `group_epoch()` method
+- `crates/conclave-lib/src/operations.rs` — Added `epoch` to `ProcessedMessage`, `MessageSentResult`, `fetch_and_decrypt`, `send_message`
+- `crates/conclave-lib/src/state.rs` — Added `epoch` to `DisplayMessage`
+- `crates/conclave-lib/src/store.rs` — DB migration, store/load epoch
+- `crates/conclave-gui/src/widget/message_view.rs` — Rewrote tooltip format
+- `crates/conclave-gui/src/app.rs` — Set epoch at conversion sites
+- `crates/conclave-cli/src/tui/events.rs` — Set epoch at conversion site
+- `crates/conclave-cli/src/tui/mod.rs` — Set epoch at startup message loading
+- `crates/conclave-cli/src/tui/commands.rs` — Set epoch on sent messages
+
+## 2026-02-21: Rich Message Tooltip with Extended Metadata
+
+Extended the GUI message hover tooltip to show detailed metadata instead of just datetime + sender name.
+
+### Tooltip now shows
+
+- **Full datetime**: `2026-02-21 14:30:45`
+- **Sender identity**: `Alice W. (@alice) | user#42` (alias, username, and user ID)
+- **Message/group IDs**: `seq#157 | group#3` (sequence number and group ID)
+- **Encryption info**: `E2EE: MLS (CURVE448_CHACHA)` (for user messages)
+
+### Changes
+
+1. **`DisplayMessage` extended**: Added `sequence_num: Option<u64>` field. Defaults to `None` in constructors; set from `ProcessedMessage.sequence_num` at conversion sites.
+
+2. **`MessageStore` migration**: Added `sequence_num` column to local SQLite DB. Persisted and loaded alongside other message fields.
+
+3. **Tooltip format**: `format_tooltip()` now builds a multi-line tooltip using sender identity from the room member list (alias vs username distinction), message sequence number, group ID, and MLS cipher suite.
+
+4. **`message_list()` accepts `group_id: Option<i64>`**: Passed from `view_messages()` in the dashboard, which gets it from `active_room`.
+
+### Files Modified
+
+- `crates/conclave-lib/src/state.rs` — Added `sequence_num` to `DisplayMessage`
+- `crates/conclave-lib/src/store.rs` — DB migration, store/load sequence_num
+- `crates/conclave-gui/src/widget/message_view.rs` — Rich multi-line tooltip, accept group_id
+- `crates/conclave-gui/src/screen/dashboard.rs` — Pass active_room as group_id to message_list
+- `crates/conclave-gui/src/app.rs` — Set sequence_num when converting ProcessedMessage
+- `crates/conclave-cli/src/tui/events.rs` — Set sequence_num when converting ProcessedMessage
+- `crates/conclave-cli/src/tui/mod.rs` — Set sequence_num when loading messages at startup
+
+## 2026-02-21: Broadcast Alias Changes to Other Clients via SSE
+
+When a user changed their alias via `/nick`, other connected clients were never notified — only the user's own client refreshed. Added server-side SSE broadcast so alias changes propagate in real-time.
+
+### Changes
+
+1. **Server broadcast**: The `PATCH /api/v1/me` handler now broadcasts `GroupUpdateEvent` with `update_type: "member_profile"` to all co-members across all groups the user belongs to.
+
+2. **TUI room refresh on GroupUpdate**: The TUI's `GroupUpdate` SSE handler now calls `commands::load_rooms()` to refresh member lists. For `"member_profile"` events, no system message is shown (alias changes are silent).
+
+3. **GUI already handled**: The GUI already called `load_rooms_task()` on `GroupUpdate` events, so no GUI changes were needed.
+
+### Files Modified
+
+- `crates/conclave-server/src/api.rs` — Add SSE broadcast in `update_profile` handler
+- `crates/conclave-cli/src/tui/events.rs` — Refresh rooms on `GroupUpdate`, suppress system message for `"member_profile"`
+- `crates/conclave-server/tests/api_tests.rs` — Add `setup_with_state()` helper and 2 broadcast tests
+
+## 2026-02-21: Store sender_id in Messages, Resolve Display Names at Render Time
+
+Refactored message handling to store `sender_id` instead of baked-in sender name strings. Display names are now resolved dynamically from the room member list at render time. This means alias changes via `/nick` are retroactively reflected in all previous messages. Nick colors are now based on `sender_id` for stability across alias changes.
+
+### Changes
+
+1. **`DisplayMessage` and `ProcessedMessage`**: Added `sender_id: Option<i64>` (None for system messages). The `sender` field is kept as a fallback for when the sender can't be resolved from the member list.
+
+2. **`MessageStore` schema**: Added `sender_id INTEGER NOT NULL DEFAULT 0` column to the `messages` table with a migration for existing databases. Messages are stored and loaded with sender_id.
+
+3. **Render-time name resolution**: Added `resolve_sender_name()` helper in `state.rs` that looks up the sender's display name from the room member list by user_id. Both GUI and TUI use this at render time instead of the stored sender string.
+
+4. **Stable nick colors**: `nick_color()` (GUI) and `username_color()` (TUI) now take `sender_id: i64` instead of a username string, ensuring colors remain consistent when aliases change.
+
+5. **Removed `resolve_self_display_name()`** from TUI commands — no longer needed since display names are resolved at render time.
+
+### Files Modified
+
+- `crates/conclave-lib/src/state.rs` — Added `sender_id` to `DisplayMessage`, `resolve_sender_name()` helper
+- `crates/conclave-lib/src/store.rs` — DB migration, store/load sender_id
+- `crates/conclave-lib/src/operations.rs` — Added `sender_id` to `ProcessedMessage`
+- `crates/conclave-gui/src/app.rs` — Pass sender_id in message creation
+- `crates/conclave-gui/src/widget/message_view.rs` — Accept members, resolve names at render time
+- `crates/conclave-gui/src/screen/dashboard.rs` — Pass members to message_list
+- `crates/conclave-gui/src/theme/mod.rs` — `nick_color(i64)` instead of `nick_color(&str)`
+- `crates/conclave-cli/src/tui/commands.rs` — Pass sender_id, remove `resolve_self_display_name()`
+- `crates/conclave-cli/src/tui/events.rs` — Pass sender_id from ProcessedMessage
+- `crates/conclave-cli/src/tui/mod.rs` — Pass sender_id in startup message loading
+- `crates/conclave-cli/src/tui/render.rs` — Accept members, resolve names, `username_color(i64)`
+- `crates/conclave-cli/src/tui/state.rs` — Updated test calls
+- `docs/SPEC.md` — Updated message_history.db description
+
+## 2026-02-21: Fix Alias Display for Self-Sent Messages and Add Message Hover Tooltip
+
+Fixed a bug where self-sent messages always showed the login username instead of the user's alias. Added a hover tooltip to messages in the GUI showing full date/time metadata.
+
+### Changes
+
+1. **Fix alias display for self-sent messages**: In the GUI, `handle_message_sent()` now uses `user_alias` (if set) instead of `username` for the sender display name. In the TUI, a `resolve_self_display_name()` helper looks up the current user's display name from the room member list (which is refreshed after `/nick`), falling back to username.
+
+2. **Message hover tooltip**: Each message in the GUI now shows a tooltip on hover (300ms delay) with the full date and time (e.g., "2026-02-21 14:30:45") and sender name. Added a `tooltip` container style for consistent theming.
+
+### Files Modified
+
+- `crates/conclave-gui/src/app.rs` — Use alias for self-sent message sender display
+- `crates/conclave-gui/src/widget/message_view.rs` — Wrap messages in tooltip showing full timestamp
+- `crates/conclave-gui/src/theme/container.rs` — Add tooltip container style
+- `crates/conclave-cli/src/tui/commands.rs` — Add `resolve_self_display_name()` helper, use for sent messages
+
+## 2026-02-21: GUI Display Improvements and Alias Commands
+
+Added `/nick` and `/topic` IRC-standard commands, improved display formatting across the GUI.
+
+### Changes
+
+1. **`/nick <alias>` command**: Sets the current user's display name via `PATCH /api/v1/me`. Available in GUI, TUI, and CLI one-shot mode. The user's alias is fetched from the server at login and session restore, then displayed in the sidebar user button and popover.
+
+2. **`/topic <text>` command**: Sets the active room's display alias via `PATCH /api/v1/groups/{id}`. Available in GUI, TUI, and CLI one-shot mode. Requires the user to be the group creator.
+
+3. **API client additions**: Added `patch()` HTTP helper, `update_profile()`, and `update_group()` methods to `ApiClient`.
+
+4. **Members sidebar header**: The right sidebar now shows "N Members" as a header above the member list, matching the "Rooms" header style on the left sidebar.
+
+5. **Room list format**: Changed from `# displayname` to `alias (#groupname)` when an alias is set, or `#groupname` when no alias is set. Uses the room's unique name (group_name or numeric ID) as the `#identifier`.
+
+6. **Member list format**: Changed from just the display name to `alias (@username)` when an alias is set, or `@username` when no alias is set.
+
+7. **User button format**: Changed from `@username` to `alias (@username)` when the user has an alias set.
+
+8. **User popover restructure**: Split the single `username@server_url` line into up to 4 lines: alias (if set), @username, user#ID, and server URL. The popover now resizes dynamically to fit content.
+
+### Files Modified
+
+- `crates/conclave-lib/src/api.rs` — Added `patch()`, `update_profile()`, `update_group()`
+- `crates/conclave-lib/src/command.rs` — Added `Nick`, `Topic` command variants with parsing and tests
+- `crates/conclave-gui/src/app.rs` — Added `user_alias` field, fetch at login/restore, `/nick` and `/topic` handlers, updated `view()` and `show_help()`
+- `crates/conclave-gui/src/screen/dashboard.rs` — Members sidebar header, room/member/user display format changes, popover restructure
+- `crates/conclave-cli/src/tui/commands.rs` — `/nick` and `/topic` command handlers, updated help text
+- `crates/conclave-cli/src/main.rs` — `Nick` and `Topic` CLI subcommands
+
 ## 2026-02-21: Server-Side Group Mapping and Registration Key Packages
 
 Three interrelated fixes making the system more robust: server-side group mapping storage, registration key package upload, and `/reset` reliability.

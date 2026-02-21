@@ -1,7 +1,9 @@
-use iced::Length;
-use iced::widget::{column, row, text};
+use std::time::Duration;
 
-use conclave_lib::state::DisplayMessage;
+use iced::Length;
+use iced::widget::{column, container, row, text, tooltip};
+
+use conclave_lib::state::{DisplayMessage, RoomMember, resolve_sender_name};
 
 use crate::theme;
 use crate::widget::Element;
@@ -9,11 +11,14 @@ use crate::widget::Element;
 /// Render a column of messages.
 pub fn message_list<'a, M: Clone + 'a>(
     messages: &[DisplayMessage],
+    members: &[RoomMember],
+    group_id: Option<i64>,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
 
     for message in messages {
         let time = format_timestamp(message.timestamp);
+        let tooltip_text = format_tooltip(message, members, group_id);
 
         let row_element: Element<'a, M> = if message.is_system {
             row![
@@ -26,18 +31,20 @@ pub fn message_list<'a, M: Clone + 'a>(
             ]
             .into()
         } else {
-            let nick_color = theme::nick_color(&message.sender);
+            let sender_name = resolve_sender_name(message, members);
+            let nick_color = theme::nick_color(message.sender_id.unwrap_or(0));
             row![
                 text(format!("[{time}]"))
                     .size(13)
                     .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
-                text(format!(" <{}>", message.sender))
-                    .size(13)
-                    .class(Box::new(move |_theme: &theme::Theme| {
+                text(format!(" <{sender_name}>")).size(13).class(Box::new(
+                    move |_theme: &theme::Theme| {
                         iced::widget::text::Style {
                             color: Some(nick_color),
                         }
-                    }) as Box<dyn Fn(&theme::Theme) -> _>),
+                    }
+                )
+                    as Box<dyn Fn(&theme::Theme) -> _>),
                 text(format!(" {}", message.content))
                     .size(13)
                     .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
@@ -45,7 +52,20 @@ pub fn message_list<'a, M: Clone + 'a>(
             .into()
         };
 
-        messages_column = messages_column.push(row_element);
+        let tooltip_content = container(
+            text(tooltip_text)
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+        )
+        .padding(6)
+        .class(Box::new(theme::container::tooltip) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        let with_tooltip: Element<'a, M> =
+            tooltip(row_element, tooltip_content, tooltip::Position::Bottom)
+                .delay(Duration::from_millis(300))
+                .into();
+
+        messages_column = messages_column.push(with_tooltip);
     }
 
     messages_column
@@ -58,4 +78,44 @@ fn format_timestamp(ts: i64) -> String {
         .single()
         .map(|dt| dt.format("%H:%M:%S").to_string())
         .unwrap_or_else(|| "??:??:??".to_string())
+}
+
+fn format_tooltip(msg: &DisplayMessage, members: &[RoomMember], group_id: Option<i64>) -> String {
+    use chrono::{Local, TimeZone};
+    let datetime = Local
+        .timestamp_opt(msg.timestamp, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "Unknown time".to_string());
+
+    let mut lines = vec![format!("Timestamp: {datetime}")];
+
+    if !msg.is_system {
+        if let Some(sid) = msg.sender_id {
+            lines.push(format!("Sender ID: {sid}"));
+            let member = members.iter().find(|m| m.user_id == sid);
+            let username = member.map(|m| m.username.as_str()).unwrap_or(&msg.sender);
+            lines.push(format!("Sender username: {username}"));
+            if let Some(alias) = member
+                .and_then(|m| m.alias.as_deref())
+                .filter(|a| !a.is_empty())
+            {
+                lines.push(format!("Sender alias: {alias}"));
+            }
+        }
+    }
+
+    if let Some(gid) = group_id {
+        lines.push(format!("Group ID: {gid}"));
+    }
+
+    if let Some(seq) = msg.sequence_num {
+        lines.push(format!("Sequence: {seq}"));
+    }
+
+    if let Some(epoch) = msg.epoch {
+        lines.push(format!("Epoch: {epoch}"));
+    }
+
+    lines.join("\n")
 }

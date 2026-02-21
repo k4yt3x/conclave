@@ -576,7 +576,10 @@ pub async fn execute(
             };
 
             let sender = state.username.clone().unwrap_or_default();
-            let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
+            let mut msg =
+                DisplayMessage::user(user_id, &sender, &text, chrono::Local::now().timestamp());
+            msg.sequence_num = Some(result.sequence_num);
+            msg.epoch = Some(result.epoch);
             if let Some(store) = msg_store {
                 store.push_message(group_id, &msg);
             }
@@ -669,6 +672,54 @@ pub async fn execute(
             msgs.push(DisplayMessage::system("Logged out. Session revoked."));
         }
 
+        Command::Nick { alias } => {
+            api.lock().await.update_profile(&alias).await?;
+            msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
+
+            // Reload rooms so updated alias appears in member lists.
+            let rooms = {
+                let api_guard = api.lock().await;
+                operations::load_rooms(&api_guard).await?
+            };
+            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
+            for room_info in &rooms {
+                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
+                    room.members = room_info
+                        .members
+                        .iter()
+                        .map(|m| m.to_room_member())
+                        .collect();
+                }
+            }
+        }
+
+        Command::Topic { topic } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            api.lock()
+                .await
+                .update_group(group_id, Some(&topic))
+                .await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "Room alias set to: {topic}"
+            )));
+
+            // Reload rooms so updated alias appears in room list.
+            let rooms = {
+                let api_guard = api.lock().await;
+                operations::load_rooms(&api_guard).await?
+            };
+            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
+            for room_info in rooms {
+                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
+                    room.alias = room_info.alias;
+                    room.group_name = room_info.group_name;
+                }
+            }
+        }
+
         Command::Whois => {
             let resp = api.lock().await.me().await?;
             msgs.push(DisplayMessage::system(&format!(
@@ -686,6 +737,8 @@ pub async fn execute(
                 "/join <room>                  Switch to a room",
                 "/invite <user1,user2>         Invite to the active room",
                 "/kick <username>              Remove a member from the room",
+                "/nick <alias>                 Set your display name",
+                "/topic <text>                 Set active room's display alias",
                 "/part                         Leave the room (MLS removal)",
                 "/close                        Switch away without leaving",
                 "/rotate                       Rotate keys (forward secrecy)",
@@ -738,7 +791,10 @@ pub async fn execute(
             };
 
             let sender = state.username.clone().unwrap_or_default();
-            let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
+            let mut msg =
+                DisplayMessage::user(user_id, &sender, &text, chrono::Local::now().timestamp());
+            msg.sequence_num = Some(result.sequence_num);
+            msg.epoch = Some(result.epoch);
             if let Some(store) = msg_store {
                 store.push_message(group_id, &msg);
             }

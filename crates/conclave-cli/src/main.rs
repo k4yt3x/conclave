@@ -81,6 +81,18 @@ enum Commands {
         #[arg(short, long)]
         group: i64,
     },
+    /// Set your display name (alias).
+    Nick {
+        #[arg(short, long)]
+        alias: String,
+    },
+    /// Set a group's display alias.
+    Topic {
+        #[arg(short, long)]
+        group: i64,
+        #[arg(short, long)]
+        alias: String,
+    },
 }
 
 #[tokio::main]
@@ -308,6 +320,18 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             )
             .await?;
             println!("Message sent (seq: {})", result.sequence_num);
+        }
+
+        Commands::Nick { alias } => {
+            let api = api_from_session(&session, config)?;
+            api.update_profile(&alias).await?;
+            println!("Alias set to: {alias}");
+        }
+
+        Commands::Topic { group, alias } => {
+            let api = api_from_session(&session, config)?;
+            api.update_group(group, Some(&alias)).await?;
+            println!("Room alias set to: {alias}");
         }
 
         Commands::Messages { group } => {

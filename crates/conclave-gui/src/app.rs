@@ -25,6 +25,7 @@ pub struct Conclave {
     api: Option<ApiClient>,
     mls: Option<MlsManager>,
     username: Option<String>,
+    user_alias: Option<String>,
     user_id: Option<i64>,
     token: Option<String>,
     rooms: HashMap<i64, Room>,
@@ -67,6 +68,12 @@ pub enum Message {
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
     /// Account reset completed — update group mapping and MLS state.
     ResetComplete(Result<operations::ResetResult, String>),
+    /// User alias loaded from server.
+    UserAliasLoaded(Result<Option<String>, String>),
+    /// /nick command result — carries the new alias.
+    NickResult(Result<String, String>),
+    /// /topic command result — carries the new topic.
+    TopicResult(Result<String, String>),
     /// Tab key pressed (for login field navigation).
     TabPressed,
     /// Escape key pressed (close popover, etc.).
@@ -112,6 +119,7 @@ impl Conclave {
             api: None,
             mls: None,
             username: None,
+            user_alias: None,
             user_id: None,
             token: None,
             rooms: HashMap::new(),
@@ -174,8 +182,12 @@ impl Conclave {
 
             let rooms_task = app.load_rooms_task();
             let welcome_task = app.accept_welcomes();
+            let alias_task = app.fetch_user_alias();
 
-            return (app, Task::batch([keygen_task, rooms_task, welcome_task]));
+            return (
+                app,
+                Task::batch([keygen_task, rooms_task, welcome_task, alias_task]),
+            );
         }
 
         (app, Task::none())
@@ -253,6 +265,33 @@ impl Conclave {
                 Task::none()
             }
             Message::ResetComplete(result) => self.handle_reset_complete(result),
+            Message::UserAliasLoaded(result) => {
+                if let Ok(alias) = result {
+                    self.user_alias = alias;
+                }
+                Task::none()
+            }
+            Message::NickResult(result) => match result {
+                Ok(alias) => {
+                    self.user_alias = Some(alias.clone());
+                    self.push_system_message(&format!("Alias set to: {alias}"));
+                    self.load_rooms_task()
+                }
+                Err(e) => {
+                    self.push_system_message(&format!("Failed to set alias: {e}"));
+                    Task::none()
+                }
+            },
+            Message::TopicResult(result) => match result {
+                Ok(topic) => {
+                    self.push_system_message(&format!("Room alias set to: {topic}"));
+                    self.load_rooms_task()
+                }
+                Err(e) => {
+                    self.push_system_message(&format!("Failed to set topic: {e}"));
+                    Task::none()
+                }
+            },
             Message::GroupCreated(result) => self.handle_group_created(result),
             Message::RefreshRooms(result) => {
                 match result {
@@ -279,6 +318,8 @@ impl Conclave {
                     &self.system_messages,
                     &self.connection_status,
                     &self.username,
+                    &self.user_alias,
+                    &self.user_id,
                     &self.server_url,
                     self.config.accept_invalid_certs,
                 )
@@ -491,8 +532,9 @@ impl Conclave {
                 );
 
                 let rooms_task = self.load_rooms_task();
+                let alias_task = self.fetch_user_alias();
 
-                Task::batch([keygen_task, rooms_task])
+                Task::batch([keygen_task, rooms_task, alias_task])
             }
             Err(e) => {
                 if let screen::Screen::Login(login) = &mut self.screen {
@@ -713,6 +755,45 @@ impl Conclave {
                         ))])
                     },
                     Message::CommandResult,
+                )
+            }
+            Ok(Command::Nick { alias }) => {
+                let server_url = self.server_url.clone().unwrap_or_default();
+                let accept_invalid_certs = self.config.accept_invalid_certs;
+                let token = self.token.clone().unwrap_or_default();
+                Task::perform(
+                    async move {
+                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                        api.set_token(token);
+                        api.update_profile(&alias)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(alias)
+                    },
+                    Message::NickResult,
+                )
+            }
+            Ok(Command::Topic { topic }) => {
+                let group_id = match self.active_room {
+                    Some(id) => id,
+                    None => {
+                        self.push_system_message("No active room — use /join first");
+                        return Task::none();
+                    }
+                };
+                let server_url = self.server_url.clone().unwrap_or_default();
+                let accept_invalid_certs = self.config.accept_invalid_certs;
+                let token = self.token.clone().unwrap_or_default();
+                Task::perform(
+                    async move {
+                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                        api.set_token(token);
+                        api.update_group(group_id, Some(&topic))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(topic)
+                    },
+                    Message::TopicResult,
                 )
             }
             Ok(Command::Login { .. }) | Ok(Command::Register { .. }) => {
@@ -992,11 +1073,18 @@ impl Conclave {
                 self.fetching_groups.remove(&fetched.group_id);
 
                 for msg in &fetched.messages {
-                    let display = if msg.is_system {
+                    let mut display = if msg.is_system {
                         DisplayMessage::system(&msg.content)
                     } else {
-                        DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp)
+                        DisplayMessage::user(
+                            msg.sender_id,
+                            &msg.sender,
+                            &msg.content,
+                            msg.timestamp,
+                        )
                     };
+                    display.sequence_num = Some(msg.sequence_num);
+                    display.epoch = Some(msg.epoch);
 
                     self.add_message_to_room(fetched.group_id, display);
 
@@ -1046,8 +1134,21 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok((info, text)) => {
-                let sender = self.username.clone().unwrap_or_default();
-                let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
+                let sender_id = self.user_id.unwrap_or(0);
+                let sender = self
+                    .user_alias
+                    .as_deref()
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| self.username.as_deref().unwrap_or_default())
+                    .to_string();
+                let mut msg = DisplayMessage::user(
+                    sender_id,
+                    &sender,
+                    &text,
+                    chrono::Local::now().timestamp(),
+                );
+                msg.sequence_num = Some(info.sequence_num);
+                msg.epoch = Some(info.epoch);
                 self.add_message_to_room(info.group_id, msg);
 
                 if let Some(room) = self.rooms.get_mut(&info.group_id) {
@@ -1527,6 +1628,26 @@ impl Conclave {
         )
     }
 
+    fn fetch_user_alias(&self) -> Task<Message> {
+        let server_url = self.server_url.clone().unwrap_or_default();
+        let accept_invalid_certs = self.config.accept_invalid_certs;
+        let token = self.token.clone().unwrap_or_default();
+        Task::perform(
+            async move {
+                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                api.set_token(token);
+                let resp = api.me().await.map_err(|e| e.to_string())?;
+                let alias = if resp.alias.is_empty() {
+                    None
+                } else {
+                    Some(resp.alias)
+                };
+                Ok(alias)
+            },
+            Message::UserAliasLoaded,
+        )
+    }
+
     fn fetch_messages_task(
         &self,
         group_id: i64,
@@ -1653,6 +1774,8 @@ impl Conclave {
             "/join <room>                  Switch to a room",
             "/invite <user1,user2>         Invite to the active room",
             "/kick <username>              Remove a member from the room",
+            "/nick <alias>                 Set your display name",
+            "/topic <text>                 Set active room's display alias",
             "/part                         Leave the room (MLS removal)",
             "/close                        Switch away without leaving",
             "/rotate                       Rotate keys (forward secrecy)",
@@ -1773,6 +1896,7 @@ impl Conclave {
         self.api = None;
         self.mls = None;
         self.username = None;
+        self.user_alias = None;
         self.user_id = None;
         self.active_room = None;
         self.rooms.clear();

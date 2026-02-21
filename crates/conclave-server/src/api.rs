@@ -239,6 +239,38 @@ async fn update_profile(
 
     state.db.update_user_alias(auth.user_id, alias)?;
 
+    // Broadcast GroupUpdateEvent to all co-members so they refresh member lists.
+    let user_groups = state.db.list_user_groups(auth.user_id)?;
+    for (group_id, _, _, _, _, _) in &user_groups {
+        let members = state.db.get_group_members(*group_id)?;
+        let target_ids: Vec<i64> = members
+            .iter()
+            .map(|(id, _, _)| *id)
+            .filter(|id| *id != auth.user_id)
+            .collect();
+
+        if target_ids.is_empty() {
+            continue;
+        }
+
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                conclave_proto::GroupUpdateEvent {
+                    group_id: *group_id,
+                    update_type: "member_profile".into(),
+                },
+            )),
+        };
+        let mut event_bytes = Vec::new();
+        if let Err(error) = event.encode(&mut event_bytes) {
+            tracing::error!(%error, "failed to encode SSE event");
+        }
+        let _ = state.sse_tx.send(crate::state::SseEvent {
+            data: event_bytes,
+            target_user_ids: target_ids,
+        });
+    }
+
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UpdateProfileResponse {},
@@ -442,6 +474,33 @@ async fn update_group(
         state
             .db
             .update_group_name(group_id, Some(&request.group_name))?;
+    }
+
+    // Broadcast GroupUpdateEvent so other members refresh the room list.
+    let members = state.db.get_group_members(group_id)?;
+    let target_ids: Vec<i64> = members
+        .iter()
+        .map(|(id, _, _)| *id)
+        .filter(|id| *id != auth.user_id)
+        .collect();
+
+    if !target_ids.is_empty() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                conclave_proto::GroupUpdateEvent {
+                    group_id,
+                    update_type: "group_settings".into(),
+                },
+            )),
+        };
+        let mut event_bytes = Vec::new();
+        if let Err(error) = event.encode(&mut event_bytes) {
+            tracing::error!(%error, "failed to encode SSE event");
+        }
+        let _ = state.sse_tx.send(crate::state::SseEvent {
+            data: event_bytes,
+            target_user_ids: target_ids,
+        });
     }
 
     Ok(proto_response(

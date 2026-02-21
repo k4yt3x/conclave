@@ -43,6 +43,14 @@ pub enum Command {
     },
     Unread,
     Logout,
+    /// Change display name. IRC: /nick
+    Nick {
+        alias: String,
+    },
+    /// Set active room's display alias. IRC: /topic
+    Topic {
+        topic: String,
+    },
     /// Show current user info. IRC: /whois
     Whois,
     Help,
@@ -138,6 +146,20 @@ pub fn parse(input: &str) -> Result<Command> {
                 room: parts[1].to_string(),
                 text: parts[2].to_string(),
             })
+        }
+        "/nick" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /nick <alias>".into()));
+            }
+            let alias = input["/nick ".len()..].to_string();
+            Ok(Command::Nick { alias })
+        }
+        "/topic" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /topic <text>".into()));
+            }
+            let topic = input["/topic ".len()..].to_string();
+            Ok(Command::Topic { topic })
         }
         "/unread" => Ok(Command::Unread),
         "/logout" => Ok(Command::Logout),
@@ -379,6 +401,36 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn test_parse_nick() {
+        let cmd = parse("/nick Alice Smith").unwrap();
+        if let Command::Nick { alias } = cmd {
+            assert_eq!(alias, "Alice Smith");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_nick_missing_args() {
+        assert!(parse("/nick").is_err());
+    }
+
+    #[test]
+    fn test_parse_topic() {
+        let cmd = parse("/topic Dev Team Chat").unwrap();
+        if let Command::Topic { topic } = cmd {
+            assert_eq!(topic, "Dev Team Chat");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_topic_missing_args() {
+        assert!(parse("/topic").is_err());
     }
 
     #[test]
