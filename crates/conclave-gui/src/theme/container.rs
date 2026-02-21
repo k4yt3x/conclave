@@ -57,6 +57,14 @@ pub fn card(theme: &Theme) -> Style {
     }
 }
 
+pub fn status_banner(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.error)),
+        text_color: Some(theme.primary),
+        ..Style::default()
+    }
+}
+
 pub fn input_area(theme: &Theme) -> Style {
     Style {
         background: Some(Background::Color(theme.surface)),

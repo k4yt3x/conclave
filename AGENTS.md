@@ -104,6 +104,7 @@ Conclave's end-to-end encryption is built on the Messaging Layer Security (MLS) 
 
 ## Conventions
 
+- Run `cargo build --release` after completing a task to verify the release build succeeds.
 - Update `docs/WORKLOG.md` and `AGENTS.md` after completing work.
 - Update `docs/SPEC.md` when changes affect the technical specification (architecture, protocol, API, MLS behavior, storage, etc.).
 - `docs/SPEC.md` is the authoritative technical specification.

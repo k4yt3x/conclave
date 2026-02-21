@@ -102,13 +102,34 @@ impl Dashboard {
             room_list = room_list.push(room_button);
         }
 
-        let status_indicator = {
-            let (label, style): (&str, Box<dyn Fn(&theme::Theme) -> _>) = match connection_status {
-                ConnectionStatus::Connected => ("Connected", Box::new(theme::text::success)),
-                ConnectionStatus::Connecting => ("Connecting...", Box::new(theme::text::secondary)),
-                ConnectionStatus::Disconnected => ("Disconnected", Box::new(theme::text::error)),
-            };
-            text(label).size(11).class(style)
+        let status_banner: Option<Element<'a, Message>> = match connection_status {
+            ConnectionStatus::Connected => None,
+            ConnectionStatus::Connecting => Some(
+                container(
+                    text("Reconnecting...")
+                        .size(12)
+                        .width(Length::Fill)
+                        .align_x(Horizontal::Center)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .width(Length::Fill)
+                .padding([6, 10])
+                .class(Box::new(theme::container::status_banner) as Box<dyn Fn(&theme::Theme) -> _>)
+                .into(),
+            ),
+            ConnectionStatus::Disconnected => Some(
+                container(
+                    text("Disconnected")
+                        .size(12)
+                        .width(Length::Fill)
+                        .align_x(Horizontal::Center)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .width(Length::Fill)
+                .padding([6, 10])
+                .class(Box::new(theme::container::status_banner) as Box<dyn Fn(&theme::Theme) -> _>)
+                .into(),
+            ),
         };
 
         let user_display = username
@@ -126,9 +147,11 @@ impl Dashboard {
         .class(Box::new(theme::button::sidebar) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press(Message::ToggleUserPopover);
 
-        let footer = column![container(status_indicator).padding([0, 12]), user_button,]
-            .spacing(4)
-            .padding([8, 0]);
+        let mut footer = column![].spacing(4).padding([8, 0]);
+        if let Some(banner) = status_banner {
+            footer = footer.push(banner);
+        }
+        footer = footer.push(user_button);
 
         let sidebar_content = column![header, scrollable(room_list).height(Length::Fill), footer]
             .height(Length::Fill);
