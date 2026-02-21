@@ -20,6 +20,8 @@ pub enum Message {
     ToggleUserPopover,
     CloseUserPopover,
     ToggleMembersSidebar,
+    CopyText(String),
+    DismissToast,
     Logout,
 }
 
@@ -27,6 +29,7 @@ pub struct Dashboard {
     pub input_value: String,
     pub show_user_popover: bool,
     pub show_members_sidebar: bool,
+    pub toast: Option<String>,
 }
 
 impl Dashboard {
@@ -35,6 +38,7 @@ impl Dashboard {
             input_value: String::new(),
             show_user_popover: false,
             show_members_sidebar: false,
+            toast: None,
         }
     }
 
@@ -50,6 +54,7 @@ impl Dashboard {
         user_id: &'a Option<i64>,
         server_url: &'a Option<String>,
         accept_invalid_certs: bool,
+        theme: &'a crate::theme::Theme,
     ) -> Element<'a, Message> {
         let sidebar = self.view_sidebar(
             rooms,
@@ -60,7 +65,8 @@ impl Dashboard {
             server_url,
             accept_invalid_certs,
         );
-        let main_area = self.view_main_area(rooms, active_room, room_messages, system_messages);
+        let main_area =
+            self.view_main_area(rooms, active_room, room_messages, system_messages, theme);
 
         let mut base = row![sidebar, main_area];
         if self.show_members_sidebar && active_room.is_some() {
@@ -303,8 +309,10 @@ impl Dashboard {
         active_room: &'a Option<i64>,
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
+        theme: &'a crate::theme::Theme,
     ) -> Element<'a, Message> {
-        let messages = self.view_messages(rooms, active_room, room_messages, system_messages);
+        let messages =
+            self.view_messages(rooms, active_room, room_messages, system_messages, theme);
         let input = self.view_input();
 
         let mut main_column = column![].width(Length::Fill).height(Length::Fill);
@@ -422,6 +430,7 @@ impl Dashboard {
         active_room: &'a Option<i64>,
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
+        theme: &'a crate::theme::Theme,
     ) -> Element<'a, Message> {
         let messages: &[DisplayMessage] = match active_room {
             Some(room_id) => room_messages
@@ -440,14 +449,34 @@ impl Dashboard {
         };
 
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
-            message_view::message_list(messages, members, *active_room);
+            message_view::message_list(messages, members, *active_room, theme, Message::CopyText);
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 
-        scrollable(content)
+        let messages_area = scrollable(content)
             .height(Length::Fill)
-            .anchor_bottom()
-            .into()
+            .anchor_bottom();
+
+        if let Some(toast_text) = &self.toast {
+            let toast_badge = container(
+                text(toast_text.as_str())
+                    .size(12)
+                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            )
+            .padding([6, 12])
+            .class(Box::new(theme::container::toast) as Box<dyn Fn(&theme::Theme) -> _>);
+
+            let toast_overlay = container(toast_badge)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Bottom)
+                .padding(iced::Padding::ZERO.bottom(8));
+
+            stack![messages_area, toast_overlay].into()
+        } else {
+            messages_area.into()
+        }
     }
 
     fn view_input(&self) -> Element<'_, Message> {

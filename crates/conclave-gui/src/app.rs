@@ -319,6 +319,7 @@ impl Conclave {
                     &self.user_id,
                     &self.server_url,
                     self.config.accept_invalid_certs,
+                    &self.theme,
                 )
                 .map(Message::Dashboard),
         }
@@ -654,6 +655,26 @@ impl Conclave {
             screen::dashboard::Message::ToggleMembersSidebar => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.show_members_sidebar = !dashboard.show_members_sidebar;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::CopyText(text) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.toast = Some("Copied to clipboard".into());
+                }
+                Task::batch([
+                    iced::clipboard::write(text),
+                    Task::perform(
+                        async {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        },
+                        |_| Message::Dashboard(screen::dashboard::Message::DismissToast),
+                    ),
+                ])
+            }
+            screen::dashboard::Message::DismissToast => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.toast = None;
                 }
                 Task::none()
             }
