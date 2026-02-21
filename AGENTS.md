@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~330 tests across 9 suites)
+cargo test --workspace                   # Run all tests (~417 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-lib               # Client library tests only
 cargo clippy --workspace                 # Lint
@@ -70,11 +70,11 @@ Five crates in `crates/`:
 
 ## Key Architecture Details
 
-**MLS integration**: mls-rs runs in sync mode (not async). CPU-bound crypto is wrapped in `tokio::task::spawn_blocking` where needed. Cipher suite: CURVE448_CHACHA (256-bit security). Per-user MLS state stored in `data_dir/users/<username>/` with SQLite-backed persistence via mls-rs-provider-sqlite.
+**MLS integration**: mls-rs runs in sync mode (not async). CPU-bound crypto is wrapped in `tokio::task::spawn_blocking` where needed. Cipher suite: CURVE448_CHACHA (256-bit security). `BasicCredential` stores user_id as big-endian i64 bytes (8 bytes). Per-user MLS state stored in `data_dir/users/<username>/` with SQLite-backed persistence via mls-rs-provider-sqlite.
 
 **Key package lifecycle**: 5 regular + 1 last-resort per user. Regular packages consumed FIFO; last-resort never deleted. Server caps at 10 regular. Clients auto-replenish after consumption.
 
-**Group ID mapping**: Server uses UUID strings; MLS uses opaque byte IDs. Clients maintain `group_mapping.toml` per user to map between them.
+**Group ID mapping**: Server uses auto-increment integer IDs (`i64`); MLS uses opaque byte IDs. Clients maintain `group_mapping.toml` (`HashMap<i64, String>`) per user to map server group IDs to hex-encoded MLS group IDs.
 
 **SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent.
 
@@ -82,7 +82,7 @@ Five crates in `crates/`:
 
 ## Testing Patterns
 
-- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 94 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, validation edge cases.
+- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 105 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, profile/group updates, validation edge cases.
 - **End-to-end protocol flow tests** (`crates/conclave-server/tests/protocol_flow_tests.rs`): Combine real MLS cryptographic operations (via `conclave-lib::MlsManager`) with server API calls through tower::oneshot. Tests full protocol flows: group creation, welcome processing, encrypted messaging, member removal, key rotation, external rejoin.
 - **Client MLS tests** (`crates/conclave-lib/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking. 74 tests covering key package generation, group lifecycle, message encryption/decryption, epoch management, member operations.
 - **All tests use real protobuf encoding/decoding** — match production wire format.

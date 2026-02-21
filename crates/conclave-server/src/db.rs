@@ -6,10 +6,28 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 
+/// Maximum alias length for users and groups.
+const MAX_ALIAS_LENGTH: usize = 64;
+
 /// Hash a token with SHA-256 for safe storage.
 fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(digest)
+}
+
+/// Check whether an alias string is valid (no ASCII control characters, max 64 chars).
+pub fn validate_alias(alias: &str) -> Result<()> {
+    if alias.len() > MAX_ALIAS_LENGTH {
+        return Err(Error::Validation(format!(
+            "alias exceeds maximum length of {MAX_ALIAS_LENGTH} characters"
+        )));
+    }
+    if alias.bytes().any(|b| b < 0x20 || b == 0x7F) {
+        return Err(Error::Validation(
+            "alias must not contain ASCII control characters".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Server-side SQLite database for users, sessions, groups, and messages.
@@ -48,6 +66,7 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
+                alias TEXT,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
@@ -67,21 +86,22 @@ impl Database {
             );
 
             CREATE TABLE IF NOT EXISTS groups (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_name TEXT UNIQUE,
+                alias TEXT,
                 creator_id INTEGER NOT NULL REFERENCES users(id),
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
             CREATE TABLE IF NOT EXISTS group_members (
-                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 PRIMARY KEY (group_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 sender_id INTEGER NOT NULL REFERENCES users(id),
                 mls_message BLOB NOT NULL,
                 sequence_num INTEGER NOT NULL,
@@ -91,8 +111,8 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS pending_welcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                group_name TEXT NOT NULL,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                group_alias TEXT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 welcome_data BLOB NOT NULL,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -101,22 +121,12 @@ impl Database {
                 ON pending_welcomes(user_id);
 
             CREATE TABLE IF NOT EXISTS group_infos (
-                group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+                group_id INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
                 group_info_data BLOB NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
             ",
         )?;
-
-        // Migration: add is_last_resort column if upgrading from an older schema.
-        if let Err(error) = conn.execute_batch(
-            "ALTER TABLE key_packages ADD COLUMN is_last_resort INTEGER NOT NULL DEFAULT 0;",
-        ) {
-            let msg = error.to_string();
-            if !msg.contains("duplicate column") {
-                return Err(error.into());
-            }
-        }
 
         Ok(())
     }
@@ -140,23 +150,28 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_user_by_username(&self, username: &str) -> Result<Option<(i64, String, String)>> {
+    pub fn get_user_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<(i64, String, String, Option<String>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare("SELECT id, username, password_hash FROM users WHERE username = ?1")?;
+        let mut stmt = conn
+            .prepare("SELECT id, username, password_hash, alias FROM users WHERE username = ?1")?;
         let result = stmt
             .query_row(params![username], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .optional()?;
         Ok(result)
     }
 
-    pub fn get_user_by_id(&self, user_id: i64) -> Result<Option<(i64, String)>> {
+    pub fn get_user_by_id(&self, user_id: i64) -> Result<Option<(i64, String, Option<String>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id, username FROM users WHERE id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, username, alias FROM users WHERE id = ?1")?;
         let result = stmt
-            .query_row(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row(params![user_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .optional()?;
         Ok(result)
     }
@@ -168,6 +183,18 @@ impl Database {
             .query_row(params![username], |row| row.get(0))
             .optional()?;
         Ok(result)
+    }
+
+    pub fn update_user_alias(&self, user_id: i64, alias: Option<&str>) -> Result<()> {
+        if let Some(alias) = alias {
+            validate_alias(alias)?;
+        }
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE users SET alias = ?1 WHERE id = ?2",
+            params![alias, user_id],
+        )?;
+        Ok(())
     }
 
     // ── Sessions ───────────────────────────────────────────────────
@@ -302,7 +329,7 @@ impl Database {
 
     // ── Groups ─────────────────────────────────────────────────────
 
-    pub fn group_exists(&self, group_id: &str) -> Result<bool> {
+    pub fn group_exists(&self, group_id: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT 1 FROM groups WHERE id = ?1")?;
         let exists: Option<i64> = stmt
@@ -311,21 +338,41 @@ impl Database {
         Ok(exists.is_some())
     }
 
-    pub fn create_group(&self, group_id: &str, name: &str, creator_id: i64) -> Result<()> {
+    pub fn create_group(
+        &self,
+        group_name: Option<&str>,
+        alias: Option<&str>,
+        creator_id: i64,
+    ) -> Result<i64> {
+        if let Some(alias) = alias {
+            validate_alias(alias)?;
+        }
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO groups (id, name, creator_id) VALUES (?1, ?2, ?3)",
-            params![group_id, name, creator_id],
-        )?;
+            "INSERT INTO groups (group_name, alias, creator_id) VALUES (?1, ?2, ?3)",
+            params![group_name, alias, creator_id],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Error::Conflict(format!(
+                    "group_name '{}' already exists",
+                    group_name.unwrap_or("<none>")
+                ))
+            }
+            other => Error::Database(other),
+        })?;
+        let group_id = conn.last_insert_rowid();
         // Creator is automatically a member.
         conn.execute(
             "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
             params![group_id, creator_id],
         )?;
-        Ok(())
+        Ok(group_id)
     }
 
-    pub fn add_group_member(&self, group_id: &str, user_id: i64) -> Result<()> {
+    pub fn add_group_member(&self, group_id: i64, user_id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?1, ?2)",
@@ -334,7 +381,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn is_group_member(&self, group_id: &str, user_id: i64) -> Result<bool> {
+    pub fn is_group_member(&self, group_id: i64, user_id: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2")?;
@@ -344,10 +391,14 @@ impl Database {
         Ok(exists.is_some())
     }
 
-    pub fn list_user_groups(&self, user_id: i64) -> Result<Vec<(String, String, i64, i64)>> {
+    /// Returns (group_id, group_name, alias, creator_id, created_at).
+    pub fn list_user_groups(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<(i64, Option<String>, Option<String>, i64, i64)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.name, g.creator_id, g.created_at
+            "SELECT g.id, g.group_name, g.alias, g.creator_id, g.created_at
              FROM groups g
              JOIN group_members gm ON g.id = gm.group_id
              WHERE gm.user_id = ?1
@@ -355,13 +406,19 @@ impl Database {
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    pub fn remove_group_member(&self, group_id: &str, user_id: i64) -> Result<()> {
+    pub fn remove_group_member(&self, group_id: i64, user_id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
@@ -370,23 +427,78 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_group_members(&self, group_id: &str) -> Result<Vec<(i64, String)>> {
+    /// Returns (user_id, username, alias) for each group member.
+    pub fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String, Option<String>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username
+            "SELECT u.id, u.username, u.alias
              FROM users u
              JOIN group_members gm ON u.id = gm.user_id
              WHERE gm.group_id = ?1",
         )?;
         let rows = stmt
-            .query_map(params![group_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![group_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
+    /// Get the alias for a group.
+    pub fn get_group_alias(&self, group_id: i64) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT alias FROM groups WHERE id = ?1")?;
+        let result: Option<Option<String>> = stmt
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?;
+        Ok(result.flatten())
+    }
+
+    pub fn update_group_alias(&self, group_id: i64, alias: Option<&str>) -> Result<()> {
+        if let Some(alias) = alias {
+            validate_alias(alias)?;
+        }
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE groups SET alias = ?1 WHERE id = ?2",
+            params![alias, group_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_group_name(&self, group_id: i64, group_name: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE groups SET group_name = ?1 WHERE id = ?2",
+            params![group_name, group_id],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Error::Conflict(format!(
+                    "group_name '{}' already exists",
+                    group_name.unwrap_or("<none>")
+                ))
+            }
+            other => Error::Database(other),
+        })?;
+        Ok(())
+    }
+
+    /// Get the creator_id for a group.
+    pub fn get_group_creator(&self, group_id: i64) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT creator_id FROM groups WHERE id = ?1")?;
+        let result = stmt
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?;
+        Ok(result)
+    }
+
     // ── Messages ───────────────────────────────────────────────────
 
-    pub fn store_message(&self, group_id: &str, sender_id: i64, mls_message: &[u8]) -> Result<i64> {
+    pub fn store_message(&self, group_id: i64, sender_id: i64, mls_message: &[u8]) -> Result<i64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let next_seq: i64 = conn.query_row(
             "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM messages WHERE group_id = ?1",
@@ -401,15 +513,16 @@ impl Database {
         Ok(next_seq)
     }
 
+    /// Returns (sequence_num, sender_id, sender_username, sender_alias, mls_message, created_at).
     pub fn get_messages(
         &self,
-        group_id: &str,
+        group_id: i64,
         after_seq: i64,
         limit: i64,
-    ) -> Result<Vec<(i64, i64, String, Vec<u8>, i64)>> {
+    ) -> Result<Vec<(i64, i64, String, Option<String>, Vec<u8>, i64)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT m.sequence_num, m.sender_id, u.username, m.mls_message, m.created_at
+            "SELECT m.sequence_num, m.sender_id, u.username, u.alias, m.mls_message, m.created_at
              FROM messages m
              JOIN users u ON m.sender_id = u.id
              WHERE m.group_id = ?1 AND m.sequence_num > ?2
@@ -424,6 +537,7 @@ impl Database {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -434,27 +548,28 @@ impl Database {
 
     pub fn store_pending_welcome(
         &self,
-        group_id: &str,
-        group_name: &str,
+        group_id: i64,
+        group_alias: Option<&str>,
         user_id: i64,
         welcome_data: &[u8],
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO pending_welcomes (group_id, group_name, user_id, welcome_data)
+            "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data)
              VALUES (?1, ?2, ?3, ?4)",
-            params![group_id, group_name, user_id, welcome_data],
+            params![group_id, group_alias, user_id, welcome_data],
         )?;
         Ok(())
     }
 
+    /// Returns (welcome_id, group_id, group_alias, welcome_data).
     pub fn get_pending_welcomes(
         &self,
         user_id: i64,
-    ) -> Result<Vec<(i64, String, String, Vec<u8>)>> {
+    ) -> Result<Vec<(i64, i64, Option<String>, Vec<u8>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, group_name, welcome_data
+            "SELECT id, group_id, group_alias, welcome_data
              FROM pending_welcomes
              WHERE user_id = ?1
              ORDER BY created_at ASC",
@@ -478,7 +593,7 @@ impl Database {
 
     // ── Group Info (for External Commits) ──────────────────────────
 
-    pub fn store_group_info(&self, group_id: &str, group_info_data: &[u8]) -> Result<()> {
+    pub fn store_group_info(&self, group_id: i64, group_info_data: &[u8]) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO group_infos (group_id, group_info_data, updated_at)
@@ -497,8 +612,8 @@ impl Database {
     /// message sequence number (if any), for SSE notification after commit.
     pub fn process_commit(
         &self,
-        group_id: &str,
-        group_name: &str,
+        group_id: i64,
+        group_alias: Option<&str>,
         sender_id: i64,
         welcome_messages: &std::collections::HashMap<String, Vec<u8>>,
         group_info: &[u8],
@@ -523,9 +638,9 @@ impl Database {
             )?;
 
             transaction.execute(
-                "INSERT INTO pending_welcomes (group_id, group_name, user_id, welcome_data, created_at)
+                "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data, created_at)
                  VALUES (?1, ?2, ?3, ?4, unixepoch())",
-                params![group_id, group_name, user_id, welcome_data],
+                params![group_id, group_alias, user_id, welcome_data],
             )?;
 
             new_members.push((user_id, username.clone()));
@@ -564,7 +679,7 @@ impl Database {
         Ok((new_members, sequence_number))
     }
 
-    pub fn get_group_info(&self, group_id: &str) -> Result<Option<Vec<u8>>> {
+    pub fn get_group_info(&self, group_id: i64) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT group_info_data FROM group_infos WHERE group_id = ?1")?;
@@ -590,8 +705,6 @@ impl Database {
 mod tests {
     use super::*;
 
-    // ── Existing tests (1-3) ───────────────────────────────────────
-
     #[test]
     fn test_user_crud() {
         let db = Database::open_in_memory().unwrap();
@@ -603,6 +716,7 @@ mod tests {
         assert_eq!(user.0, id);
         assert_eq!(user.1, "alice");
         assert_eq!(user.2, "hash123");
+        assert!(user.3.is_none());
 
         // Duplicate username should fail.
         let result = db.create_user("alice", "hash456");
@@ -628,36 +742,34 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.add_group_member("g1", bob).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
 
-        assert!(db.is_group_member("g1", alice).unwrap());
-        assert!(db.is_group_member("g1", bob).unwrap());
+        assert!(db.is_group_member(group_id, alice).unwrap());
+        assert!(db.is_group_member(group_id, bob).unwrap());
 
         let groups = db.list_user_groups(alice).unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].1, "test-group");
+        assert_eq!(groups[0].2, Some("test-group".to_string()));
 
-        let members = db.get_group_members("g1").unwrap();
+        let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 2);
 
-        let seq1 = db.store_message("g1", alice, b"msg1").unwrap();
-        let seq2 = db.store_message("g1", bob, b"msg2").unwrap();
+        let seq1 = db.store_message(group_id, alice, b"msg1").unwrap();
+        let seq2 = db.store_message(group_id, bob, b"msg2").unwrap();
         assert_eq!(seq1, 1);
         assert_eq!(seq2, 2);
 
-        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].3, b"msg1");
-        assert_eq!(msgs[1].3, b"msg2");
+        assert_eq!(msgs[0].4, b"msg1");
+        assert_eq!(msgs[1].4, b"msg2");
 
         // Fetch after seq 1.
-        let msgs = db.get_messages("g1", 1, 100).unwrap();
+        let msgs = db.get_messages(group_id, 1, 100).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].3, b"msg2");
+        assert_eq!(msgs[0].4, b"msg2");
     }
-
-    // ── New tests (4-31) ───────────────────────────────────────────
 
     #[test]
     fn test_duplicate_username_returns_conflict() {
@@ -686,6 +798,7 @@ mod tests {
         let user = db.get_user_by_id(id).unwrap().unwrap();
         assert_eq!(user.0, id);
         assert_eq!(user.1, "alice");
+        assert!(user.2.is_none());
     }
 
     #[test]
@@ -731,12 +844,10 @@ mod tests {
         let token = "delete-me";
         db.create_session(token, uid, i64::MAX).unwrap();
 
-        // Session is valid before deletion.
         assert!(db.validate_session(token).unwrap().is_some());
 
         db.delete_session(token).unwrap();
 
-        // Session is gone after deletion.
         assert!(db.validate_session(token).unwrap().is_none());
     }
 
@@ -745,19 +856,13 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let uid = db.create_user("alice", "hash").unwrap();
 
-        // One expired session (expires_at = 0, in the past).
         db.create_session("expired-token", uid, 0).unwrap();
-
-        // One valid session (expires_at far in the future).
         db.create_session("valid-token", uid, i64::MAX).unwrap();
 
         let cleaned = db.cleanup_expired_sessions().unwrap();
         assert_eq!(cleaned, 1);
 
-        // The valid session should still work.
         assert_eq!(db.validate_session("valid-token").unwrap(), Some(uid));
-
-        // The expired session should already have been gone, but confirm.
         assert!(db.validate_session("expired-token").unwrap().is_none());
     }
 
@@ -769,14 +874,12 @@ mod tests {
         db.store_key_package(uid, b"kp1", false).unwrap();
         db.store_key_package(uid, b"kp2", false).unwrap();
 
-        // Should consume oldest first (FIFO).
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"kp1");
 
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"kp2");
 
-        // Both consumed.
         assert!(db.consume_key_package(uid).unwrap().is_none());
     }
 
@@ -788,15 +891,12 @@ mod tests {
         db.store_key_package(uid, b"last_resort", true).unwrap();
         db.store_key_package(uid, b"regular1", false).unwrap();
 
-        // Should consume the regular one first.
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"regular1");
 
-        // Now only last-resort remains; returned but NOT deleted.
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"last_resort");
 
-        // Still there on second consume.
         let kp = db.consume_key_package(uid).unwrap().unwrap();
         assert_eq!(kp, b"last_resort");
     }
@@ -811,12 +911,10 @@ mod tests {
                 .unwrap();
         }
 
-        // Next regular package should be silently skipped (not stored).
         db.store_key_package(uid, b"kp_overflow", false).unwrap();
         let (regular, _) = db.count_key_packages(uid).unwrap();
         assert_eq!(regular, Database::MAX_KEY_PACKAGES_PER_USER);
 
-        // But a last-resort should still work (separate limit).
         db.store_key_package(uid, b"last_resort", true).unwrap();
     }
 
@@ -828,7 +926,6 @@ mod tests {
         db.store_key_package(uid, b"lr1", true).unwrap();
         db.store_key_package(uid, b"lr2", true).unwrap();
 
-        // Only the most recent last-resort should exist.
         let (regular_count, lr_count) = db.count_key_packages(uid).unwrap();
         assert_eq!(regular_count, 0);
         assert_eq!(lr_count, 1);
@@ -850,10 +947,10 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        assert!(db.is_group_member("g1", alice).unwrap());
-        assert!(!db.is_group_member("g1", bob).unwrap());
+        assert!(db.is_group_member(group_id, alice).unwrap());
+        assert!(!db.is_group_member(group_id, bob).unwrap());
     }
 
     #[test]
@@ -862,12 +959,11 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.add_group_member("g1", bob).unwrap();
-        // Adding the same member again should not error.
-        db.add_group_member("g1", bob).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
 
-        let members = db.get_group_members("g1").unwrap();
+        let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 2);
     }
 
@@ -877,12 +973,12 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.add_group_member("g1", bob).unwrap();
-        assert!(db.is_group_member("g1", bob).unwrap());
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+        assert!(db.is_group_member(group_id, bob).unwrap());
 
-        db.remove_group_member("g1", bob).unwrap();
-        assert!(!db.is_group_member("g1", bob).unwrap());
+        db.remove_group_member(group_id, bob).unwrap();
+        assert!(!db.is_group_member(group_id, bob).unwrap());
     }
 
     #[test]
@@ -891,10 +987,9 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        // Removing a non-member should not panic or error.
-        db.remove_group_member("g1", bob).unwrap();
+        db.remove_group_member(group_id, bob).unwrap();
     }
 
     #[test]
@@ -912,15 +1007,15 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.add_group_member("g1", bob).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
 
-        let members = db.get_group_members("g1").unwrap();
+        let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 2);
 
-        db.remove_group_member("g1", bob).unwrap();
+        db.remove_group_member(group_id, bob).unwrap();
 
-        let members = db.get_group_members("g1").unwrap();
+        let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].0, alice);
         assert_eq!(members[0].1, "alice");
@@ -931,17 +1026,17 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        let seq1 = db.store_message("g1", alice, b"msg1").unwrap();
-        let seq2 = db.store_message("g1", alice, b"msg2").unwrap();
-        let seq3 = db.store_message("g1", alice, b"msg3").unwrap();
+        let seq1 = db.store_message(group_id, alice, b"msg1").unwrap();
+        let seq2 = db.store_message(group_id, alice, b"msg2").unwrap();
+        let seq3 = db.store_message(group_id, alice, b"msg3").unwrap();
 
         assert_eq!(seq1, 1);
         assert_eq!(seq2, 2);
         assert_eq!(seq3, 3);
 
-        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].0, 1);
         assert_eq!(msgs[1].0, 2);
@@ -953,9 +1048,9 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert!(msgs.is_empty());
     }
 
@@ -964,14 +1059,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
         for i in 1..=5 {
-            db.store_message("g1", alice, format!("msg{i}").as_bytes())
+            db.store_message(group_id, alice, format!("msg{i}").as_bytes())
                 .unwrap();
         }
 
-        let msgs = db.get_messages("g1", 0, 2).unwrap();
+        let msgs = db.get_messages(group_id, 0, 2).unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].0, 1);
         assert_eq!(msgs[1].0, 2);
@@ -982,14 +1077,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.store_pending_welcome("g1", "test-group", alice, b"welcome_data")
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.store_pending_welcome(group_id, Some("test-group"), alice, b"welcome_data")
             .unwrap();
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
         assert_eq!(welcomes.len(), 1);
-        assert_eq!(welcomes[0].1, "g1");
-        assert_eq!(welcomes[0].2, "test-group");
+        assert_eq!(welcomes[0].1, group_id);
+        assert_eq!(welcomes[0].2, Some("test-group".to_string()));
         assert_eq!(welcomes[0].3, b"welcome_data");
 
         let welcome_id = welcomes[0].0;
@@ -1013,23 +1108,21 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        // Initial insert.
-        db.store_group_info("g1", b"info_v1").unwrap();
-        let info = db.get_group_info("g1").unwrap().unwrap();
+        db.store_group_info(group_id, b"info_v1").unwrap();
+        let info = db.get_group_info(group_id).unwrap().unwrap();
         assert_eq!(info, b"info_v1");
 
-        // Upsert (replace).
-        db.store_group_info("g1", b"info_v2").unwrap();
-        let info = db.get_group_info("g1").unwrap().unwrap();
+        db.store_group_info(group_id, b"info_v2").unwrap();
+        let info = db.get_group_info(group_id).unwrap().unwrap();
         assert_eq!(info, b"info_v2");
     }
 
     #[test]
     fn test_get_group_info_nonexistent() {
         let db = Database::open_in_memory().unwrap();
-        let result = db.get_group_info("nonexistent").unwrap();
+        let result = db.get_group_info(9999).unwrap();
         assert!(result.is_none());
     }
 
@@ -1051,7 +1144,6 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let uid = db.create_user("alice", "hash").unwrap();
 
-        // Deleting when none exist should not error.
         db.delete_key_packages(uid).unwrap();
     }
 
@@ -1078,7 +1170,7 @@ mod tests {
         let bob = db.create_user("bob", "hash").unwrap();
         let charlie = db.create_user("charlie", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
         let mut welcomes = std::collections::HashMap::new();
         welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
@@ -1086,8 +1178,8 @@ mod tests {
 
         let (new_members, seq) = db
             .process_commit(
-                "g1",
-                "test-group",
+                group_id,
+                Some("test-group"),
                 alice,
                 &welcomes,
                 b"group_info",
@@ -1096,8 +1188,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(new_members.len(), 2);
-        assert!(db.is_group_member("g1", bob).unwrap());
-        assert!(db.is_group_member("g1", charlie).unwrap());
+        assert!(db.is_group_member(group_id, bob).unwrap());
+        assert!(db.is_group_member(group_id, charlie).unwrap());
 
         let bob_welcomes = db.get_pending_welcomes(bob).unwrap();
         assert_eq!(bob_welcomes.len(), 1);
@@ -1105,9 +1197,9 @@ mod tests {
         assert_eq!(charlie_welcomes.len(), 1);
 
         assert_eq!(seq, Some(1));
-        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].3, b"commit_msg");
+        assert_eq!(msgs[0].4, b"commit_msg");
     }
 
     #[test]
@@ -1116,18 +1208,25 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
         let mut welcomes = std::collections::HashMap::new();
         welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
 
         let (new_members, seq) = db
-            .process_commit("g1", "test-group", alice, &welcomes, b"group_info", b"")
+            .process_commit(
+                group_id,
+                Some("test-group"),
+                alice,
+                &welcomes,
+                b"group_info",
+                b"",
+            )
             .unwrap();
 
         assert_eq!(new_members.len(), 1);
         assert_eq!(seq, None);
-        let msgs = db.get_messages("g1", 0, 100).unwrap();
+        let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert!(msgs.is_empty());
     }
 
@@ -1136,14 +1235,21 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
         let welcomes = std::collections::HashMap::new();
 
-        db.process_commit("g1", "test-group", alice, &welcomes, b"", b"commit_msg")
-            .unwrap();
+        db.process_commit(
+            group_id,
+            Some("test-group"),
+            alice,
+            &welcomes,
+            b"",
+            b"commit_msg",
+        )
+        .unwrap();
 
-        let info = db.get_group_info("g1").unwrap();
+        let info = db.get_group_info(group_id).unwrap();
         assert!(info.is_none());
     }
 
@@ -1152,14 +1258,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
         let mut welcomes = std::collections::HashMap::new();
         welcomes.insert("nonexistent".to_string(), b"welcome_data".to_vec());
 
         let result = db.process_commit(
-            "g1",
-            "test-group",
+            group_id,
+            Some("test-group"),
             alice,
             &welcomes,
             b"group_info",
@@ -1179,19 +1285,19 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "group-one", alice).unwrap();
-        db.create_group("g2", "group-two", alice).unwrap();
+        let g1 = db.create_group(None, Some("group-one"), alice).unwrap();
+        let g2 = db.create_group(None, Some("group-two"), alice).unwrap();
 
-        db.store_message("g1", alice, b"msg_g1").unwrap();
-        db.store_message("g2", alice, b"msg_g2").unwrap();
+        db.store_message(g1, alice, b"msg_g1").unwrap();
+        db.store_message(g2, alice, b"msg_g2").unwrap();
 
-        let msgs_g1 = db.get_messages("g1", 0, 100).unwrap();
+        let msgs_g1 = db.get_messages(g1, 0, 100).unwrap();
         assert_eq!(msgs_g1.len(), 1);
-        assert_eq!(msgs_g1[0].3, b"msg_g1");
+        assert_eq!(msgs_g1[0].4, b"msg_g1");
 
-        let msgs_g2 = db.get_messages("g2", 0, 100).unwrap();
+        let msgs_g2 = db.get_messages(g2, 0, 100).unwrap();
         assert_eq!(msgs_g2.len(), 1);
-        assert_eq!(msgs_g2[0].3, b"msg_g2");
+        assert_eq!(msgs_g2[0].4, b"msg_g2");
     }
 
     #[test]
@@ -1199,10 +1305,10 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        assert!(db.group_exists("g1").unwrap());
-        assert!(!db.group_exists("nonexistent").unwrap());
+        assert!(db.group_exists(group_id).unwrap());
+        assert!(!db.group_exists(9999).unwrap());
     }
 
     #[test]
@@ -1210,11 +1316,11 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
 
-        db.store_pending_welcome("g1", "test-group", alice, b"welcome_1")
+        db.store_pending_welcome(group_id, Some("test-group"), alice, b"welcome_1")
             .unwrap();
-        db.store_pending_welcome("g1", "test-group", alice, b"welcome_2")
+        db.store_pending_welcome(group_id, Some("test-group"), alice, b"welcome_2")
             .unwrap();
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
@@ -1227,17 +1333,16 @@ mod tests {
         let alice = db.create_user("alice", "hash").unwrap();
         let bob = db.create_user("bob", "hash").unwrap();
 
-        db.create_group("g1", "test-group", alice).unwrap();
-        db.add_group_member("g1", bob).unwrap();
+        let group_id = db.create_group(None, Some("test-group"), alice).unwrap();
+        db.add_group_member(group_id, bob).unwrap();
 
-        db.store_pending_welcome("g1", "test-group", alice, b"welcome_data")
+        db.store_pending_welcome(group_id, Some("test-group"), alice, b"welcome_data")
             .unwrap();
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
         assert_eq!(welcomes.len(), 1);
         let welcome_id = welcomes[0].0;
 
-        // Deleting with the wrong user_id should not remove the welcome.
         db.delete_pending_welcome(welcome_id, bob).unwrap();
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
@@ -1271,8 +1376,6 @@ mod tests {
 
         db.create_session(raw_token, uid, i64::MAX).unwrap();
 
-        // The token is stored as a SHA-256 hash, so querying the sessions table
-        // directly with the raw token should find nothing.
         let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
         let found: Option<i64> = conn
             .prepare("SELECT user_id FROM sessions WHERE token = ?1")
@@ -1285,7 +1388,6 @@ mod tests {
             "raw token should not match the stored hashed token"
         );
 
-        // But the hashed version should be present.
         let token_hash = hash_token(raw_token);
         let found: Option<i64> = conn
             .prepare("SELECT user_id FROM sessions WHERE token = ?1")
@@ -1294,5 +1396,133 @@ mod tests {
             .optional()
             .unwrap();
         assert_eq!(found, Some(uid));
+    }
+
+    #[test]
+    fn test_user_alias() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        // Initially no alias.
+        let user = db.get_user_by_id(uid).unwrap().unwrap();
+        assert!(user.2.is_none());
+
+        // Set alias.
+        db.update_user_alias(uid, Some("Alice Wonderland")).unwrap();
+        let user = db.get_user_by_id(uid).unwrap().unwrap();
+        assert_eq!(user.2, Some("Alice Wonderland".to_string()));
+
+        // Clear alias.
+        db.update_user_alias(uid, None).unwrap();
+        let user = db.get_user_by_id(uid).unwrap().unwrap();
+        assert!(user.2.is_none());
+    }
+
+    #[test]
+    fn test_alias_validation() {
+        assert!(validate_alias("hello").is_ok());
+        assert!(validate_alias("").is_ok());
+        assert!(validate_alias(&"a".repeat(64)).is_ok());
+        assert!(validate_alias(&"a".repeat(65)).is_err());
+        assert!(validate_alias("hello\x00world").is_err());
+        assert!(validate_alias("hello\x1Fworld").is_err());
+        assert!(validate_alias("hello\x7Fworld").is_err());
+    }
+
+    #[test]
+    fn test_group_name_uniqueness() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        db.create_group(Some("my-group"), None, alice).unwrap();
+        let result = db.create_group(Some("my-group"), None, alice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_group_alias_and_name() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        let group_id = db
+            .create_group(Some("dev-chat"), Some("Dev Chat Room"), alice)
+            .unwrap();
+
+        let groups = db.list_user_groups(alice).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, group_id);
+        assert_eq!(groups[0].1, Some("dev-chat".to_string()));
+        assert_eq!(groups[0].2, Some("Dev Chat Room".to_string()));
+
+        // Update alias.
+        db.update_group_alias(group_id, Some("New Dev Chat"))
+            .unwrap();
+        let alias = db.get_group_alias(group_id).unwrap();
+        assert_eq!(alias, Some("New Dev Chat".to_string()));
+    }
+
+    #[test]
+    fn test_alias_validation_control_char_at_start() {
+        assert!(validate_alias("\x01hello").is_err());
+    }
+
+    #[test]
+    fn test_alias_validation_control_char_at_end() {
+        assert!(validate_alias("hello\x1F").is_err());
+    }
+
+    #[test]
+    fn test_alias_validation_tab_char() {
+        assert!(validate_alias("hello\tworld").is_err());
+    }
+
+    #[test]
+    fn test_alias_validation_newline() {
+        assert!(validate_alias("hello\nworld").is_err());
+    }
+
+    #[test]
+    fn test_alias_validation_unicode_allowed() {
+        assert!(validate_alias("日本語テスト").is_ok());
+    }
+
+    #[test]
+    fn test_update_user_alias_to_none() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        db.update_user_alias(uid, Some("Alice")).unwrap();
+        let user = db.get_user_by_id(uid).unwrap().unwrap();
+        assert_eq!(user.2, Some("Alice".to_string()));
+
+        db.update_user_alias(uid, None).unwrap();
+        let user = db.get_user_by_id(uid).unwrap().unwrap();
+        assert!(user.2.is_none());
+    }
+
+    #[test]
+    fn test_update_group_alias_to_none() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        let group_id = db
+            .create_group(Some("dev-chat"), Some("Dev Chat"), alice)
+            .unwrap();
+
+        let alias = db.get_group_alias(group_id).unwrap();
+        assert_eq!(alias, Some("Dev Chat".to_string()));
+
+        db.update_group_alias(group_id, None).unwrap();
+        let alias = db.get_group_alias(group_id).unwrap();
+        assert!(alias.is_none());
+    }
+
+    #[test]
+    fn test_alias_validation_on_update_rejects_invalid() {
+        let db = Database::open_in_memory().unwrap();
+        let uid = db.create_user("alice", "hash").unwrap();
+
+        let result = db.update_user_alias(uid, Some("bad\x01alias"));
+        assert!(result.is_err());
     }
 }

@@ -13,10 +13,10 @@ pub enum SseUpdate {
     Connected,
     Connecting,
     Disconnected,
-    NewMessage { group_id: String },
+    NewMessage { group_id: i64 },
     Welcome,
     GroupUpdate,
-    MemberRemoved { group_id: String, username: String },
+    MemberRemoved { group_id: i64, username: String },
 }
 
 /// State key for the SSE subscription. Keyed by token so the subscription

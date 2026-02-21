@@ -21,14 +21,13 @@ fn setup() -> Router {
     api::router().with_state(app_state)
 }
 
-/// Register a user, log in, and return (user_id, token).
-async fn register_and_login(app: &Router, username: &str) -> (u64, String) {
+async fn register_and_login(app: &Router, username: &str) -> (i64, String) {
     let password = format!("{username}_password");
 
-    // Register
     let req_body = conclave_proto::RegisterRequest {
         username: username.to_string(),
         password: password.clone(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -92,17 +91,16 @@ async fn upload_real_key_packages(app: &Router, token: &str, mls: &MlsManager) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// Create a server-side group with the given members.
-/// Returns (group_id, member_key_packages).
 async fn create_server_group(
     app: &Router,
     token: &str,
     name: &str,
     members: Vec<String>,
-) -> (String, HashMap<String, Vec<u8>>) {
+) -> (i64, HashMap<String, Vec<u8>>) {
     let req_body = conclave_proto::CreateGroupRequest {
-        name: name.to_string(),
+        alias: name.to_string(),
         member_usernames: members,
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -120,11 +118,10 @@ async fn create_server_group(
     (resp.group_id, resp.member_key_packages)
 }
 
-/// Upload a commit (with optional welcomes and group info) to the server.
 async fn upload_commit(
     app: &Router,
     token: &str,
-    group_id: &str,
+    group_id: i64,
     commit_message: Vec<u8>,
     welcome_messages: HashMap<String, Vec<u8>>,
     group_info: Vec<u8>,
@@ -147,8 +144,7 @@ async fn upload_commit(
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// Send an MLS message through the server, returning the sequence number.
-async fn send_mls_message(app: &Router, token: &str, group_id: &str, mls_message: Vec<u8>) -> u64 {
+async fn send_mls_message(app: &Router, token: &str, group_id: i64, mls_message: Vec<u8>) -> u64 {
     let req_body = conclave_proto::SendMessageRequest { mls_message };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -166,11 +162,10 @@ async fn send_mls_message(app: &Router, token: &str, group_id: &str, mls_message
     resp.sequence_num
 }
 
-/// Retrieve messages from the server for a given group.
 async fn get_messages(
     app: &Router,
     token: &str,
-    group_id: &str,
+    group_id: i64,
     after: i64,
 ) -> Vec<conclave_proto::StoredMessage> {
     let request = Request::builder()
@@ -188,7 +183,6 @@ async fn get_messages(
     resp.messages
 }
 
-/// Get pending welcomes for a user.
 async fn get_pending_welcomes(app: &Router, token: &str) -> Vec<conclave_proto::PendingWelcome> {
     let request = Request::builder()
         .method("GET")
@@ -203,7 +197,6 @@ async fn get_pending_welcomes(app: &Router, token: &str) -> Vec<conclave_proto::
     resp.welcomes
 }
 
-/// Accept a pending welcome.
 async fn accept_welcome(app: &Router, token: &str, welcome_id: i64) {
     let request = Request::builder()
         .method("POST")
@@ -228,54 +221,46 @@ async fn test_e2e_group_creation_and_messaging() {
     let bob_dir = TempDir::new().unwrap();
 
     // Register both users and upload real MLS key packages.
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    // Alice creates a server group with bob as a member.
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "test-room", vec!["bob".into()]).await;
 
-    // Alice creates the MLS group client-side using bob's key package from the server.
     let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
         alice_mls.create_group(&member_kps).unwrap();
 
-    // Alice uploads the commit, welcome, and group info to the server.
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map.clone(),
         group_info_bytes,
     )
     .await;
 
-    // Bob retrieves his pending welcome from the server.
     let welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(welcomes.len(), 1);
     assert_eq!(welcomes[0].group_id, server_group_id);
 
-    // Bob joins the MLS group using the welcome message.
     let bob_mls_group_id = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_group_id, mls_group_id);
 
-    // Bob accepts the welcome on the server.
     accept_welcome(&app, &bob_token, welcomes[0].welcome_id).await;
 
-    // Alice encrypts and sends a message through the server.
     let plaintext = b"Hello from Alice!";
     let encrypted = alice_mls.encrypt_message(&mls_group_id, plaintext).unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+    let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
     assert!(seq > 0);
 
-    // Bob retrieves the message from the server and decrypts it.
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     // Find the application message (skip the commit message at seq 1).
     let app_msg = messages
         .iter()
@@ -292,12 +277,11 @@ async fn test_e2e_group_creation_and_messaging() {
         other => panic!("expected Application message, got: {other:?}"),
     }
 
-    // Bob sends a reply that alice decrypts.
     let reply = b"Hello from Bob!";
     let encrypted_reply = bob_mls.encrypt_message(&mls_group_id, reply).unwrap();
-    let reply_seq = send_mls_message(&app, &bob_token, &server_group_id, encrypted_reply).await;
+    let reply_seq = send_mls_message(&app, &bob_token, server_group_id, encrypted_reply).await;
 
-    let messages = get_messages(&app, &alice_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &alice_token, server_group_id, 0).await;
     let reply_msg = messages
         .iter()
         .find(|m| m.sequence_num == reply_seq)
@@ -323,19 +307,18 @@ async fn test_e2e_three_party_messaging() {
     let bob_dir = TempDir::new().unwrap();
     let charlie_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
-    let (_charlie_id, charlie_token) = register_and_login(&app, "charlie").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (charlie_id, charlie_token) = register_and_login(&app, "charlie").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
-    let charlie_mls = MlsManager::new(charlie_dir.path(), "charlie").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
+    let charlie_mls = MlsManager::new(charlie_dir.path(), charlie_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
     upload_real_key_packages(&app, &charlie_token, &charlie_mls).await;
 
-    // Alice creates a group with bob and charlie.
     let (server_group_id, member_kps) = create_server_group(
         &app,
         &alice_token,
@@ -350,14 +333,13 @@ async fn test_e2e_three_party_messaging() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
     )
     .await;
 
-    // Bob and charlie join via their welcome messages.
     let bob_welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(bob_welcomes.len(), 1);
     let bob_mls_gid = bob_mls
@@ -375,12 +357,11 @@ async fn test_e2e_three_party_messaging() {
     assert_eq!(bob_mls_gid, mls_group_id);
     assert_eq!(charlie_mls_gid, mls_group_id);
 
-    // Alice sends a message; both bob and charlie decrypt it.
     let plaintext = b"Group message from Alice";
     let encrypted = alice_mls.encrypt_message(&mls_group_id, plaintext).unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+    let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
 
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     let msg = messages.iter().find(|m| m.sequence_num == seq).unwrap();
 
     let bob_decrypted = bob_mls
@@ -393,7 +374,7 @@ async fn test_e2e_three_party_messaging() {
         other => panic!("bob expected Application, got: {other:?}"),
     }
 
-    let charlie_msgs = get_messages(&app, &charlie_token, &server_group_id, 0).await;
+    let charlie_msgs = get_messages(&app, &charlie_token, server_group_id, 0).await;
     let charlie_msg = charlie_msgs.iter().find(|m| m.sequence_num == seq).unwrap();
 
     let charlie_decrypted = charlie_mls
@@ -415,34 +396,30 @@ async fn test_e2e_post_creation_invite_flow() {
     let alice_dir = TempDir::new().unwrap();
     let bob_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    // Alice creates a group with no additional members.
     let (server_group_id, _) = create_server_group(&app, &alice_token, "solo-room", vec![]).await;
 
-    // Alice creates the MLS group with no members (empty key package map).
     let (mls_group_id, _commit, _welcome_map, group_info_bytes) =
         alice_mls.create_group(&HashMap::new()).unwrap();
 
-    // Upload initial commit (no welcomes).
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         vec![],
         HashMap::new(),
         group_info_bytes,
     )
     .await;
 
-    // Now alice invites bob via the server invite endpoint.
     let req_body = conclave_proto::InviteToGroupRequest {
         usernames: vec!["bob".into()],
     };
@@ -469,27 +446,25 @@ async fn test_e2e_post_creation_invite_flow() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
     )
     .await;
 
-    // Bob retrieves welcome and joins.
     let welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(welcomes.len(), 1);
     let bob_mls_gid = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_gid, mls_group_id);
     accept_welcome(&app, &bob_token, welcomes[0].welcome_id).await;
 
-    // Verify bidirectional messaging works.
     let encrypted = alice_mls
         .encrypt_message(&mls_group_id, b"Post-invite message")
         .unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+    let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
 
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     let msg = messages.iter().find(|m| m.sequence_num == seq).unwrap();
     let decrypted = bob_mls
         .decrypt_message(&mls_group_id, &msg.mls_message)
@@ -511,19 +486,18 @@ async fn test_e2e_member_removal_flow() {
     let bob_dir = TempDir::new().unwrap();
     let charlie_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
-    let (_charlie_id, charlie_token) = register_and_login(&app, "charlie").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (charlie_id, charlie_token) = register_and_login(&app, "charlie").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
-    let charlie_mls = MlsManager::new(charlie_dir.path(), "charlie").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
+    let charlie_mls = MlsManager::new(charlie_dir.path(), charlie_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
     upload_real_key_packages(&app, &charlie_token, &charlie_mls).await;
 
-    // Create three-party group.
     let (server_group_id, member_kps) = create_server_group(
         &app,
         &alice_token,
@@ -537,14 +511,13 @@ async fn test_e2e_member_removal_flow() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
     )
     .await;
 
-    // Bob and charlie join.
     let bob_welcomes = get_pending_welcomes(&app, &bob_token).await;
     let bob_mls_gid = bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
@@ -560,16 +533,14 @@ async fn test_e2e_member_removal_flow() {
     assert_eq!(bob_mls_gid, mls_group_id);
     assert_eq!(charlie_mls_gid, mls_group_id);
 
-    // Alice removes bob from the MLS group.
     let bob_index = alice_mls
-        .find_member_index(&mls_group_id, "bob")
+        .find_member_index(&mls_group_id, bob_id)
         .unwrap()
         .expect("bob should be in the group");
 
     let (remove_commit, remove_group_info) =
         alice_mls.remove_member(&mls_group_id, bob_index).unwrap();
 
-    // Alice tells the server to remove bob.
     let req_body = conclave_proto::RemoveMemberRequest {
         username: "bob".into(),
         commit_message: remove_commit.clone(),
@@ -587,8 +558,7 @@ async fn test_e2e_member_removal_flow() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Charlie retrieves and processes the removal commit.
-    let messages = get_messages(&app, &charlie_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &charlie_token, server_group_id, 0).await;
     let remove_msg = messages.last().expect("removal commit should be stored");
     let decrypted = charlie_mls
         .decrypt_message(&mls_group_id, &remove_msg.mls_message)
@@ -603,14 +573,13 @@ async fn test_e2e_member_removal_flow() {
         other => panic!("charlie expected Commit, got: {other:?}"),
     }
 
-    // Alice sends a message after removal. Charlie can decrypt; bob cannot.
     let post_removal = b"Message after bob removed";
     let encrypted = alice_mls
         .encrypt_message(&mls_group_id, post_removal)
         .unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted.clone()).await;
+    let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted.clone()).await;
 
-    let charlie_msgs = get_messages(&app, &charlie_token, &server_group_id, 0).await;
+    let charlie_msgs = get_messages(&app, &charlie_token, server_group_id, 0).await;
     let msg = charlie_msgs.iter().find(|m| m.sequence_num == seq).unwrap();
     let charlie_decrypted = charlie_mls
         .decrypt_message(&mls_group_id, &msg.mls_message)
@@ -640,16 +609,15 @@ async fn test_e2e_key_rotation_continuity() {
     let alice_dir = TempDir::new().unwrap();
     let bob_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    // Create group with bob.
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "rotation-test", vec!["bob".into()]).await;
 
@@ -658,7 +626,7 @@ async fn test_e2e_key_rotation_continuity() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
@@ -672,27 +640,24 @@ async fn test_e2e_key_rotation_continuity() {
     accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
     assert_eq!(bob_mls_gid, mls_group_id);
 
-    // Send a message before rotation.
     let pre_rotation = b"Before key rotation";
     let encrypted = alice_mls
         .encrypt_message(&mls_group_id, pre_rotation)
         .unwrap();
-    send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+    send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
 
-    // Alice rotates keys (advances epoch).
     let (rotation_commit, rotation_group_info) = alice_mls.rotate_keys(&mls_group_id).unwrap();
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         rotation_commit.clone(),
         HashMap::new(),
         rotation_group_info,
     )
     .await;
 
-    // Bob processes the rotation commit.
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     // Find and process the rotation commit message.
     for msg in &messages {
         let result = bob_mls.decrypt_message(&mls_group_id, &msg.mls_message);
@@ -700,14 +665,13 @@ async fn test_e2e_key_rotation_continuity() {
         let _ = result;
     }
 
-    // Messaging still works after rotation: alice sends, bob decrypts.
     let post_rotation = b"After key rotation";
     let encrypted = alice_mls
         .encrypt_message(&mls_group_id, post_rotation)
         .unwrap();
-    let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+    let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
 
-    let new_messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let new_messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     let msg = new_messages.iter().find(|m| m.sequence_num == seq).unwrap();
     let decrypted = bob_mls
         .decrypt_message(&mls_group_id, &msg.mls_message)
@@ -728,16 +692,15 @@ async fn test_e2e_external_rejoin_after_removal() {
     let alice_dir = TempDir::new().unwrap();
     let bob_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    // Create group and have bob join.
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "rejoin-test", vec!["bob".into()]).await;
 
@@ -746,7 +709,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
@@ -759,9 +722,8 @@ async fn test_e2e_external_rejoin_after_removal() {
         .unwrap();
     accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
 
-    // Alice removes bob.
     let bob_index = alice_mls
-        .find_member_index(&mls_group_id, "bob")
+        .find_member_index(&mls_group_id, bob_id)
         .unwrap()
         .expect("bob should be in the group");
 
@@ -815,13 +777,11 @@ async fn test_e2e_real_key_packages_pass_wire_format_validation() {
     let app = setup();
     let alice_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
 
-    // Generate a single real key package.
     let kp_bytes = alice_mls.generate_key_package().unwrap();
 
-    // Verify the wire format header is correct.
     assert!(kp_bytes.len() >= 4, "key package too short");
     assert_eq!(kp_bytes[0], 0x00, "MLS version high byte");
     assert_eq!(kp_bytes[1], 0x01, "MLS version low byte");
@@ -855,10 +815,10 @@ async fn test_e2e_key_package_roundtrip_through_server() {
     let bob_dir = TempDir::new().unwrap();
 
     let (alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, _bob_token) = register_and_login(&app, "bob").await;
+    let (bob_id, _bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
 
@@ -893,11 +853,11 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     let alice_dir = TempDir::new().unwrap();
     let bob_dir = TempDir::new().unwrap();
 
-    let (_alice_id, alice_token) = register_and_login(&app, "alice").await;
-    let (_bob_id, bob_token) = register_and_login(&app, "bob").await;
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
 
-    let alice_mls = MlsManager::new(alice_dir.path(), "alice").unwrap();
-    let bob_mls = MlsManager::new(bob_dir.path(), "bob").unwrap();
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
 
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
@@ -910,7 +870,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     upload_commit(
         &app,
         &alice_token,
-        &server_group_id,
+        server_group_id,
         commit_bytes,
         welcome_map,
         group_info_bytes,
@@ -930,7 +890,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
         let encrypted = alice_mls
             .encrypt_message(&mls_group_id, plaintext.as_bytes())
             .unwrap();
-        let seq = send_mls_message(&app, &alice_token, &server_group_id, encrypted).await;
+        let seq = send_mls_message(&app, &alice_token, server_group_id, encrypted).await;
         sent_seqs.push(seq);
     }
 
@@ -940,7 +900,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     }
 
     // Bob retrieves and decrypts all messages in order.
-    let messages = get_messages(&app, &bob_token, &server_group_id, 0).await;
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
     let mut decrypted_count = 0;
     for (i, seq) in sent_seqs.iter().enumerate() {
         let msg = messages.iter().find(|m| m.sequence_num == *seq).unwrap();

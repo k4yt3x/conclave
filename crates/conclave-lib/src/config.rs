@@ -95,7 +95,7 @@ impl ClientConfig {
 pub struct SessionState {
     pub server_url: Option<String>,
     pub token: Option<String>,
-    pub user_id: Option<u64>,
+    pub user_id: Option<i64>,
     pub username: Option<String>,
 }
 
@@ -124,7 +124,7 @@ impl SessionState {
     }
 }
 
-pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
+pub fn load_group_mapping(data_dir: &Path) -> HashMap<i64, String> {
     let path = data_dir.join("group_mapping.toml");
     if path.exists() {
         let contents = std::fs::read_to_string(&path).unwrap_or_default();
@@ -134,7 +134,7 @@ pub fn load_group_mapping(data_dir: &Path) -> HashMap<String, String> {
     }
 }
 
-pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<String, String>) {
+pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<i64, String>) {
     let path = data_dir.join("group_mapping.toml");
     if let Ok(contents) = toml::to_string_pretty(mapping) {
         if let Err(error) = std::fs::write(&path, &contents) {
@@ -277,36 +277,36 @@ mod tests {
     fn test_group_mapping_save_and_load() {
         let dir = TempDir::new().unwrap();
         let mut mapping = HashMap::new();
-        mapping.insert("server-uuid-1".into(), "mls-group-1".into());
-        mapping.insert("server-uuid-2".into(), "mls-group-2".into());
+        mapping.insert(1, "mls-group-1".into());
+        mapping.insert(2, "mls-group-2".into());
         save_group_mapping(dir.path(), &mapping);
         let loaded = load_group_mapping(dir.path());
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded.get("server-uuid-1").unwrap(), "mls-group-1");
-        assert_eq!(loaded.get("server-uuid-2").unwrap(), "mls-group-2");
+        assert_eq!(loaded.get(&1).unwrap(), "mls-group-1");
+        assert_eq!(loaded.get(&2).unwrap(), "mls-group-2");
     }
 
     #[test]
     fn test_group_mapping_overwrite() {
         let dir = TempDir::new().unwrap();
         let mut map1 = HashMap::new();
-        map1.insert("key1".into(), "val1".into());
+        map1.insert(1, "val1".into());
         save_group_mapping(dir.path(), &map1);
 
         let mut map2 = HashMap::new();
-        map2.insert("key2".into(), "val2".into());
+        map2.insert(2, "val2".into());
         save_group_mapping(dir.path(), &map2);
 
         let loaded = load_group_mapping(dir.path());
         assert_eq!(loaded.len(), 1);
-        assert!(loaded.contains_key("key2"));
-        assert!(!loaded.contains_key("key1"));
+        assert!(loaded.contains_key(&2));
+        assert!(!loaded.contains_key(&1));
     }
 
     #[test]
     fn test_generate_initial_key_packages_count() {
         let dir = TempDir::new().unwrap();
-        let mls = MlsManager::new(dir.path(), "testuser").unwrap();
+        let mls = MlsManager::new(dir.path(), 1).unwrap();
         let entries = generate_initial_key_packages(&mls).unwrap();
         assert_eq!(entries.len(), 6);
 
@@ -344,13 +344,13 @@ mod tests {
     fn test_group_mapping_empty_values() {
         let dir = TempDir::new().unwrap();
         let mut mapping = HashMap::new();
-        mapping.insert("key1".into(), "".into());
-        mapping.insert("key2".into(), "".into());
+        mapping.insert(1, "".into());
+        mapping.insert(2, "".into());
         save_group_mapping(dir.path(), &mapping);
         let loaded = load_group_mapping(dir.path());
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded.get("key1").unwrap(), "");
-        assert_eq!(loaded.get("key2").unwrap(), "");
+        assert_eq!(loaded.get(&1).unwrap(), "");
+        assert_eq!(loaded.get(&2).unwrap(), "");
     }
 
     #[test]
@@ -358,14 +358,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut mapping = HashMap::new();
         for i in 0..100 {
-            mapping.insert(format!("uuid-{i}"), format!("mls-group-{i}"));
+            mapping.insert(i, format!("mls-group-{i}"));
         }
         save_group_mapping(dir.path(), &mapping);
         let loaded = load_group_mapping(dir.path());
         assert_eq!(loaded.len(), 100);
-        assert_eq!(loaded.get("uuid-0").unwrap(), "mls-group-0");
-        assert_eq!(loaded.get("uuid-50").unwrap(), "mls-group-50");
-        assert_eq!(loaded.get("uuid-99").unwrap(), "mls-group-99");
+        assert_eq!(loaded.get(&0).unwrap(), "mls-group-0");
+        assert_eq!(loaded.get(&50).unwrap(), "mls-group-50");
+        assert_eq!(loaded.get(&99).unwrap(), "mls-group-99");
     }
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn test_generate_initial_key_packages_structure() {
         let dir = TempDir::new().unwrap();
-        let mls = MlsManager::new(dir.path(), "testuser").unwrap();
+        let mls = MlsManager::new(dir.path(), 1).unwrap();
         let entries = generate_initial_key_packages(&mls).unwrap();
         assert_eq!(entries.len(), 6);
 

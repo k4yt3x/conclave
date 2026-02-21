@@ -26,10 +26,11 @@ fn setup() -> Router {
     api::router().with_state(app_state)
 }
 
-async fn register_user(app: &Router, username: &str, password: &str) -> u64 {
+async fn register_user(app: &Router, username: &str, password: &str) -> i64 {
     let req_body = conclave_proto::RegisterRequest {
         username: username.to_string(),
         password: password.to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -72,10 +73,11 @@ async fn login_user(app: &Router, username: &str, password: &str) -> String {
     resp.token
 }
 
-async fn create_group_for(app: &Router, token: &str, name: &str, members: Vec<String>) -> String {
+async fn create_group_for(app: &Router, token: &str, name: &str, members: Vec<String>) -> i64 {
     let req_body = conclave_proto::CreateGroupRequest {
-        name: name.to_string(),
+        alias: name.to_string(),
         member_usernames: members,
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -157,6 +159,7 @@ async fn test_register_duplicate_username() {
     let req_body = conclave_proto::RegisterRequest {
         username: "alice".to_string(),
         password: "password456".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -179,6 +182,7 @@ async fn test_register_empty_username() {
     let req_body = conclave_proto::RegisterRequest {
         username: "".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -201,6 +205,7 @@ async fn test_register_short_password() {
     let req_body = conclave_proto::RegisterRequest {
         username: "alice".to_string(),
         password: "short".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -224,6 +229,7 @@ async fn test_register_long_username() {
     let req_body = conclave_proto::RegisterRequest {
         username: long_name,
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -534,18 +540,19 @@ async fn test_create_group_success() {
     let token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &token, "test-group", vec![]).await;
-    assert!(!group_id.is_empty());
+    assert!(group_id > 0);
 }
 
 #[tokio::test]
-async fn test_create_group_empty_name() {
+async fn test_create_group_empty_alias_and_name() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::CreateGroupRequest {
-        name: "".to_string(),
+        alias: String::new(),
         member_usernames: vec![],
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -559,19 +566,20 @@ async fn test_create_group_empty_name() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::CREATED);
 }
 
 #[tokio::test]
-async fn test_create_group_long_name() {
+async fn test_create_group_long_alias() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    let long_name = "g".repeat(129);
+    let long_alias = "g".repeat(65);
     let req_body = conclave_proto::CreateGroupRequest {
-        name: long_name,
+        alias: long_alias,
         member_usernames: vec![],
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -631,7 +639,7 @@ async fn test_list_groups_with_groups() {
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups.len(), 1);
     assert_eq!(resp.groups[0].group_id, group_id);
-    assert_eq!(resp.groups[0].name, "my-group");
+    assert_eq!(resp.groups[0].alias, "my-group");
 }
 
 // ── Message Tests (25-29) ─────────────────────────────────────────
@@ -1612,6 +1620,7 @@ async fn test_register_unicode_username_rejected() {
     let req_body = conclave_proto::RegisterRequest {
         username: "héllo_wörld".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let body = req_body.encode_to_vec();
     let request = Request::builder()
@@ -1630,6 +1639,7 @@ async fn test_register_username_with_spaces() {
     let req_body = conclave_proto::RegisterRequest {
         username: "has spaces".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1649,6 +1659,7 @@ async fn test_register_username_with_control_chars() {
     let req_body = conclave_proto::RegisterRequest {
         username: "user\x00name".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2090,8 +2101,9 @@ async fn test_create_group_with_member_returns_key_packages() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp_data")).await;
 
     let req_body = conclave_proto::CreateGroupRequest {
-        name: "kp-test-group".to_string(),
+        alias: "kp-test-group".to_string(),
         member_usernames: vec!["bob".to_string()],
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2122,8 +2134,9 @@ async fn test_create_group_member_no_key_package() {
     register_user(&app, "bob", "password123").await;
 
     let req_body = conclave_proto::CreateGroupRequest {
-        name: "no-kp-group".to_string(),
+        alias: "no-kp-group".to_string(),
         member_usernames: vec!["bob".to_string()],
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2145,8 +2158,9 @@ async fn test_create_group_nonexistent_member() {
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::CreateGroupRequest {
-        name: "ghost-group".to_string(),
+        alias: "ghost-group".to_string(),
         member_usernames: vec!["ghost_user".to_string()],
+        group_name: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2395,7 +2409,7 @@ async fn test_send_message_to_nonexistent_group() {
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/nonexistent-group/messages")
+        .uri("/api/v1/groups/999999/messages")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
@@ -2496,7 +2510,7 @@ async fn test_external_join_nonexistent_group() {
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/nonexistent-id/external-join")
+        .uri("/api/v1/groups/999999/external-join")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
@@ -2562,6 +2576,7 @@ async fn test_register_username_starting_with_underscore() {
     let req_body = conclave_proto::RegisterRequest {
         username: "_underscored".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2583,6 +2598,7 @@ async fn test_register_username_starting_with_dot() {
     let req_body = conclave_proto::RegisterRequest {
         username: ".dotted".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2604,6 +2620,7 @@ async fn test_register_username_starting_with_hyphen() {
     let req_body = conclave_proto::RegisterRequest {
         username: "-hyphenated".to_string(),
         password: "password123".to_string(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2632,6 +2649,7 @@ async fn test_register_empty_password() {
     let req_body = conclave_proto::RegisterRequest {
         username: "validuser".to_string(),
         password: String::new(),
+        alias: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2769,14 +2787,14 @@ async fn test_get_messages_limit_capped_at_500() {
 // ── Group Name Validation ─────────────────────────────────────────
 
 #[tokio::test]
-async fn test_create_group_name_exactly_128_chars() {
+async fn test_create_group_alias_exactly_64_chars() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    let group_name = "g".repeat(128);
-    let group_id = create_group_for(&app, &token, &group_name, vec![]).await;
-    assert!(!group_id.is_empty());
+    let group_alias = "g".repeat(64);
+    let group_id = create_group_for(&app, &token, &group_alias, vec![]).await;
+    assert!(group_id > 0);
 }
 
 // ── Auth Header Format ────────────────────────────────────────────
@@ -3094,4 +3112,356 @@ async fn test_external_join_requires_membership() {
         StatusCode::UNAUTHORIZED,
         "non-member should be rejected from external join"
     );
+}
+
+// ── PATCH /api/v1/me Tests ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_update_profile_alias() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "Alice W.".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let profile = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
+    assert_eq!(profile.alias, "Alice W.");
+}
+
+#[tokio::test]
+async fn test_update_profile_clear_alias() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "Alice W.".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let profile = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
+    assert_eq!(profile.alias, "");
+}
+
+#[tokio::test]
+async fn test_update_profile_invalid_alias() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "bad\x00alias".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_profile_unauthenticated() {
+    let app = setup();
+
+    let request_body = conclave_proto::UpdateProfileRequest {
+        alias: "Alice W.".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/me")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── PATCH /api/v1/groups/{id} Tests ──────────────────────────────
+
+#[tokio::test]
+async fn test_update_group_alias_by_creator() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "original-alias", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: "updated-alias".to_string(),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(groups_response.groups.len(), 1);
+    assert_eq!(groups_response.groups[0].alias, "updated-alias");
+}
+
+#[tokio::test]
+async fn test_update_group_name_by_creator() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "my-group", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: String::new(),
+        group_name: "new-group-name".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(groups_response.groups.len(), 1);
+    assert_eq!(groups_response.groups[0].group_name, "new-group-name");
+}
+
+#[tokio::test]
+async fn test_update_group_non_creator_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
+
+    let group_id =
+        create_group_for(&app, &alice_token, "alice-group", vec!["bob".to_string()]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: "hijacked".to_string(),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_update_group_not_found() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: "phantom".to_string(),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/groups/99999")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_update_group_duplicate_group_name() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let first_group_body = conclave_proto::CreateGroupRequest {
+        alias: "first".to_string(),
+        member_usernames: vec![],
+        group_name: "unique-name".to_string(),
+    };
+    let mut body = Vec::new();
+    first_group_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let second_group_id = create_group_for(&app, &token, "second", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: String::new(),
+        group_name: "unique-name".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{second_group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_update_group_invalid_alias() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "my-group", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: "a".repeat(65),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

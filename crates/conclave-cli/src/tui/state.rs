@@ -2,22 +2,19 @@ use std::collections::HashMap;
 
 pub use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
 
-/// Central application state.
 pub struct AppState {
     // Identity
     pub username: Option<String>,
-    pub user_id: Option<u64>,
+    pub user_id: Option<i64>,
     pub logged_in: bool,
 
     // Rooms
-    pub rooms: HashMap<String, Room>,
-    /// Server group ID of the currently active room.
-    pub active_room: Option<String>,
-    /// Per-room display messages (keyed by server group ID).
-    pub room_messages: HashMap<String, Vec<DisplayMessage>>,
+    pub rooms: HashMap<i64, Room>,
+    pub active_room: Option<i64>,
+    pub room_messages: HashMap<i64, Vec<DisplayMessage>>,
 
-    // Group mapping (server UUID -> MLS group ID hex).
-    pub group_mapping: HashMap<String, String>,
+    // Group mapping (server group ID -> MLS group ID hex).
+    pub group_mapping: HashMap<i64, String>,
 
     // Connection
     pub connection_status: ConnectionStatus,
@@ -49,7 +46,6 @@ impl AppState {
         }
     }
 
-    /// Get the display messages for the active room, or system messages if no room is active.
     pub fn active_messages(&self) -> &[DisplayMessage] {
         if let Some(room_id) = &self.active_room {
             self.room_messages
@@ -61,33 +57,45 @@ impl AppState {
         }
     }
 
-    /// Get the active Room, if any.
     pub fn active_room_info(&self) -> Option<&Room> {
         self.active_room.as_ref().and_then(|id| self.rooms.get(id))
     }
 
-    /// Find a room by name (case-insensitive prefix match).
-    pub fn find_room_by_name(&self, name: &str) -> Option<&Room> {
+    /// Find a room by display name (alias or group_name), case-insensitive.
+    /// Falls back to prefix match, then tries parsing as i64 for direct ID lookup.
+    pub fn resolve_room(&self, name: &str) -> Option<&Room> {
         let lower = name.to_lowercase();
-        self.rooms
+
+        // Exact match on display name.
+        if let Some(room) = self
+            .rooms
             .values()
-            .find(|r| r.name.to_lowercase() == lower)
-            .or_else(|| {
-                self.rooms
-                    .values()
-                    .find(|r| r.name.to_lowercase().starts_with(&lower))
-            })
+            .find(|r| r.display_name().to_lowercase() == lower)
+        {
+            return Some(room);
+        }
+
+        // Prefix match on display name.
+        if let Some(room) = self
+            .rooms
+            .values()
+            .find(|r| r.display_name().to_lowercase().starts_with(&lower))
+        {
+            return Some(room);
+        }
+
+        // Direct ID lookup.
+        if let Ok(id) = name.parse::<i64>() {
+            return self.rooms.get(&id);
+        }
+
+        None
     }
 
-    /// Push a message to a room's history.
-    pub fn push_room_message(&mut self, group_id: &str, msg: DisplayMessage) {
-        self.room_messages
-            .entry(group_id.to_string())
-            .or_default()
-            .push(msg);
+    pub fn push_room_message(&mut self, group_id: i64, msg: DisplayMessage) {
+        self.room_messages.entry(group_id).or_default().push(msg);
     }
 
-    /// Push a system message.
     pub fn push_system_message(&mut self, msg: DisplayMessage) {
         self.system_messages.push(msg);
     }
@@ -96,12 +104,18 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conclave_lib::state::RoomMember;
 
-    fn make_room(id: &str, name: &str) -> Room {
+    fn make_room(id: i64, name: &str) -> Room {
         Room {
-            server_group_id: id.to_string(),
-            name: name.to_string(),
-            members: vec!["alice".to_string()],
+            server_group_id: id,
+            group_name: Some(name.to_string()),
+            alias: None,
+            members: vec![RoomMember {
+                user_id: 1,
+                username: "alice".to_string(),
+                alias: None,
+            }],
             last_seen_seq: 0,
             last_read_seq: 0,
         }
@@ -127,8 +141,8 @@ mod tests {
     #[test]
     fn test_active_messages_with_room() {
         let mut state = AppState::new();
-        state.active_room = Some("g1".to_string());
-        state.push_room_message("g1", DisplayMessage::user("alice", "hi", 100));
+        state.active_room = Some(1);
+        state.push_room_message(1, DisplayMessage::user("alice", "hi", 100));
         let msgs = state.active_messages();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hi");
@@ -137,52 +151,51 @@ mod tests {
     #[test]
     fn test_active_messages_empty_room() {
         let mut state = AppState::new();
-        state.active_room = Some("g1".to_string());
+        state.active_room = Some(1);
         let msgs = state.active_messages();
         assert!(msgs.is_empty());
     }
 
     #[test]
-    fn test_find_room_by_name_exact() {
+    fn test_resolve_room_exact() {
         let mut state = AppState::new();
-        state
-            .rooms
-            .insert("g1".to_string(), make_room("g1", "general"));
-        assert!(state.find_room_by_name("general").is_some());
+        state.rooms.insert(1, make_room(1, "general"));
+        assert!(state.resolve_room("general").is_some());
     }
 
     #[test]
-    fn test_find_room_by_name_case_insensitive() {
+    fn test_resolve_room_case_insensitive() {
         let mut state = AppState::new();
-        state
-            .rooms
-            .insert("g1".to_string(), make_room("g1", "general"));
-        assert!(state.find_room_by_name("GENERAL").is_some());
+        state.rooms.insert(1, make_room(1, "general"));
+        assert!(state.resolve_room("GENERAL").is_some());
     }
 
     #[test]
-    fn test_find_room_by_name_prefix() {
+    fn test_resolve_room_prefix() {
         let mut state = AppState::new();
-        state
-            .rooms
-            .insert("g1".to_string(), make_room("g1", "general"));
-        assert!(state.find_room_by_name("gen").is_some());
+        state.rooms.insert(1, make_room(1, "general"));
+        assert!(state.resolve_room("gen").is_some());
     }
 
     #[test]
-    fn test_find_room_by_name_not_found() {
+    fn test_resolve_room_by_id() {
         let mut state = AppState::new();
-        state
-            .rooms
-            .insert("g1".to_string(), make_room("g1", "general"));
-        assert!(state.find_room_by_name("xyz").is_none());
+        state.rooms.insert(42, make_room(42, "general"));
+        assert!(state.resolve_room("42").is_some());
+    }
+
+    #[test]
+    fn test_resolve_room_not_found() {
+        let mut state = AppState::new();
+        state.rooms.insert(1, make_room(1, "general"));
+        assert!(state.resolve_room("xyz").is_none());
     }
 
     #[test]
     fn test_push_room_message() {
         let mut state = AppState::new();
-        state.push_room_message("g1", DisplayMessage::user("alice", "hi", 100));
-        assert_eq!(state.room_messages["g1"].len(), 1);
+        state.push_room_message(1, DisplayMessage::user("alice", "hi", 100));
+        assert_eq!(state.room_messages[&1].len(), 1);
     }
 
     #[test]
@@ -195,12 +208,13 @@ mod tests {
     #[test]
     fn test_active_room_info() {
         let mut state = AppState::new();
-        state.active_room = Some("g1".to_string());
-        state
-            .rooms
-            .insert("g1".to_string(), make_room("g1", "general"));
+        state.active_room = Some(1);
+        state.rooms.insert(1, make_room(1, "general"));
         assert!(state.active_room_info().is_some());
-        assert_eq!(state.active_room_info().unwrap().name, "general");
+        assert_eq!(
+            state.active_room_info().map(|r| r.display_name()),
+            Some("general".to_string())
+        );
     }
 
     #[test]
@@ -224,5 +238,45 @@ mod tests {
         assert!(msg.is_system);
         assert_eq!(msg.sender, "");
         assert_eq!(msg.content, "joined");
+    }
+
+    #[test]
+    fn test_resolve_room_empty_input() {
+        let state = AppState::new();
+        assert!(state.resolve_room("").is_none());
+    }
+
+    #[test]
+    fn test_resolve_room_numeric_group_name_vs_id() {
+        let mut state = AppState::new();
+        state.rooms.insert(1, make_room(1, "room-one"));
+        state.rooms.insert(2, make_room(2, "1"));
+
+        // "1" matches group_name "1" (server_group_id=2) via exact name match,
+        // which takes priority over the numeric ID fallback to server_group_id=1.
+        let resolved = state.resolve_room("1");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().server_group_id, 2);
+    }
+
+    #[test]
+    fn test_resolve_room_both_alias_and_group_name_searchable() {
+        let mut state = AppState::new();
+        let mut room = make_room(1, "general");
+        room.alias = Some("My Chat".to_string());
+        state.rooms.insert(1, room);
+
+        assert!(state.resolve_room("My Chat").is_some());
+        assert!(state.resolve_room("general").is_none());
+    }
+
+    #[test]
+    fn test_resolve_room_multiple_prefix_matches() {
+        let mut state = AppState::new();
+        state.rooms.insert(1, make_room(1, "general"));
+        state.rooms.insert(2, make_room(2, "gen-admin"));
+
+        let resolved = state.resolve_room("gen");
+        assert!(resolved.is_some());
     }
 }

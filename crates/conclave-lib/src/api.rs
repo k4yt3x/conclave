@@ -98,10 +98,12 @@ impl ApiClient {
         &self,
         username: &str,
         password: &str,
+        alias: Option<&str>,
     ) -> Result<conclave_proto::RegisterResponse> {
         let request = conclave_proto::RegisterRequest {
             username: username.to_string(),
             password: password.to_string(),
+            alias: alias.unwrap_or_default().to_string(),
         };
         let bytes = self.post("/api/v1/register", &request).await?;
         Ok(conclave_proto::RegisterResponse::decode(bytes.as_slice())?)
@@ -184,12 +186,14 @@ impl ApiClient {
 
     pub async fn create_group(
         &self,
-        name: &str,
+        alias: Option<&str>,
+        group_name: Option<&str>,
         member_usernames: Vec<String>,
     ) -> Result<conclave_proto::CreateGroupResponse> {
         let request = conclave_proto::CreateGroupRequest {
-            name: name.to_string(),
+            alias: alias.unwrap_or_default().to_string(),
             member_usernames,
+            group_name: group_name.unwrap_or_default().to_string(),
         };
         let bytes = self.post("/api/v1/groups", &request).await?;
         Ok(conclave_proto::CreateGroupResponse::decode(
@@ -206,7 +210,7 @@ impl ApiClient {
 
     pub async fn invite_to_group(
         &self,
-        group_id: &str,
+        group_id: i64,
         usernames: Vec<String>,
     ) -> Result<conclave_proto::InviteToGroupResponse> {
         let request = conclave_proto::InviteToGroupRequest { usernames };
@@ -220,7 +224,7 @@ impl ApiClient {
 
     pub async fn upload_commit(
         &self,
-        group_id: &str,
+        group_id: i64,
         commit_message: Vec<u8>,
         welcome_messages: std::collections::HashMap<String, Vec<u8>>,
         group_info: Vec<u8>,
@@ -239,7 +243,7 @@ impl ApiClient {
 
     pub async fn send_message(
         &self,
-        group_id: &str,
+        group_id: i64,
         mls_message: Vec<u8>,
     ) -> Result<conclave_proto::SendMessageResponse> {
         let request = conclave_proto::SendMessageRequest { mls_message };
@@ -253,7 +257,7 @@ impl ApiClient {
 
     pub async fn get_messages(
         &self,
-        group_id: &str,
+        group_id: i64,
         after: i64,
     ) -> Result<conclave_proto::GetMessagesResponse> {
         let bytes = self
@@ -308,7 +312,7 @@ impl ApiClient {
 
     pub async fn remove_member(
         &self,
-        group_id: &str,
+        group_id: i64,
         username: &str,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
@@ -325,7 +329,7 @@ impl ApiClient {
 
     pub async fn leave_group(
         &self,
-        group_id: &str,
+        group_id: i64,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
@@ -340,7 +344,7 @@ impl ApiClient {
 
     pub async fn get_group_info(
         &self,
-        group_id: &str,
+        group_id: i64,
     ) -> Result<conclave_proto::GetGroupInfoResponse> {
         let bytes = self
             .get(&format!("/api/v1/groups/{group_id}/group-info"))
@@ -350,7 +354,7 @@ impl ApiClient {
         )?)
     }
 
-    pub async fn external_join(&self, group_id: &str, commit_message: Vec<u8>) -> Result<()> {
+    pub async fn external_join(&self, group_id: i64, commit_message: Vec<u8>) -> Result<()> {
         let request = conclave_proto::ExternalJoinRequest { commit_message };
         self.post(
             &format!("/api/v1/groups/{group_id}/external-join"),
@@ -402,5 +406,68 @@ impl ApiClient {
             .header("Authorization", format!("Bearer {token}"));
         Ok(EventSource::new(builder)
             .map_err(|e| Error::Other(format!("SSE connection failed: {e}")))?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_no_scheme() {
+        assert_eq!(normalize_server_url("example.com"), "https://example.com");
+    }
+
+    #[test]
+    fn test_normalize_with_port() {
+        assert_eq!(
+            normalize_server_url("example.com:8443"),
+            "https://example.com:8443"
+        );
+    }
+
+    #[test]
+    fn test_normalize_https_preserved() {
+        assert_eq!(
+            normalize_server_url("https://example.com"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_http_preserved() {
+        assert_eq!(
+            normalize_server_url("http://example.com"),
+            "http://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_trailing_slash_stripped() {
+        assert_eq!(
+            normalize_server_url("https://example.com/"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_multiple_trailing_slashes() {
+        assert_eq!(
+            normalize_server_url("https://example.com///"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_string() {
+        assert_eq!(normalize_server_url(""), "");
+    }
+
+    #[test]
+    fn test_normalize_with_path() {
+        assert_eq!(
+            normalize_server_url("example.com/api"),
+            "https://example.com/api"
+        );
     }
 }

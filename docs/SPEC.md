@@ -62,7 +62,7 @@ conclave/
 │   │       ├── mls.rs                  # MlsManager (mls-rs operations with SQLite storage)
 │   │       ├── config.rs              # ClientConfig, SessionState, group mapping I/O, key package generation
 │   │       ├── error.rs                # Client error types
-│   │       ├── state.rs               # Room, DisplayMessage, ConnectionStatus
+│   │       ├── state.rs               # Room, RoomMember, DisplayMessage, ConnectionStatus
 │   │       ├── store.rs               # SQLite-backed message history persistence
 │   │       └── command.rs             # Command enum and parser
 │   ├── conclave-cli/                   # CLI/TUI client binary
@@ -171,6 +171,7 @@ The server uses a single SQLite database with WAL journal mode and foreign keys 
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
+    alias TEXT,
     password_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -191,21 +192,22 @@ CREATE TABLE key_packages (
 );
 
 CREATE TABLE groups (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_name TEXT UNIQUE,
+    alias TEXT,
     creator_id INTEGER NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE group_members (
-    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     PRIMARY KEY (group_id, user_id)
 );
 
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     sender_id INTEGER NOT NULL REFERENCES users(id),
     mls_message BLOB NOT NULL,
     sequence_num INTEGER NOT NULL,
@@ -215,8 +217,8 @@ CREATE TABLE messages (
 
 CREATE TABLE pending_welcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    group_name TEXT NOT NULL,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    group_alias TEXT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     welcome_data BLOB NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -224,7 +226,7 @@ CREATE TABLE pending_welcomes (
 CREATE INDEX idx_pending_welcomes_user ON pending_welcomes(user_id);
 
 CREATE TABLE group_infos (
-    group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+    group_id INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
     group_info_data BLOB NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -232,7 +234,7 @@ CREATE TABLE group_infos (
 
 ### 3.3 Authentication
 
-- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. Password is hashed with Argon2id and stored.
+- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored.
 - **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it. To prevent username enumeration via timing analysis, the server runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist, ensuring both code paths have equivalent computational profiles.
 - **Authenticated requests**: Client sends `Authorization: Bearer <token>` header. Server validates against the `sessions` table, checking expiry. An `AuthUser` axum extractor handles this transparently for all protected endpoints.
 - **Key packages**: Each user maintains up to 10 regular key packages plus 1 last-resort package. Regular packages are consumed FIFO (oldest first) and deleted on consumption. The last-resort package is returned but never deleted when all regular packages are exhausted, ensuring the user is always reachable (RFC 9420 Section 16.6). Uploading a new last-resort package replaces the previous one. Clients pre-publish 5 regular + 1 last-resort on registration/login/reset and replenish after each consumption. The server validates key package uploads by checking the MLS wire format header (version must be MLS 1.0, wire format must be `mls_key_package`) per RFC 9420 Section 6.
@@ -255,10 +257,12 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 |--------|-------------------------------------|-----------------------|-----------------------------|------------------------------------------|
 | POST   | `/api/v1/logout`                    | —                     | —                           | Revoke session token                     |
 | GET    | `/api/v1/me`                        | —                     | UserInfoResponse            | Get current user info                    |
+| PATCH  | `/api/v1/me`                        | UpdateProfileRequest  | UpdateProfileResponse       | Update user alias                        |
 | GET    | `/api/v1/users/{username}`          | —                     | UserInfoResponse            | Look up user by username                 |
 | POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
 | POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group, get member key packages    |
+| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (creator only)   |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
 | POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members, get their key packages   |
 | POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + welcome messages     |
@@ -288,8 +292,8 @@ The `/api/v1/events` endpoint provides a Server-Sent Events stream. Events are h
 Event types:
 - **NewMessageEvent**: New message in a group (group_id, sequence_num, sender_id).
 - **GroupUpdateEvent**: Group state changed, e.g., a commit was uploaded (group_id, update_type).
-- **WelcomeEvent**: User was invited to a group (group_id, group_name).
-- **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_username). Sent to both remaining members and the removed user.
+- **WelcomeEvent**: User was invited to a group (group_id, group_alias).
+- **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_user_id, removed_username). Sent to both remaining members and the removed user.
 - **lagged** (transport-level): Sent when the client's SSE stream falls behind the broadcast channel buffer. The `event` field is `"lagged"` and the `data` field contains the number of dropped events as a string. Clients should treat this as a signal to re-fetch group state. This is not a protobuf `ServerEvent` — it is a raw SSE event emitted by the transport layer.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
@@ -326,14 +330,14 @@ The client persists the following files in `data_dir`:
 | `mls_identity.bin`    | MLS codec     | Serialized `SigningIdentity` (public key + credential)      |
 | `mls_signing_key.bin` | Raw bytes     | `SignatureSecretKey` (private key material)                  |
 | `mls_state.db`        | SQLite        | mls-rs group state, key packages, PSKs (via mls-rs-provider-sqlite) |
-| `group_mapping.toml`  | TOML          | Map of server group UUID to MLS group ID (hex)              |
+| `group_mapping.toml`  | TOML          | Map of server group ID (i64) to MLS group ID (hex string)   |
 | `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking    |
 
 ### 4.3 MLS Integration
 
 - **Cipher suite**: `CURVE448_CHACHA` (MLS cipher suite 6 — X448, ChaCha20-Poly1305, SHA-512, Ed448, 256-bit security)
 - **Crypto backend**: OpenSSL via `mls-rs-crypto-openssl`
-- **Identity**: `BasicCredential` with username bytes (suitable for the current trust model; X.509 can be added later)
+- **Identity**: `BasicCredential` with user ID bytes (i64, big-endian, 8 bytes). Using integer IDs instead of usernames ensures credential stability when display names change.
 - **Storage**: SQLite-backed via `mls-rs-provider-sqlite` with `FileConnectionStrategy`
 
 #### Epoch Retention
@@ -515,4 +519,4 @@ Alice                               Server                              Bob
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome`, `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent`, `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo`, `GroupMember` (with `user_id`, `username`, `alias`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response`, `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`), `ErrorResponse`, `UserInfoResponse`.

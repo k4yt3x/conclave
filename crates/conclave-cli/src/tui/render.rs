@@ -62,7 +62,7 @@ pub fn render_status_line(
 
     let room_info = if let Some(room) = state.active_room_info() {
         let member_count = room.members.len();
-        let name = sanitize_for_terminal(&room.name);
+        let name = sanitize_for_terminal(&room.display_name());
         format!("#{name} ({member_count})")
     } else {
         String::from("no room")
@@ -95,7 +95,7 @@ pub fn render_input_line(
     )?;
 
     let prefix = if let Some(room) = state.active_room_info() {
-        let name = sanitize_for_terminal(&room.name);
+        let name = sanitize_for_terminal(&room.display_name());
         format!("[#{name}] ")
     } else {
         String::from("> ")

@@ -14,7 +14,7 @@ use crate::widget::message_view;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    RoomSelected(String),
+    RoomSelected(i64),
     InputChanged(String),
     InputSubmitted,
     ToggleUserPopover,
@@ -40,9 +40,9 @@ impl Dashboard {
 
     pub fn view<'a>(
         &'a self,
-        rooms: &'a HashMap<String, Room>,
-        active_room: &'a Option<String>,
-        room_messages: &'a HashMap<String, Vec<DisplayMessage>>,
+        rooms: &'a HashMap<i64, Room>,
+        active_room: &'a Option<i64>,
+        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
@@ -74,8 +74,8 @@ impl Dashboard {
 
     fn view_sidebar<'a>(
         &'a self,
-        rooms: &'a HashMap<String, Room>,
-        active_room: &'a Option<String>,
+        rooms: &'a HashMap<i64, Room>,
+        active_room: &'a Option<i64>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
         server_url: &'a Option<String>,
@@ -91,16 +91,17 @@ impl Dashboard {
         let mut room_list = column![].spacing(2).padding([0, 8]);
 
         let mut sorted_rooms: Vec<_> = rooms.values().collect();
-        sorted_rooms.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted_rooms.sort_by(|a, b| a.display_name().cmp(&b.display_name()));
 
         for room in sorted_rooms {
-            let is_active = active_room.as_ref() == Some(&room.server_group_id);
+            let is_active = active_room == &Some(room.server_group_id);
             let unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
+            let display_name = room.display_name();
 
             let label = if unread > 0 {
-                format!("# {} ({})", room.name, unread)
+                format!("# {display_name} ({unread})")
             } else {
-                format!("# {}", room.name)
+                format!("# {display_name}")
             };
 
             let style: Box<dyn Fn(&theme::Theme, _) -> _> = if is_active {
@@ -254,9 +255,9 @@ impl Dashboard {
 
     fn view_main_area<'a>(
         &'a self,
-        rooms: &'a HashMap<String, Room>,
-        active_room: &'a Option<String>,
-        room_messages: &'a HashMap<String, Vec<DisplayMessage>>,
+        rooms: &'a HashMap<i64, Room>,
+        active_room: &'a Option<i64>,
+        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
     ) -> Element<'a, Message> {
         let messages = self.view_messages(active_room, room_messages, system_messages);
@@ -272,8 +273,8 @@ impl Dashboard {
 
     fn view_title_bar<'a>(
         &'a self,
-        rooms: &'a HashMap<String, Room>,
-        active_room: &'a Option<String>,
+        rooms: &'a HashMap<i64, Room>,
+        active_room: &'a Option<i64>,
     ) -> Element<'a, Message> {
         let toggle_label = if self.show_members_sidebar { ">" } else { "<" };
         let toggle_btn = button(
@@ -288,7 +289,7 @@ impl Dashboard {
         let content: Element<'a, Message> = match active_room {
             Some(room_id) => {
                 if let Some(room) = rooms.get(room_id) {
-                    let name = text(format!("#{}", room.name))
+                    let name = text(format!("#{}", room.display_name()))
                         .size(14)
                         .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>);
                     let members = text(format!("  ({} members)", room.members.len()))
@@ -326,17 +327,17 @@ impl Dashboard {
 
     fn view_members_sidebar<'a>(
         &'a self,
-        rooms: &'a HashMap<String, Room>,
-        active_room: &'a Option<String>,
+        rooms: &'a HashMap<i64, Room>,
+        active_room: &'a Option<i64>,
     ) -> Element<'a, Message> {
         let mut member_list = column![].spacing(2).padding([8, 12]);
 
-        if let Some(room) = active_room.as_ref().and_then(|id| rooms.get(id)) {
-            let mut sorted_indices: Vec<usize> = (0..room.members.len()).collect();
-            sorted_indices.sort_by(|a, b| room.members[*a].cmp(&room.members[*b]));
-            for index in sorted_indices {
+        if let Some(room) = active_room.and_then(|id| rooms.get(&id)) {
+            let mut sorted_members: Vec<&_> = room.members.iter().collect();
+            sorted_members.sort_by(|a, b| a.display_name().cmp(b.display_name()));
+            for member in sorted_members {
                 member_list = member_list.push(
-                    text(&room.members[index])
+                    text(member.display_name())
                         .size(13)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
                 );
@@ -352,8 +353,8 @@ impl Dashboard {
 
     fn view_messages<'a>(
         &'a self,
-        active_room: &'a Option<String>,
-        room_messages: &'a HashMap<String, Vec<DisplayMessage>>,
+        active_room: &'a Option<i64>,
+        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
     ) -> Element<'a, Message> {
         let messages: &[DisplayMessage] = match active_room {

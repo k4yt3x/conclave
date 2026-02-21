@@ -33,7 +33,7 @@ impl MessageStore {
 
              CREATE TABLE IF NOT EXISTS messages (
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 group_id   TEXT    NOT NULL,
+                 group_id   INTEGER NOT NULL,
                  sender     TEXT    NOT NULL,
                  content    TEXT    NOT NULL,
                  timestamp  INTEGER NOT NULL,
@@ -43,7 +43,7 @@ impl MessageStore {
                  ON messages(group_id);
 
              CREATE TABLE IF NOT EXISTS room_state (
-                 group_id      TEXT PRIMARY KEY,
+                 group_id      INTEGER PRIMARY KEY,
                  last_seen_seq INTEGER NOT NULL DEFAULT 0,
                  last_read_seq INTEGER NOT NULL DEFAULT 0
              );",
@@ -66,7 +66,7 @@ impl MessageStore {
     }
 
     /// Append a message to the history for a room.
-    pub fn push_message(&self, group_id: &str, msg: &DisplayMessage) {
+    pub fn push_message(&self, group_id: i64, msg: &DisplayMessage) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO messages (group_id, sender, content, timestamp, is_system)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -83,7 +83,7 @@ impl MessageStore {
     }
 
     /// Load recent messages for a room (last 1000), ordered chronologically.
-    pub fn load_messages(&self, group_id: &str) -> Vec<DisplayMessage> {
+    pub fn load_messages(&self, group_id: i64) -> Vec<DisplayMessage> {
         let mut stmt = match self.conn.prepare(
             "SELECT sender, content, timestamp, is_system
              FROM (SELECT * FROM messages WHERE group_id = ?1 ORDER BY id DESC LIMIT 1000)
@@ -109,7 +109,7 @@ impl MessageStore {
     }
 
     /// Get the last seen sequence number for a room.
-    pub fn get_last_seen_seq(&self, group_id: &str) -> u64 {
+    pub fn get_last_seen_seq(&self, group_id: i64) -> u64 {
         self.conn
             .query_row(
                 "SELECT last_seen_seq FROM room_state WHERE group_id = ?1",
@@ -120,7 +120,7 @@ impl MessageStore {
     }
 
     /// Update the last seen sequence number for a room.
-    pub fn set_last_seen_seq(&self, group_id: &str, sequence_number: u64) {
+    pub fn set_last_seen_seq(&self, group_id: i64, sequence_number: u64) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, ?2, 0)
              ON CONFLICT(group_id) DO UPDATE SET last_seen_seq = excluded.last_seen_seq",
@@ -131,7 +131,7 @@ impl MessageStore {
     }
 
     /// Get the last read sequence number for a room.
-    pub fn get_last_read_seq(&self, group_id: &str) -> u64 {
+    pub fn get_last_read_seq(&self, group_id: i64) -> u64 {
         self.conn
             .query_row(
                 "SELECT last_read_seq FROM room_state WHERE group_id = ?1",
@@ -142,7 +142,7 @@ impl MessageStore {
     }
 
     /// Update the last read sequence number for a room.
-    pub fn set_last_read_seq(&self, group_id: &str, sequence_number: u64) {
+    pub fn set_last_read_seq(&self, group_id: i64, sequence_number: u64) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, 0, ?2)
              ON CONFLICT(group_id) DO UPDATE SET last_read_seq = excluded.last_read_seq",
@@ -169,9 +169,9 @@ mod tests {
     fn test_push_and_load_messages() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::user("alice", "hello", 1));
-        store.push_message("g1", &DisplayMessage::user("bob", "world", 2));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", "hello", 1));
+        store.push_message(1, &DisplayMessage::user("bob", "world", 2));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].sender, "alice");
         assert_eq!(msgs[0].content, "hello");
@@ -183,7 +183,7 @@ mod tests {
     fn test_load_messages_empty() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        let msgs = store.load_messages("nonexistent");
+        let msgs = store.load_messages(999);
         assert!(msgs.is_empty());
     }
 
@@ -193,11 +193,11 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         for i in 0..1001 {
             store.push_message(
-                "g1",
+                1,
                 &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
             );
         }
-        let msgs = store.load_messages("g1");
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1000);
     }
 
@@ -205,71 +205,71 @@ mod tests {
     fn test_last_seen_seq_default() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq("unknown"), 0);
+        assert_eq!(store.get_last_seen_seq(999), 0);
     }
 
     #[test]
     fn test_set_and_get_last_seen_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 42);
-        assert_eq!(store.get_last_seen_seq("g1"), 42);
+        store.set_last_seen_seq(1, 42);
+        assert_eq!(store.get_last_seen_seq(1), 42);
     }
 
     #[test]
     fn test_last_read_seq_default() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_read_seq("unknown"), 0);
+        assert_eq!(store.get_last_read_seq(999), 0);
     }
 
     #[test]
     fn test_set_and_get_last_read_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq("g1", 10);
-        assert_eq!(store.get_last_read_seq("g1"), 10);
+        store.set_last_read_seq(1, 10);
+        assert_eq!(store.get_last_read_seq(1), 10);
     }
 
     #[test]
     fn test_set_last_seen_seq_upsert() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 5);
-        store.set_last_seen_seq("g1", 10);
-        assert_eq!(store.get_last_seen_seq("g1"), 10);
+        store.set_last_seen_seq(1, 5);
+        store.set_last_seen_seq(1, 10);
+        assert_eq!(store.get_last_seen_seq(1), 10);
     }
 
     #[test]
     fn test_set_last_read_seq_does_not_clobber_last_seen_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 42);
-        store.set_last_read_seq("g1", 10);
-        assert_eq!(store.get_last_seen_seq("g1"), 42);
-        assert_eq!(store.get_last_read_seq("g1"), 10);
+        store.set_last_seen_seq(1, 42);
+        store.set_last_read_seq(1, 10);
+        assert_eq!(store.get_last_seen_seq(1), 42);
+        assert_eq!(store.get_last_read_seq(1), 10);
     }
 
     #[test]
     fn test_set_last_seen_seq_does_not_clobber_last_read_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq("g1", 10);
-        store.set_last_seen_seq("g1", 42);
-        assert_eq!(store.get_last_read_seq("g1"), 10);
-        assert_eq!(store.get_last_seen_seq("g1"), 42);
+        store.set_last_read_seq(1, 10);
+        store.set_last_seen_seq(1, 42);
+        assert_eq!(store.get_last_read_seq(1), 10);
+        assert_eq!(store.get_last_seen_seq(1), 42);
     }
 
     #[test]
     fn test_messages_isolated_by_group() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::user("alice", "for g1", 1));
-        store.push_message("g2", &DisplayMessage::user("bob", "for g2", 2));
-        let g1_msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", "for g1", 1));
+        store.push_message(2, &DisplayMessage::user("bob", "for g2", 2));
+        let g1_msgs = store.load_messages(1);
         assert_eq!(g1_msgs.len(), 1);
         assert_eq!(g1_msgs[0].content, "for g1");
-        let g2_msgs = store.load_messages("g2");
+        let g2_msgs = store.load_messages(2);
         assert_eq!(g2_msgs.len(), 1);
         assert_eq!(g2_msgs[0].content, "for g2");
     }
@@ -278,8 +278,8 @@ mod tests {
     fn test_system_messages_stored_correctly() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::system("alice joined the group"));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::system("alice joined the group"));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].is_system);
         assert_eq!(msgs[0].content, "alice joined the group");
@@ -289,12 +289,12 @@ mod tests {
     fn test_mixed_user_and_system_messages() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::system("group created"));
-        store.push_message("g1", &DisplayMessage::user("alice", "hello!", 100));
-        store.push_message("g1", &DisplayMessage::system("bob joined"));
-        store.push_message("g1", &DisplayMessage::user("bob", "hi!", 200));
+        store.push_message(1, &DisplayMessage::system("group created"));
+        store.push_message(1, &DisplayMessage::user("alice", "hello!", 100));
+        store.push_message(1, &DisplayMessage::system("bob joined"));
+        store.push_message(1, &DisplayMessage::user("bob", "hi!", 200));
 
-        let msgs = store.load_messages("g1");
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 4);
         assert!(msgs[0].is_system);
         assert!(!msgs[1].is_system);
@@ -307,16 +307,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.push_message("g1", &DisplayMessage::user("alice", "persisted", 1));
-            store.set_last_seen_seq("g1", 99);
-            store.set_last_read_seq("g1", 50);
+            store.push_message(1, &DisplayMessage::user("alice", "persisted", 1));
+            store.set_last_seen_seq(1, 99);
+            store.set_last_read_seq(1, 50);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        let msgs = store.load_messages("g1");
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "persisted");
-        assert_eq!(store.get_last_seen_seq("g1"), 99);
-        assert_eq!(store.get_last_read_seq("g1"), 50);
+        assert_eq!(store.get_last_seen_seq(1), 99);
+        assert_eq!(store.get_last_read_seq(1), 50);
     }
 
     #[test]
@@ -324,34 +324,34 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.set_last_seen_seq("g1", 100);
-            store.set_last_read_seq("g1", 75);
+            store.set_last_seen_seq(1, 100);
+            store.set_last_read_seq(1, 75);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq("g1"), 100);
-        assert_eq!(store.get_last_read_seq("g1"), 75);
+        assert_eq!(store.get_last_seen_seq(1), 100);
+        assert_eq!(store.get_last_read_seq(1), 75);
     }
 
     #[test]
     fn test_multiple_group_sequences() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 10);
-        store.set_last_seen_seq("g2", 20);
-        store.set_last_seen_seq("g3", 30);
-        assert_eq!(store.get_last_seen_seq("g1"), 10);
-        assert_eq!(store.get_last_seen_seq("g2"), 20);
-        assert_eq!(store.get_last_seen_seq("g3"), 30);
+        store.set_last_seen_seq(1, 10);
+        store.set_last_seen_seq(2, 20);
+        store.set_last_seen_seq(3, 30);
+        assert_eq!(store.get_last_seen_seq(1), 10);
+        assert_eq!(store.get_last_seen_seq(2), 20);
+        assert_eq!(store.get_last_seen_seq(3), 30);
     }
 
     #[test]
     fn test_messages_ordered_chronologically() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::user("alice", "first", 300));
-        store.push_message("g1", &DisplayMessage::user("bob", "second", 100));
-        store.push_message("g1", &DisplayMessage::user("carol", "third", 200));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", "first", 300));
+        store.push_message(1, &DisplayMessage::user("bob", "second", 100));
+        store.push_message(1, &DisplayMessage::user("carol", "third", 200));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].content, "first");
         assert_eq!(msgs[1].content, "second");
@@ -364,11 +364,11 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         for i in 0..1100 {
             store.push_message(
-                "g1",
+                1,
                 &DisplayMessage::user("alice", &format!("msg{i}"), i as i64),
             );
         }
-        let msgs = store.load_messages("g1");
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1000);
         assert_eq!(msgs[0].content, "msg100");
         assert_eq!(msgs[999].content, "msg1099");
@@ -378,16 +378,16 @@ mod tests {
     fn test_set_last_seen_seq_creates_room_state_entry() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 50);
-        assert_eq!(store.get_last_read_seq("g1"), 0);
+        store.set_last_seen_seq(1, 50);
+        assert_eq!(store.get_last_read_seq(1), 0);
     }
 
     #[test]
     fn test_set_last_read_seq_creates_room_state_entry() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq("g1", 50);
-        assert_eq!(store.get_last_seen_seq("g1"), 0);
+        store.set_last_read_seq(1, 50);
+        assert_eq!(store.get_last_seen_seq(1), 0);
     }
 
     #[test]
@@ -395,24 +395,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.set_last_seen_seq("g1", 10);
-            store.set_last_read_seq("g1", 5);
-            store.set_last_seen_seq("g2", 200);
-            store.set_last_read_seq("g2", 150);
+            store.set_last_seen_seq(1, 10);
+            store.set_last_read_seq(1, 5);
+            store.set_last_seen_seq(2, 200);
+            store.set_last_read_seq(2, 150);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq("g1"), 10);
-        assert_eq!(store.get_last_read_seq("g1"), 5);
-        assert_eq!(store.get_last_seen_seq("g2"), 200);
-        assert_eq!(store.get_last_read_seq("g2"), 150);
+        assert_eq!(store.get_last_seen_seq(1), 10);
+        assert_eq!(store.get_last_read_seq(1), 5);
+        assert_eq!(store.get_last_seen_seq(2), 200);
+        assert_eq!(store.get_last_read_seq(2), 150);
     }
 
     #[test]
     fn test_empty_content_message() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::user("alice", "", 1));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", "", 1));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "");
     }
@@ -423,8 +423,8 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         let unicode_content =
             "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
-        store.push_message("g1", &DisplayMessage::user("alice", unicode_content, 1));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", unicode_content, 1));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, unicode_content);
     }
@@ -434,8 +434,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
         let large_content = "A".repeat(100 * 1024);
-        store.push_message("g1", &DisplayMessage::user("alice", &large_content, 1));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::user("alice", &large_content, 1));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, large_content);
     }
@@ -444,12 +444,12 @@ mod tests {
     fn test_system_and_user_message_counts() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message("g1", &DisplayMessage::system("system msg 1"));
-        store.push_message("g1", &DisplayMessage::system("system msg 2"));
-        store.push_message("g1", &DisplayMessage::system("system msg 3"));
-        store.push_message("g1", &DisplayMessage::user("alice", "user msg 1", 100));
-        store.push_message("g1", &DisplayMessage::user("bob", "user msg 2", 200));
-        let msgs = store.load_messages("g1");
+        store.push_message(1, &DisplayMessage::system("system msg 1"));
+        store.push_message(1, &DisplayMessage::system("system msg 2"));
+        store.push_message(1, &DisplayMessage::system("system msg 3"));
+        store.push_message(1, &DisplayMessage::user("alice", "user msg 1", 100));
+        store.push_message(1, &DisplayMessage::user("bob", "user msg 2", 200));
+        let msgs = store.load_messages(1);
         assert_eq!(msgs.len(), 5);
         assert!(msgs[0].is_system);
         assert!(msgs[1].is_system);
@@ -462,9 +462,9 @@ mod tests {
     fn test_sequence_numbers_isolated_between_groups() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq("g1", 100);
-        store.set_last_seen_seq("g2", 200);
-        assert_eq!(store.get_last_seen_seq("g1"), 100);
-        assert_eq!(store.get_last_seen_seq("g2"), 200);
+        store.set_last_seen_seq(1, 100);
+        store.set_last_seen_seq(2, 200);
+        assert_eq!(store.get_last_seen_seq(1), 100);
+        assert_eq!(store.get_last_seen_seq(2), 200);
     }
 }

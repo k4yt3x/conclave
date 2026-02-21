@@ -1,5 +1,157 @@
 # Conclave Work Log
 
+## 2026-02-21: Fix Group Mapping and Adapt ID Types to Integer Design
+
+Fixed multiple bugs from the incomplete UUID-to-integer ID migration that prevented group joining and message processing.
+
+### Changes
+
+1. **`group_mapping` type**: Changed from `HashMap<String, String>` to `HashMap<i64, String>` across all crates. Eliminated ~25 `.to_string()` calls at mapping lookup/insertion sites. The TOML crate round-trips `HashMap<i64, String>` correctly; existing `group_mapping.toml` files remain compatible.
+
+2. **`user_id` type**: Changed proto fields from `uint64` to `int64` for user IDs (RegisterResponse, LoginResponse, GroupInfo.creator_id, GroupMember.user_id, StoredMessage.sender_id, NewMessageEvent.sender_id, UserInfoResponse.user_id). Updated `SessionState.user_id`, `RoomMember.user_id`, and `MemberInfo.user_id` from `u64` to `i64`. Eliminated ~30 `as i64`/`as u64` casts across all crates.
+
+3. **Stale room pruning**: `load_rooms` in both CLI and GUI now prunes rooms that the server no longer returns (e.g., user removed while offline). Stale entries are removed from both `rooms` and `group_mapping`, and `active_room` is cleared if it was stale.
+
+4. **Test updates**: Updated config.rs tests to use integer keys, server test helpers to return `i64`, and removed `as i64` casts from 20 sites in protocol_flow_tests.
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto` — `uint64` → `int64` for user_id fields
+- `crates/conclave-lib/src/config.rs` — `HashMap<i64, String>`, `user_id: Option<i64>`, tests
+- `crates/conclave-lib/src/state.rs` — `RoomMember.user_id: i64`
+- `crates/conclave-lib/src/operations.rs` — `MemberInfo.user_id: i64`, `ResetResult.new_group_mapping: HashMap<i64, String>`
+- `crates/conclave-cli/src/main.rs` — Removed casts and `.to_string()` calls
+- `crates/conclave-cli/src/tui/{state,commands,events,mod}.rs` — `HashMap<i64, String>`, `user_id: Option<i64>`, stale room pruning
+- `crates/conclave-gui/src/app.rs` — Same type changes, stale room pruning
+- `crates/conclave-server/src/api.rs` — Removed `as u64` casts
+- `crates/conclave-server/tests/{api_tests,protocol_flow_tests}.rs` — `u64` → `i64` in helpers
+
+## 2026-02-21: Add Test Coverage for ID/Naming Redesign
+
+Added 59 new tests across 6 files to cover pure functions and new API endpoints introduced by the ID/naming redesign. Total workspace tests: 417.
+
+- **`crates/conclave-lib/src/state.rs`** — 10 tests: `RoomMember::display_name()`, `Room::display_name()`, `DisplayMessage` factories
+- **`crates/conclave-lib/src/operations.rs`** — 19 tests: `RoomInfo::display_name()`, `MemberInfo::display_name()`, `MemberInfo::to_room_member()`, `decode_sse_event()` (all event types + invalid/empty), `resolve_user_display_name()`
+- **`crates/conclave-lib/src/api.rs`** — 8 tests: `normalize_server_url()` (scheme handling, trailing slashes, edge cases)
+- **`crates/conclave-server/tests/api_tests.rs`** — 10 tests: `PATCH /api/v1/me` (update/clear/invalid alias, unauth), `PATCH /api/v1/groups/{id}` (alias, group_name, non-creator rejected, not found, duplicate name, invalid alias)
+- **`crates/conclave-cli/src/tui/state.rs`** — 4 tests: `resolve_room()` edge cases (empty input, numeric group_name vs ID, both alias and group_name searchable, multiple prefix matches)
+- **`crates/conclave-server/src/db.rs`** — 8 tests: alias validation edge cases (control chars, tab, newline, unicode, clear alias to None, validation on update)
+
+## 2026-02-21: Redesign User/Group ID and Naming System
+
+### What Changed
+
+Complete redesign of the identifier system for users and groups. Users and groups are now primarily identified by auto-increment integer IDs. Users have a required unique username (for auth and discovery) and an optional non-unique alias (display name). Groups have an optional unique group_name (for discovery) and an optional non-unique alias (display name). Similar to Telegram's model.
+
+Display name resolution: Users: alias > username. Groups: alias > group_name > id.to_string().
+
+This is a breaking change affecting all 5 workspace crates, the protobuf schema, database schema, MLS credentials, and both client frontends.
+
+#### Protobuf Schema (`proto/conclave/v1/conclave.proto`)
+
+- All `string group_id` fields changed to `int64 group_id` across all messages
+- `RegisterRequest`: added `string alias = 3`
+- `LoginResponse`: added `string username = 3`
+- `UserInfoResponse`: added `string alias = 3`
+- `CreateGroupRequest`: field 1 renamed to `alias`, added `string group_name = 3`
+- `GroupInfo`: renamed `name` to `alias`, added `string group_name = 6`
+- `GroupMember`: added `string alias = 3`
+- `PendingWelcome`/`WelcomeEvent`: renamed `group_name` to `group_alias`
+- `StoredMessage`: added `string sender_alias = 6`
+- Added `UpdateProfileRequest/Response` and `UpdateGroupRequest/Response` messages
+
+#### Server Database (`crates/conclave-server/src/db.rs`)
+
+- `users` table: added `alias TEXT` column
+- `groups` table: `id` changed from `TEXT PRIMARY KEY` to `INTEGER PRIMARY KEY AUTOINCREMENT`, `name` renamed to `alias` (nullable), added `group_name TEXT UNIQUE`
+- All `group_id` columns changed from `TEXT` to `INTEGER` across `group_members`, `messages`, `pending_welcomes`, `group_infos` tables
+- `pending_welcomes.group_name` renamed to `group_alias` (nullable)
+- All method signatures changed from `group_id: &str` to `group_id: i64`
+- New methods: `validate_alias()`, `update_user_alias()`, `update_group_alias()`, `update_group_name()`, `get_group_alias()`, `get_group_creator()`
+- `get_group_members()` now returns alias alongside user_id and username
+- Removed `uuid` dependency
+
+#### Server API (`crates/conclave-server/src/api.rs`)
+
+- All `Path<String>` changed to `Path<i64>` for group endpoints
+- New routes: `PATCH /api/v1/me` (update user alias), `PATCH /api/v1/groups/{id}` (update group alias/name, creator only)
+- `register`: accepts optional alias
+- `login`: includes username in response
+- `list_groups`: populates alias, group_name, and member aliases in GroupInfo
+- Added `Validation(String)` variant to server error enum
+
+#### Client MLS (`crates/conclave-lib/src/mls.rs`)
+
+- `MlsManager::new()` takes `user_id: i64` instead of `username: &str`
+- `BasicCredential` now stores `user_id.to_be_bytes()` (8 bytes, big-endian i64) instead of username bytes
+- `extract_username_from_identity()` replaced by `extract_user_id_from_identity() -> Option<i64>`
+- `CommitInfo.members_added`: `Vec<String>` changed to `Vec<Option<i64>>`
+- `GroupDetails.members`: `Vec<(u32, String)>` changed to `Vec<(u32, Option<i64>)>`
+- `find_member_index()` takes `user_id: i64` instead of `username: &str`
+
+#### Client API (`crates/conclave-lib/src/api.rs`)
+
+- All group methods: `group_id: &str` changed to `group_id: i64`
+- `register()`: added `alias: Option<&str>` parameter
+- `create_group()`: changed from `name: &str` to `alias: Option<&str>, group_name: Option<&str>`
+
+#### Client State (`crates/conclave-lib/src/state.rs`)
+
+- Added `RoomMember` struct with `user_id`, `username`, `alias`, and `display_name()` method
+- `Room.server_group_id`: `String` changed to `i64`
+- `Room.name`: replaced by `alias: Option<String>` and `group_name: Option<String>`
+- `Room.members`: `Vec<String>` changed to `Vec<RoomMember>`
+- Added `Room::display_name()` for alias > group_name > id fallback
+
+#### Client Operations (`crates/conclave-lib/src/operations.rs`)
+
+- New types: `RoomInfo`, `MemberInfo` with display name resolution
+- All result types use `i64` group IDs
+- All functions take `user_id: i64` instead of `username: &str`
+- `fetch_and_decrypt`: added `members: &[RoomMember]` param for display name resolution
+- `kick_member`: takes `target_user_id: i64`
+
+#### Client Store (`crates/conclave-lib/src/store.rs`)
+
+- Schema: `group_id` changed from `TEXT` to `INTEGER` in both tables
+- All methods: `group_id: &str` changed to `group_id: i64`
+
+#### CLI TUI (`crates/conclave-cli/src/tui/`)
+
+- `rooms: HashMap<String, Room>` changed to `HashMap<i64, Room>`
+- `active_room: Option<String>` changed to `Option<i64>`
+- Room resolution: searches alias, group_name, prefix match, then i64 parse
+- Display uses `room.display_name()` and `member.display_name()`
+- `/kick` resolves target_user_id from room member list
+
+#### GUI (`crates/conclave-gui/src/`)
+
+- Same HashMap key changes as CLI (String -> i64)
+- `Message::RoomSelected(String)` changed to `RoomSelected(i64)`
+- Sidebar and title bar use `display_name()` methods
+
+#### Tests
+
+- All 358 tests pass across the workspace
+- Server DB tests updated for integer group IDs, alias validation, group_name uniqueness
+- Server API tests updated for new proto fields and integer endpoints
+- Protocol flow tests updated for i64 user_id in MLS credentials
+- Client MLS tests updated for user_id-based credentials
+
+#### Breaking Changes
+
+1. Wire format: all group_id fields changed from string to int64 in protobuf
+2. MLS credentials: BasicCredential now contains user_id bytes instead of username (existing MLS groups incompatible, users must `/reset`)
+3. Client-side storage: group_mapping.toml keys changed from UUIDs to integers; message_history.db schema changed
+4. Server database: schema changes require a fresh database (acceptable for pre-1.0)
+
+#### Verification
+
+- `cargo build --release` -- clean
+- `cargo test --workspace` -- all 358 tests pass
+- `cargo clippy --workspace` -- no new warnings
+- `cargo fmt --all -- --check` -- clean
+
 ## 2026-02-20: Consolidate Business Logic into Shared Operations Module
 
 ### What Changed
@@ -637,7 +789,7 @@ mls-rs defaults to **sync mode**. Async requires the `mls_build_async` cfg flag 
 
 #### Group ID Mapping
 
-MLS assigns its own internal group IDs (opaque bytes). The server assigns UUID strings as group IDs. The client maintains a `group_mapping.toml` file (per user, under `data_dir/users/<username>/`) that maps server UUIDs to MLS group IDs (hex-encoded). This mapping is essential — without it, the client cannot locate the correct MLS group state for encryption/decryption.
+MLS assigns its own internal group IDs (opaque bytes). The server assigns integer IDs as group IDs. The client maintains a `group_mapping.toml` file (per user, under `data_dir/users/<username>/`) that maps server group IDs (integer as string keys, for TOML compatibility) to MLS group IDs (hex-encoded). This mapping is essential — without it, the client cannot locate the correct MLS group state for encryption/decryption.
 
 #### MLS State Rebuild on Each Operation
 

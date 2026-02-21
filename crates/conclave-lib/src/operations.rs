@@ -7,15 +7,59 @@ use crate::api::ApiClient;
 use crate::config::generate_initial_key_packages;
 use crate::error::{Error, Result};
 use crate::mls::{DecryptedMessage, MlsManager};
+use crate::state::RoomMember;
 
 // ── Result types ─────────────────────────────────────────────────
 
 /// Information about a room loaded from the server.
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
-    pub group_id: String,
-    pub name: String,
-    pub members: Vec<String>,
+    pub group_id: i64,
+    pub group_name: Option<String>,
+    pub alias: Option<String>,
+    pub members: Vec<MemberInfo>,
+}
+
+impl RoomInfo {
+    /// Display name: alias > group_name > id as string.
+    pub fn display_name(&self) -> String {
+        if let Some(alias) = &self.alias
+            && !alias.is_empty()
+        {
+            return alias.clone();
+        }
+        if let Some(group_name) = &self.group_name
+            && !group_name.is_empty()
+        {
+            return group_name.clone();
+        }
+        self.group_id.to_string()
+    }
+}
+
+/// Information about a group member from the server.
+#[derive(Debug, Clone)]
+pub struct MemberInfo {
+    pub user_id: i64,
+    pub username: String,
+    pub alias: Option<String>,
+}
+
+impl MemberInfo {
+    pub fn display_name(&self) -> &str {
+        self.alias
+            .as_deref()
+            .filter(|a| !a.is_empty())
+            .unwrap_or(&self.username)
+    }
+
+    pub fn to_room_member(&self) -> RoomMember {
+        RoomMember {
+            user_id: self.user_id,
+            username: self.username.clone(),
+            alias: self.alias.clone(),
+        }
+    }
 }
 
 /// A decrypted and classified message ready for display.
@@ -31,36 +75,36 @@ pub struct ProcessedMessage {
 /// Result of fetching and decrypting messages for a group.
 #[derive(Debug, Clone)]
 pub struct FetchedMessages {
-    pub group_id: String,
+    pub group_id: i64,
     pub messages: Vec<ProcessedMessage>,
 }
 
 /// Result of creating a group.
 #[derive(Debug, Clone)]
 pub struct GroupCreatedResult {
-    pub server_group_id: String,
+    pub server_group_id: i64,
     pub mls_group_id: String,
 }
 
 /// Result of processing a welcome (joining a group via invitation).
 #[derive(Debug, Clone)]
 pub struct WelcomeJoinResult {
-    pub group_id: String,
-    pub group_name: String,
+    pub group_id: i64,
+    pub group_alias: Option<String>,
     pub mls_group_id: String,
 }
 
 /// Result of sending a message.
 #[derive(Debug, Clone)]
 pub struct MessageSentResult {
-    pub group_id: String,
+    pub group_id: i64,
     pub sequence_num: u64,
 }
 
 /// Result of an account reset.
 #[derive(Debug, Clone)]
 pub struct ResetResult {
-    pub new_group_mapping: HashMap<String, String>,
+    pub new_group_mapping: HashMap<i64, String>,
     pub rejoin_count: usize,
     pub total_groups: usize,
     pub errors: Vec<String>,
@@ -70,18 +114,18 @@ pub struct ResetResult {
 #[derive(Debug, Clone)]
 pub enum SseEvent {
     NewMessage {
-        group_id: String,
+        group_id: i64,
     },
     Welcome {
-        group_id: String,
-        group_name: String,
+        group_id: i64,
+        group_alias: String,
     },
     GroupUpdate {
-        group_id: String,
+        group_id: i64,
         update_type: String,
     },
     MemberRemoved {
-        group_id: String,
+        group_id: i64,
         removed_username: String,
     },
 }
@@ -100,7 +144,7 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
         }),
         Some(conclave_proto::server_event::Event::Welcome(welcome)) => Ok(SseEvent::Welcome {
             group_id: welcome.group_id,
-            group_name: welcome.group_name,
+            group_alias: welcome.group_alias,
         }),
         Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
             Ok(SseEvent::GroupUpdate {
@@ -128,8 +172,29 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
         .into_iter()
         .map(|group| RoomInfo {
             group_id: group.group_id,
-            name: group.name,
-            members: group.members.into_iter().map(|m| m.username).collect(),
+            group_name: if group.group_name.is_empty() {
+                None
+            } else {
+                Some(group.group_name)
+            },
+            alias: if group.alias.is_empty() {
+                None
+            } else {
+                Some(group.alias)
+            },
+            members: group
+                .members
+                .into_iter()
+                .map(|m| MemberInfo {
+                    user_id: m.user_id,
+                    username: m.username,
+                    alias: if m.alias.is_empty() {
+                        None
+                    } else {
+                        Some(m.alias)
+                    },
+                })
+                .collect(),
         })
         .collect())
 }
@@ -145,33 +210,39 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
 /// - None → skipped
 pub async fn fetch_and_decrypt(
     api: &ApiClient,
-    group_id: &str,
+    group_id: i64,
     after_sequence: u64,
     mls_group_id: &str,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
+    members: &[RoomMember],
 ) -> Result<FetchedMessages> {
     let response = api.get_messages(group_id, after_sequence as i64).await?;
     let mut messages = Vec::new();
 
     for stored_message in &response.messages {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
         let mls_group_id = mls_group_id.to_string();
         let mls_bytes = stored_message.mls_message.clone();
 
         let decrypted = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.decrypt_message(&mls_group_id, &mls_bytes)
         })
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))?;
 
+        let sender_display = if !stored_message.sender_alias.is_empty() {
+            stored_message.sender_alias.clone()
+        } else {
+            stored_message.sender_username.clone()
+        };
+
         match decrypted {
             Ok(DecryptedMessage::Application(plaintext)) => {
                 let text = String::from_utf8_lossy(&plaintext).to_string();
                 messages.push(ProcessedMessage {
-                    sender: stored_message.sender_username.clone(),
+                    sender: sender_display,
                     content: text,
                     timestamp: stored_message.created_at as i64,
                     sequence_num: stored_message.sequence_num,
@@ -179,10 +250,11 @@ pub async fn fetch_and_decrypt(
                 });
             }
             Ok(DecryptedMessage::Commit(commit_info)) => {
-                for added in &commit_info.members_added {
+                for added_uid in &commit_info.members_added {
+                    let name = resolve_user_display_name(*added_uid, members);
                     messages.push(ProcessedMessage {
                         sender: String::new(),
-                        content: format!("{added} joined the group"),
+                        content: format!("{name} joined the group"),
                         timestamp: stored_message.created_at as i64,
                         sequence_num: stored_message.sequence_num,
                         is_system: true,
@@ -248,28 +320,39 @@ pub async fn fetch_and_decrypt(
         }
     }
 
-    Ok(FetchedMessages {
-        group_id: group_id.to_string(),
-        messages,
-    })
+    Ok(FetchedMessages { group_id, messages })
+}
+
+/// Resolve a user ID from an MLS credential to a display name using the room
+/// member list. Falls back to the user ID as a string.
+fn resolve_user_display_name(user_id: Option<i64>, members: &[RoomMember]) -> String {
+    match user_id {
+        Some(uid) => {
+            if let Some(member) = members.iter().find(|m| m.user_id == uid) {
+                member.display_name().to_string()
+            } else {
+                format!("user#{uid}")
+            }
+        }
+        None => "<unknown>".to_string(),
+    }
 }
 
 /// Encrypt a text message via MLS and send it to the server.
 pub async fn send_message(
     api: &ApiClient,
-    server_group_id: &str,
+    server_group_id: i64,
     mls_group_id: &str,
     text: &str,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<MessageSentResult> {
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
     let mls_group_id = mls_group_id.to_string();
     let text_bytes = text.as_bytes().to_vec();
 
     let encrypted = tokio::task::spawn_blocking(move || {
-        let mls = MlsManager::new(&data_dir, &username)?;
+        let mls = MlsManager::new(&data_dir, user_id)?;
         mls.encrypt_message(&mls_group_id, &text_bytes)
     })
     .await
@@ -278,7 +361,7 @@ pub async fn send_message(
     let response = api.send_message(server_group_id, encrypted).await?;
 
     Ok(MessageSentResult {
-        group_id: server_group_id.to_string(),
+        group_id: server_group_id,
         sequence_num: response.sequence_num,
     })
 }
@@ -289,33 +372,28 @@ pub async fn send_message(
 /// MLS group creation, and upload the commit + welcome messages.
 pub async fn create_group(
     api: &ApiClient,
-    name: &str,
+    alias: Option<&str>,
+    group_name: Option<&str>,
     members: Vec<String>,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<GroupCreatedResult> {
-    let response = api.create_group(name, members).await?;
-    let server_group_id = response.group_id.clone();
+    let response = api.create_group(alias, group_name, members).await?;
+    let server_group_id = response.group_id;
     let member_key_packages = response.member_key_packages;
 
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
 
     let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
         tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.create_group(&member_key_packages)
         })
         .await
         .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-    api.upload_commit(
-        &server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
-    )
-    .await?;
+    api.upload_commit(server_group_id, commit_bytes, welcome_map, group_info_bytes)
+        .await?;
 
     Ok(GroupCreatedResult {
         server_group_id,
@@ -330,11 +408,11 @@ pub async fn create_group(
 /// already members).
 pub async fn invite_members(
     api: &ApiClient,
-    server_group_id: &str,
+    server_group_id: i64,
     mls_group_id: &str,
     members: Vec<String>,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<Vec<String>> {
     let response = api.invite_to_group(server_group_id, members).await?;
 
@@ -346,24 +424,17 @@ pub async fn invite_members(
     let member_key_packages = response.member_key_packages;
 
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
     let mls_group_id = mls_group_id.to_string();
-    let server_group_id = server_group_id.to_string();
 
     let (commit_bytes, welcome_map, group_info_bytes) = tokio::task::spawn_blocking(move || {
-        let mls = MlsManager::new(&data_dir, &username)?;
+        let mls = MlsManager::new(&data_dir, user_id)?;
         mls.invite_to_group(&mls_group_id, &member_key_packages)
     })
     .await
     .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-    api.upload_commit(
-        &server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
-    )
-    .await?;
+    api.upload_commit(server_group_id, commit_bytes, welcome_map, group_info_bytes)
+        .await?;
 
     Ok(invited)
 }
@@ -372,23 +443,23 @@ pub async fn invite_members(
 /// removal commit, and notify the server.
 pub async fn kick_member(
     api: &ApiClient,
-    server_group_id: &str,
+    server_group_id: i64,
     mls_group_id: &str,
     target_username: &str,
+    target_user_id: i64,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
     let mls_group_id = mls_group_id.to_string();
     let target_username = target_username.to_string();
 
     let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking({
         let target = target_username.clone();
         move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             let member_index = mls
-                .find_member_index(&mls_group_id, &target)?
+                .find_member_index(&mls_group_id, target_user_id)?
                 .ok_or_else(|| Error::Other(format!("user '{target}' not found in MLS roster")))?;
             mls.remove_member(&mls_group_id, member_index)
         }
@@ -411,17 +482,16 @@ pub async fn kick_member(
 /// secrecy) and upload the commit.
 pub async fn rotate_keys(
     api: &ApiClient,
-    server_group_id: &str,
+    server_group_id: i64,
     mls_group_id: &str,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
     let mls_group_id = mls_group_id.to_string();
 
     let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking(move || {
-        let mls = MlsManager::new(&data_dir, &username)?;
+        let mls = MlsManager::new(&data_dir, user_id)?;
         mls.rotate_keys(&mls_group_id)
     })
     .await
@@ -444,18 +514,17 @@ pub async fn rotate_keys(
 /// delete local MLS group state.
 pub async fn leave_group(
     api: &ApiClient,
-    server_group_id: &str,
+    server_group_id: i64,
     mls_group_id: Option<&str>,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<()> {
     let (commit_bytes, group_info_bytes) = if let Some(mls_gid) = mls_group_id {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
         let mls_gid = mls_gid.to_string();
 
         match tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.leave_group(&mls_gid)
         })
         .await
@@ -474,11 +543,10 @@ pub async fn leave_group(
     // Delete local MLS group state after the server has been notified.
     if let Some(mls_gid) = mls_group_id {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
         let mls_gid = mls_gid.to_string();
 
         match tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.delete_group_state(&mls_gid)
         })
         .await
@@ -500,14 +568,13 @@ pub async fn leave_group(
 pub async fn delete_mls_group_state(
     mls_group_id: &str,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
-    let username = username.to_string();
     let mls_group_id = mls_group_id.to_string();
 
     tokio::task::spawn_blocking(move || {
-        let mls = MlsManager::new(&data_dir, &username)?;
+        let mls = MlsManager::new(&data_dir, user_id)?;
         mls.delete_group_state(&mls_group_id)
     })
     .await
@@ -520,7 +587,7 @@ pub async fn delete_mls_group_state(
 pub async fn accept_welcomes(
     api: &ApiClient,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<Vec<WelcomeJoinResult>> {
     let response = api.list_pending_welcomes().await?;
 
@@ -532,23 +599,34 @@ pub async fn accept_welcomes(
 
     for welcome in &response.welcomes {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
         let welcome_bytes = welcome.welcome_message.clone();
 
         let mls_group_id = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.join_group(&welcome_bytes)
         })
         .await
-        .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+        .map_err(|e| Error::Other(format!("task join error: {e}")))?;
+
+        let mls_group_id = match mls_group_id {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(%error, "failed to join group via welcome");
+                continue;
+            }
+        };
 
         if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
             tracing::warn!(%error, "failed to acknowledge welcome");
         }
 
         results.push(WelcomeJoinResult {
-            group_id: welcome.group_id.clone(),
-            group_name: welcome.group_name.clone(),
+            group_id: welcome.group_id,
+            group_alias: if welcome.group_alias.is_empty() {
+                None
+            } else {
+                Some(welcome.group_alias.clone())
+            },
             mls_group_id,
         });
     }
@@ -558,10 +636,9 @@ pub async fn accept_welcomes(
     let consumed_count = results.len();
     if consumed_count > 0 {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
 
         let replacements = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.generate_key_packages(consumed_count)
         })
         .await
@@ -581,28 +658,27 @@ pub async fn accept_welcomes(
 /// packages, then rejoin each group via external commit.
 pub async fn reset_account(
     api: &ApiClient,
-    group_mapping: &HashMap<String, String>,
+    group_mapping: &HashMap<i64, String>,
     data_dir: &Path,
-    username: &str,
+    user_id: i64,
 ) -> Result<ResetResult> {
-    let groups_to_rejoin: Vec<(String, String)> = group_mapping
+    let groups_to_rejoin: Vec<(i64, String)> = group_mapping
         .iter()
-        .map(|(server_id, mls_id)| (server_id.clone(), mls_id.clone()))
+        .map(|(server_id, mls_id)| (*server_id, mls_id.clone()))
         .collect();
     let total_groups = groups_to_rejoin.len();
 
     // Step 1: Collect old leaf indices before wiping state.
-    let old_indices: HashMap<String, Option<u32>> = {
+    let old_indices: HashMap<i64, Option<u32>> = {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
         let groups = groups_to_rejoin.clone();
 
         tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             let mut indices = HashMap::new();
             for (server_id, mls_id) in &groups {
-                let index = mls.find_member_index(mls_id, &username).ok().flatten();
-                indices.insert(server_id.clone(), index);
+                let index = mls.find_member_index(mls_id, user_id).ok().flatten();
+                indices.insert(*server_id, index);
             }
             Ok::<_, Error>(indices)
         })
@@ -616,10 +692,9 @@ pub async fn reset_account(
     // Step 3: Wipe local MLS state.
     {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.wipe_local_state()
         })
         .await
@@ -629,10 +704,9 @@ pub async fn reset_account(
     // Step 4: Regenerate identity and upload new key packages.
     {
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
 
         let entries = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             generate_initial_key_packages(&mls)
         })
         .await
@@ -646,23 +720,26 @@ pub async fn reset_account(
     let mut errors = Vec::new();
     let mut rejoin_count = 0;
 
-    for (server_id, _) in &groups_to_rejoin {
-        let group_info_response = match api.get_group_info(server_id).await {
+    for (server_group_id, _) in &groups_to_rejoin {
+        let server_group_id = *server_group_id;
+
+        let group_info_response = match api.get_group_info(server_group_id).await {
             Ok(response) => response,
             Err(error) => {
-                errors.push(format!("Failed to get group info for {server_id}: {error}"));
+                errors.push(format!(
+                    "Failed to get group info for {server_group_id}: {error}"
+                ));
                 continue;
             }
         };
 
-        let old_index = old_indices.get(server_id).copied().flatten();
+        let old_index = old_indices.get(&server_group_id).copied().flatten();
         let group_info_bytes = group_info_response.group_info.clone();
 
         let data_dir = data_dir.to_path_buf();
-        let username = username.to_string();
 
         let rejoin_result = tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, &username)?;
+            let mls = MlsManager::new(&data_dir, user_id)?;
             mls.external_rejoin_group(&group_info_bytes, old_index)
         })
         .await
@@ -670,15 +747,17 @@ pub async fn reset_account(
 
         match rejoin_result {
             Ok((new_mls_id, commit_bytes)) => {
-                if let Err(error) = api.external_join(server_id, commit_bytes).await {
-                    errors.push(format!("Failed to rejoin {server_id}: {error}"));
+                if let Err(error) = api.external_join(server_group_id, commit_bytes).await {
+                    errors.push(format!("Failed to rejoin {server_group_id}: {error}"));
                     continue;
                 }
-                new_group_mapping.insert(server_id.clone(), new_mls_id);
+                new_group_mapping.insert(server_group_id, new_mls_id);
                 rejoin_count += 1;
             }
             Err(error) => {
-                errors.push(format!("Failed external commit for {server_id}: {error}"));
+                errors.push(format!(
+                    "Failed external commit for {server_group_id}: {error}"
+                ));
             }
         }
     }
@@ -689,4 +768,256 @@ pub async fn reset_account(
         total_groups,
         errors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_room_info_display_name_alias() {
+        let info = RoomInfo {
+            group_id: 1,
+            group_name: Some("devs".into()),
+            alias: Some("Dev Team".into()),
+            members: vec![],
+        };
+        assert_eq!(info.display_name(), "Dev Team");
+    }
+
+    #[test]
+    fn test_room_info_display_name_group_name_fallback() {
+        let info = RoomInfo {
+            group_id: 1,
+            group_name: Some("devs".into()),
+            alias: None,
+            members: vec![],
+        };
+        assert_eq!(info.display_name(), "devs");
+    }
+
+    #[test]
+    fn test_room_info_display_name_id_fallback() {
+        let info = RoomInfo {
+            group_id: 99,
+            group_name: None,
+            alias: None,
+            members: vec![],
+        };
+        assert_eq!(info.display_name(), "99");
+    }
+
+    #[test]
+    fn test_room_info_display_name_empty_alias_falls_through() {
+        let info = RoomInfo {
+            group_id: 1,
+            group_name: Some("devs".into()),
+            alias: Some(String::new()),
+            members: vec![],
+        };
+        assert_eq!(info.display_name(), "devs");
+    }
+
+    #[test]
+    fn test_room_info_display_name_empty_group_name_falls_through() {
+        let info = RoomInfo {
+            group_id: 7,
+            group_name: Some(String::new()),
+            alias: None,
+            members: vec![],
+        };
+        assert_eq!(info.display_name(), "7");
+    }
+
+    #[test]
+    fn test_member_info_display_name_with_alias() {
+        let info = MemberInfo {
+            user_id: 1,
+            username: "alice".into(),
+            alias: Some("Alice W.".into()),
+        };
+        assert_eq!(info.display_name(), "Alice W.");
+    }
+
+    #[test]
+    fn test_member_info_display_name_no_alias() {
+        let info = MemberInfo {
+            user_id: 1,
+            username: "alice".into(),
+            alias: None,
+        };
+        assert_eq!(info.display_name(), "alice");
+    }
+
+    #[test]
+    fn test_member_info_display_name_empty_alias() {
+        let info = MemberInfo {
+            user_id: 1,
+            username: "alice".into(),
+            alias: Some(String::new()),
+        };
+        assert_eq!(info.display_name(), "alice");
+    }
+
+    #[test]
+    fn test_member_info_to_room_member() {
+        let info = MemberInfo {
+            user_id: 42,
+            username: "bob".into(),
+            alias: Some("Bobby".into()),
+        };
+        let member = info.to_room_member();
+        assert_eq!(member.user_id, 42);
+        assert_eq!(member.username, "bob");
+        assert_eq!(member.alias, Some("Bobby".into()));
+    }
+
+    #[test]
+    fn test_decode_sse_event_new_message() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::NewMessage(
+                conclave_proto::NewMessageEvent {
+                    group_id: 5,
+                    sequence_num: 10,
+                    sender_id: 1,
+                },
+            )),
+        };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        match decode_sse_event(&hex_data).unwrap() {
+            SseEvent::NewMessage { group_id } => assert_eq!(group_id, 5),
+            other => panic!("expected NewMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sse_event_welcome() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::Welcome(
+                conclave_proto::WelcomeEvent {
+                    group_id: 3,
+                    group_alias: "test-room".into(),
+                },
+            )),
+        };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        match decode_sse_event(&hex_data).unwrap() {
+            SseEvent::Welcome {
+                group_id,
+                group_alias,
+            } => {
+                assert_eq!(group_id, 3);
+                assert_eq!(group_alias, "test-room");
+            }
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sse_event_group_update() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                conclave_proto::GroupUpdateEvent {
+                    group_id: 7,
+                    update_type: "commit".into(),
+                },
+            )),
+        };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        match decode_sse_event(&hex_data).unwrap() {
+            SseEvent::GroupUpdate {
+                group_id,
+                update_type,
+            } => {
+                assert_eq!(group_id, 7);
+                assert_eq!(update_type, "commit");
+            }
+            other => panic!("expected GroupUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sse_event_member_removed() {
+        let event = conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::MemberRemoved(
+                conclave_proto::MemberRemovedEvent {
+                    group_id: 2,
+                    removed_username: "charlie".into(),
+                },
+            )),
+        };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        match decode_sse_event(&hex_data).unwrap() {
+            SseEvent::MemberRemoved {
+                group_id,
+                removed_username,
+            } => {
+                assert_eq!(group_id, 2);
+                assert_eq!(removed_username, "charlie");
+            }
+            other => panic!("expected MemberRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sse_event_invalid_hex() {
+        assert!(decode_sse_event("not-valid-hex!@#").is_err());
+    }
+
+    #[test]
+    fn test_decode_sse_event_empty_event() {
+        let event = conclave_proto::ServerEvent { event: None };
+        let mut buf = Vec::new();
+        event.encode(&mut buf).unwrap();
+        let hex_data = hex::encode(&buf);
+
+        assert!(decode_sse_event(&hex_data).is_err());
+    }
+
+    #[test]
+    fn test_resolve_user_display_name_found_with_alias() {
+        let members = vec![RoomMember {
+            user_id: 1,
+            username: "alice".into(),
+            alias: Some("Alice W.".into()),
+        }];
+        assert_eq!(resolve_user_display_name(Some(1), &members), "Alice W.");
+    }
+
+    #[test]
+    fn test_resolve_user_display_name_found_no_alias() {
+        let members = vec![RoomMember {
+            user_id: 1,
+            username: "alice".into(),
+            alias: None,
+        }];
+        assert_eq!(resolve_user_display_name(Some(1), &members), "alice");
+    }
+
+    #[test]
+    fn test_resolve_user_display_name_not_found() {
+        let members = vec![RoomMember {
+            user_id: 1,
+            username: "alice".into(),
+            alias: None,
+        }];
+        assert_eq!(resolve_user_display_name(Some(99), &members), "user#99");
+    }
+
+    #[test]
+    fn test_resolve_user_display_name_none() {
+        assert_eq!(resolve_user_display_name(None, &[]), "<unknown>");
+    }
 }

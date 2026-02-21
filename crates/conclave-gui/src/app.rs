@@ -26,19 +26,18 @@ pub struct Conclave {
     api: Option<ApiClient>,
     mls: Option<MlsManager>,
     username: Option<String>,
-    user_id: Option<u64>,
+    user_id: Option<i64>,
     token: Option<String>,
-    rooms: HashMap<String, Room>,
-    active_room: Option<String>,
-    room_messages: HashMap<String, Vec<DisplayMessage>>,
+    rooms: HashMap<i64, Room>,
+    active_room: Option<i64>,
+    room_messages: HashMap<i64, Vec<DisplayMessage>>,
     system_messages: Vec<DisplayMessage>,
-    group_mapping: HashMap<String, String>,
+    group_mapping: HashMap<i64, String>,
     connection_status: ConnectionStatus,
     msg_store: Option<MessageStore>,
     rooms_loaded: bool,
     welcomes_processed: bool,
-    /// Groups currently being fetched — prevents duplicate concurrent fetches.
-    fetching_groups: HashSet<String>,
+    fetching_groups: HashSet<i64>,
     /// Set when welcome processing triggers a rooms reload — defers the
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     fetch_messages_on_rooms_load: bool,
@@ -55,7 +54,7 @@ pub enum Message {
     RegisterResult(Result<RegisterInfo, String>),
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
-    MessagesFetched(Result<operations::FetchedMessages, (String, String)>),
+    MessagesFetched(Result<operations::FetchedMessages, (i64, String)>),
     KeygenDone(Result<Vec<(Vec<u8>, bool)>, String>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
@@ -83,13 +82,13 @@ pub enum Message {
 pub struct LoginInfo {
     pub server_url: String,
     pub token: String,
-    pub user_id: u64,
+    pub user_id: i64,
     pub username: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct RegisterInfo {
-    pub user_id: u64,
+    pub user_id: i64,
 }
 
 impl Conclave {
@@ -146,8 +145,7 @@ impl Conclave {
             app.user_id = Some(user_id);
             app.token = Some(token);
 
-            // Initialize MLS
-            if let Ok(mls) = MlsManager::new(&app.config.data_dir, &username) {
+            if let Ok(mls) = MlsManager::new(&app.config.data_dir, user_id) {
                 app.mls = Some(mls);
             }
 
@@ -165,14 +163,11 @@ impl Conclave {
                 "Welcome back, {username}. Type /help for commands."
             ))];
 
-            // Generate key packages and load rooms from server
             let data_dir = app.config.data_dir.clone();
-            let keygen_username = username.clone();
             let keygen_task = Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        let mls = MlsManager::new(&data_dir, &keygen_username)
-                            .map_err(|e| e.to_string())?;
+                        let mls = MlsManager::new(&data_dir, user_id).map_err(|e| e.to_string())?;
                         generate_initial_key_packages(&mls).map_err(|e| e.to_string())
                     })
                     .await
@@ -238,13 +233,12 @@ impl Conclave {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     if dashboard.show_user_popover {
                         dashboard.show_user_popover = false;
-                    } else if self.active_room.is_some() {
+                    } else if let Some(room_id) = self.active_room.take() {
                         dashboard.show_members_sidebar = false;
-                        let room_id = self.active_room.take().unwrap_or_default();
                         let name = self
                             .rooms
                             .get(&room_id)
-                            .map(|r| r.name.clone())
+                            .map(|r| r.display_name())
                             .unwrap_or_default();
                         self.push_system_message(&format!(
                             "Switched away from #{name} (use /part to leave)"
@@ -382,11 +376,16 @@ impl Conclave {
                                 .login(&username, &password)
                                 .await
                                 .map_err(|e| e.to_string())?;
+                            let canonical_username = if resp.username.is_empty() {
+                                username
+                            } else {
+                                resp.username
+                            };
                             Ok(LoginInfo {
                                 server_url,
                                 token: resp.token,
                                 user_id: resp.user_id,
-                                username,
+                                username: canonical_username,
                             })
                         },
                         Message::LoginResult,
@@ -395,7 +394,7 @@ impl Conclave {
                         async move {
                             let api = ApiClient::new(&server_url, accept_invalid_certs);
                             let resp = api
-                                .register(&username, &password)
+                                .register(&username, &password, None)
                                 .await
                                 .map_err(|e| e.to_string())?;
                             Ok(RegisterInfo {
@@ -432,9 +431,8 @@ impl Conclave {
                 };
                 let _ = session.save(&self.config.data_dir);
 
-                // Initialize MLS
                 let _ = std::fs::create_dir_all(&self.config.data_dir);
-                if let Ok(mls) = MlsManager::new(&self.config.data_dir, &info.username) {
+                if let Ok(mls) = MlsManager::new(&self.config.data_dir, info.user_id) {
                     self.mls = Some(mls);
                 }
 
@@ -453,14 +451,13 @@ impl Conclave {
                     info.username, info.user_id
                 ))];
 
-                // Generate key packages and load rooms
                 let data_dir = self.config.data_dir.clone();
-                let username = info.username;
+                let keygen_user_id = info.user_id;
                 let keygen_task = Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            let mls =
-                                MlsManager::new(&data_dir, &username).map_err(|e| e.to_string())?;
+                            let mls = MlsManager::new(&data_dir, keygen_user_id)
+                                .map_err(|e| e.to_string())?;
                             generate_initial_key_packages(&mls).map_err(|e| e.to_string())
                         })
                         .await
@@ -532,17 +529,16 @@ impl Conclave {
     fn handle_dashboard_message(&mut self, msg: screen::dashboard::Message) -> Task<Message> {
         match msg {
             screen::dashboard::Message::RoomSelected(room_id) => {
-                self.active_room = Some(room_id.clone());
+                self.active_room = Some(room_id);
 
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.show_user_popover = false;
                 }
 
-                // Mark messages as read
                 if let Some(room) = self.rooms.get_mut(&room_id) {
                     room.last_read_seq = room.last_seen_seq;
                     if let Some(store) = &self.msg_store {
-                        store.set_last_read_seq(&room_id, room.last_read_seq);
+                        store.set_last_read_seq(room_id, room.last_read_seq);
                     }
                 }
 
@@ -603,7 +599,7 @@ impl Conclave {
                 let server_url = self.server_url.clone().unwrap_or_default();
                 let accept_invalid_certs = self.config.accept_invalid_certs;
                 let token = self.token.clone().unwrap_or_default();
-                let active_room = self.active_room.clone();
+                let active_room = self.active_room;
                 Task::perform(
                     async move {
                         let mut api = ApiClient::new(&server_url, accept_invalid_certs);
@@ -616,15 +612,17 @@ impl Conclave {
                         }
                         let mut msgs = vec![DisplayMessage::system("Rooms:")];
                         for r in &rooms {
-                            let active = if active_room.as_deref() == Some(&r.group_id) {
+                            let active = if active_room == Some(r.group_id) {
                                 " (active)"
                             } else {
                                 ""
                             };
+                            let member_names: Vec<&str> =
+                                r.members.iter().map(|m| m.display_name()).collect();
                             msgs.push(DisplayMessage::system(&format!(
                                 "  #{} [{}]{active}",
-                                r.name,
-                                r.members.join(", "),
+                                r.display_name(),
+                                member_names.join(", "),
                             )));
                         }
                         Ok(msgs)
@@ -640,12 +638,14 @@ impl Conclave {
                 Task::none()
             }
             Ok(Command::Who) => {
-                if let Some(room_id) = &self.active_room {
-                    if let Some(room) = self.rooms.get(room_id) {
+                if let Some(room_id) = self.active_room {
+                    if let Some(room) = self.rooms.get(&room_id) {
+                        let member_names: Vec<&str> =
+                            room.members.iter().map(|m| m.display_name()).collect();
                         self.push_system_message(&format!(
                             "Members of #{}: {}",
-                            room.name,
-                            room.members.join(", ")
+                            room.display_name(),
+                            member_names.join(", ")
                         ));
                     }
                 } else {
@@ -662,7 +662,7 @@ impl Conclave {
                     let name = self
                         .rooms
                         .get(&room_id)
-                        .map(|r| r.name.clone())
+                        .map(|r| r.display_name())
                         .unwrap_or_default();
                     self.push_system_message(&format!(
                         "Switched away from #{name} (use /part to leave)"
@@ -731,8 +731,6 @@ impl Conclave {
                 Task::none()
             }
             SseUpdate::NewMessage { group_id } => {
-                // Skip if we're already fetching this group to prevent
-                // concurrent MLS operations on the same group state.
                 if self.fetching_groups.contains(&group_id) {
                     return Task::none();
                 }
@@ -745,7 +743,7 @@ impl Conclave {
                     return Task::none();
                 }
 
-                self.fetching_groups.insert(group_id.clone());
+                self.fetching_groups.insert(group_id);
 
                 let last_seq = self
                     .rooms
@@ -763,28 +761,26 @@ impl Conclave {
                     let room_name = self
                         .rooms
                         .get(&group_id)
-                        .map(|r| r.name.clone())
-                        .unwrap_or_else(|| group_id.clone());
+                        .map(|r| r.display_name())
+                        .unwrap_or_else(|| group_id.to_string());
                     let mls_group_id = self.group_mapping.get(&group_id).cloned();
 
                     self.group_mapping.remove(&group_id);
                     save_group_mapping(&self.config.data_dir, &self.group_mapping);
                     self.rooms.remove(&group_id);
-                    if self.active_room.as_deref() == Some(&group_id) {
+                    if self.active_room == Some(group_id) {
                         self.active_room = None;
                     }
                     self.push_system_message(&format!("You were removed from #{room_name}"));
 
-                    if let (Some(mls_group_id), Some(our_username)) =
-                        (mls_group_id, self.username.clone())
-                    {
+                    if let (Some(mls_group_id), Some(our_user_id)) = (mls_group_id, self.user_id) {
                         let data_dir = self.config.data_dir.clone();
                         Task::perform(
                             async move {
                                 if let Err(error) = operations::delete_mls_group_state(
                                     &mls_group_id,
                                     &data_dir,
-                                    &our_username,
+                                    our_user_id,
                                 )
                                 .await
                                 {
@@ -798,17 +794,14 @@ impl Conclave {
                         Task::none()
                     }
                 } else {
-                    // Someone else was removed — fetch the leave commit so our
-                    // MLS state advances the epoch.
                     if let Some(room) = self.rooms.get_mut(&group_id) {
-                        room.members.retain(|m| m != &username);
+                        room.members.retain(|m| m.username != username);
                     }
-                    self.add_message(
-                        Some(&group_id),
+                    self.add_message_to_room(
+                        group_id,
                         DisplayMessage::system(&format!("{username} was removed from the group")),
                     );
 
-                    // Trigger a message fetch to process the MLS removal commit
                     self.handle_sse_event(SseUpdate::NewMessage { group_id })
                 }
             }
@@ -824,10 +817,10 @@ impl Conclave {
         match result {
             Ok(info) => {
                 self.group_mapping
-                    .insert(info.server_group_id.clone(), info.mls_group_id);
+                    .insert(info.server_group_id, info.mls_group_id);
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
-                self.active_room = Some(info.server_group_id.clone());
+                self.active_room = Some(info.server_group_id);
                 self.push_system_message(&format!("Group created ({})", info.server_group_id));
 
                 self.load_rooms_task()
@@ -845,40 +838,65 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok(room_infos) => {
+                let mut server_group_ids = HashSet::new();
+
                 for info in room_infos {
+                    server_group_ids.insert(info.group_id);
+
                     let (existing_seq, existing_read) = self
                         .rooms
                         .get(&info.group_id)
                         .map(|r| (r.last_seen_seq, r.last_read_seq))
                         .unwrap_or((0, 0));
 
-                    // Restore persisted seq values from store
                     let (seq, read) = if let Some(store) = &self.msg_store {
-                        let s = store.get_last_seen_seq(&info.group_id);
-                        let r = store.get_last_read_seq(&info.group_id);
+                        let s = store.get_last_seen_seq(info.group_id);
+                        let r = store.get_last_read_seq(info.group_id);
                         (s.max(existing_seq), r.max(existing_read))
                     } else {
                         (existing_seq, existing_read)
                     };
 
                     self.rooms.insert(
-                        info.group_id.clone(),
+                        info.group_id,
                         Room {
-                            server_group_id: info.group_id.clone(),
-                            name: info.name,
-                            members: info.members,
+                            server_group_id: info.group_id,
+                            group_name: info.group_name,
+                            alias: info.alias,
+                            members: info.members.iter().map(|m| m.to_room_member()).collect(),
                             last_seen_seq: seq,
                             last_read_seq: read,
                         },
                     );
 
-                    // Load persisted messages from store
                     if let Some(store) = &self.msg_store {
                         if !self.room_messages.contains_key(&info.group_id) {
-                            let history = store.load_messages(&info.group_id);
+                            let history = store.load_messages(info.group_id);
                             if !history.is_empty() {
                                 self.room_messages.insert(info.group_id, history);
                             }
+                        }
+                    }
+                }
+
+                // Prune rooms that the server no longer returns.
+                let stale_ids: Vec<i64> = self
+                    .rooms
+                    .keys()
+                    .filter(|id| !server_group_ids.contains(id))
+                    .copied()
+                    .collect();
+
+                if !stale_ids.is_empty() {
+                    for id in &stale_ids {
+                        self.rooms.remove(id);
+                        self.group_mapping.remove(id);
+                    }
+                    save_group_mapping(&self.config.data_dir, &self.group_mapping);
+
+                    if let Some(active) = self.active_room {
+                        if stale_ids.contains(&active) {
+                            self.active_room = None;
                         }
                     }
                 }
@@ -918,11 +936,10 @@ impl Conclave {
 
     fn handle_messages_fetched(
         &mut self,
-        result: Result<operations::FetchedMessages, (String, String)>,
+        result: Result<operations::FetchedMessages, (i64, String)>,
     ) -> Task<Message> {
         match result {
             Ok(fetched) => {
-                // Allow new fetches for this group now that we're done.
                 self.fetching_groups.remove(&fetched.group_id);
 
                 for msg in &fetched.messages {
@@ -932,23 +949,21 @@ impl Conclave {
                         DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp)
                     };
 
-                    self.add_message(Some(&fetched.group_id), display);
+                    self.add_message_to_room(fetched.group_id, display);
 
-                    // Update last_seen_seq
                     if let Some(room) = self.rooms.get_mut(&fetched.group_id) {
                         room.last_seen_seq = room.last_seen_seq.max(msg.sequence_num);
                         if let Some(store) = &self.msg_store {
-                            store.set_last_seen_seq(&fetched.group_id, room.last_seen_seq);
+                            store.set_last_seen_seq(fetched.group_id, room.last_seen_seq);
                         }
                     }
                 }
 
-                // Mark as read if viewing this room
-                if self.active_room.as_deref() == Some(fetched.group_id.as_str()) {
+                if self.active_room == Some(fetched.group_id) {
                     if let Some(room) = self.rooms.get_mut(&fetched.group_id) {
                         room.last_read_seq = room.last_seen_seq;
                         if let Some(store) = &self.msg_store {
-                            store.set_last_read_seq(&fetched.group_id, room.last_read_seq);
+                            store.set_last_read_seq(fetched.group_id, room.last_read_seq);
                         }
                     }
                 }
@@ -959,8 +974,8 @@ impl Conclave {
                         let room_name = self
                             .rooms
                             .get(&fetched.group_id)
-                            .map(|r| r.name.as_str())
-                            .unwrap_or("unknown");
+                            .map(|r| r.display_name())
+                            .unwrap_or_else(|| "unknown".to_string());
                         conclave_lib::notification::send_notification(
                             &format!("#{room_name} - {}", msg.sender),
                             &msg.content,
@@ -984,14 +999,14 @@ impl Conclave {
             Ok((info, text)) => {
                 let sender = self.username.clone().unwrap_or_default();
                 let msg = DisplayMessage::user(&sender, &text, chrono::Local::now().timestamp());
-                self.add_message(Some(&info.group_id), msg);
+                self.add_message_to_room(info.group_id, msg);
 
                 if let Some(room) = self.rooms.get_mut(&info.group_id) {
                     room.last_seen_seq = room.last_seen_seq.max(info.sequence_num);
                     room.last_read_seq = room.last_seen_seq;
                     if let Some(store) = &self.msg_store {
-                        store.set_last_seen_seq(&info.group_id, room.last_seen_seq);
-                        store.set_last_read_seq(&info.group_id, room.last_read_seq);
+                        store.set_last_seen_seq(info.group_id, room.last_seen_seq);
+                        store.set_last_read_seq(info.group_id, room.last_read_seq);
                     }
                 }
             }
@@ -1013,13 +1028,19 @@ impl Conclave {
             Ok(welcomes) => {
                 for w in &welcomes {
                     self.group_mapping
-                        .insert(w.group_id.clone(), w.mls_group_id.clone());
-                    self.push_system_message(&format!("Joined #{} ({})", w.group_name, w.group_id));
+                        .insert(w.group_id, w.mls_group_id.clone());
+                    let group_id_str = w.group_id.to_string();
+                    let display = w
+                        .group_alias
+                        .as_deref()
+                        .filter(|a| !a.is_empty())
+                        .unwrap_or(&group_id_str);
+                    self.push_system_message(&format!("Joined #{display} ({})", w.group_id));
                 }
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
                 if let Some(last) = welcomes.last() {
-                    self.active_room = Some(last.group_id.clone());
+                    self.active_room = Some(last.group_id);
                 }
 
                 // Defer the missed-message fetch until rooms_task completes
@@ -1047,33 +1068,37 @@ impl Conclave {
     // ── Message sending ───────────────────────────────────────────
 
     fn send_message(&mut self, text: String) -> Task<Message> {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return Task::none();
             }
         };
 
-        self.send_to_group(&group_id, &text)
+        self.send_to_group(group_id, &text)
     }
 
     fn send_to_room(&mut self, room: &str, text: &str) -> Task<Message> {
-        // Find room by name or ID
         let group_id = if let Some(r) = self.find_room_by_name(room) {
-            r.server_group_id.clone()
-        } else if self.rooms.contains_key(room) {
-            room.to_string()
+            r.server_group_id
+        } else if let Ok(id) = room.parse::<i64>() {
+            if self.rooms.contains_key(&id) {
+                id
+            } else {
+                self.push_system_message(&format!("Unknown room '{room}'"));
+                return Task::none();
+            }
         } else {
             self.push_system_message(&format!("Unknown room '{room}'"));
             return Task::none();
         };
 
-        self.send_to_group(&group_id, text)
+        self.send_to_group(group_id, text)
     }
 
-    fn send_to_group(&mut self, group_id: &str, text: &str) -> Task<Message> {
-        let mls_group_id = match self.group_mapping.get(group_id) {
+    fn send_to_group(&mut self, group_id: i64, text: &str) -> Task<Message> {
+        let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
                 self.push_system_message("Group mapping not found");
@@ -1082,11 +1107,10 @@ impl Conclave {
         };
 
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
-        let group_id = group_id.to_string();
         let text = text.to_string();
 
         Task::perform(
@@ -1095,11 +1119,11 @@ impl Conclave {
                 api.set_token(token);
                 let result = operations::send_message(
                     &api,
-                    &group_id,
+                    group_id,
                     &mls_group_id,
                     &text,
                     &data_dir,
-                    &username,
+                    user_id,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1116,13 +1140,13 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                operations::create_group(&api, &name, members, &data_dir, &username)
+                operations::create_group(&api, None, Some(&name), members, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -1131,8 +1155,8 @@ impl Conclave {
     }
 
     fn invite_members(&mut self, members: Vec<String>) -> Task<Message> {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return Task::none();
@@ -1151,7 +1175,7 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
@@ -1159,11 +1183,11 @@ impl Conclave {
                 api.set_token(token);
                 let invited = operations::invite_members(
                     &api,
-                    &group_id,
+                    group_id,
                     &mls_group_id,
                     members,
                     &data_dir,
-                    &username,
+                    user_id,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1182,8 +1206,8 @@ impl Conclave {
     }
 
     fn kick_member(&mut self, target: String) -> Task<Message> {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return Task::none();
@@ -1198,11 +1222,24 @@ impl Conclave {
             }
         };
 
+        let target_user_id = if let Some(room) = self.rooms.get(&group_id) {
+            match room.members.iter().find(|m| m.username == target) {
+                Some(member) => member.user_id,
+                None => {
+                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    return Task::none();
+                }
+            }
+        } else {
+            self.push_system_message("Room not found");
+            return Task::none();
+        };
+
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
@@ -1210,11 +1247,12 @@ impl Conclave {
                 api.set_token(token);
                 operations::kick_member(
                     &api,
-                    &group_id,
+                    group_id,
                     &mls_group_id,
                     &target,
+                    target_user_id,
                     &data_dir,
-                    &username,
+                    user_id,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1228,8 +1266,8 @@ impl Conclave {
     }
 
     fn leave_group(&mut self) -> Task<Message> {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return Task::none();
@@ -1241,16 +1279,15 @@ impl Conclave {
         let room_name = self
             .rooms
             .get(&group_id)
-            .map(|r| r.name.clone())
+            .map(|r| r.display_name())
             .unwrap_or_default();
 
         let server_url = self.server_url.clone().unwrap_or_default();
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
-        // Clean up local UI state immediately
         self.group_mapping.remove(&group_id);
         save_group_mapping(&self.config.data_dir, &self.group_mapping);
         self.rooms.remove(&group_id);
@@ -1263,10 +1300,10 @@ impl Conclave {
                 api.set_token(token);
                 operations::leave_group(
                     &api,
-                    &group_id,
+                    group_id,
                     mls_group_id.as_deref(),
                     &data_dir,
-                    &username,
+                    user_id,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1277,8 +1314,8 @@ impl Conclave {
     }
 
     fn rotate_keys(&mut self) -> Task<Message> {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return Task::none();
@@ -1297,13 +1334,13 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                operations::rotate_keys(&api, &group_id, &mls_group_id, &data_dir, &username)
+                operations::rotate_keys(&api, group_id, &mls_group_id, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -1325,7 +1362,7 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
         let group_mapping = self.group_mapping.clone();
 
         self.push_system_message("Resetting account...");
@@ -1334,7 +1371,7 @@ impl Conclave {
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                operations::reset_account(&api, &group_mapping, &data_dir, &username)
+                operations::reset_account(&api, &group_mapping, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -1351,9 +1388,8 @@ impl Conclave {
                 self.group_mapping = info.new_group_mapping;
                 save_group_mapping(&self.config.data_dir, &self.group_mapping);
 
-                // Reinitialize MLS with the new identity
-                if let Some(username) = &self.username {
-                    if let Ok(mls) = MlsManager::new(&self.config.data_dir, username) {
+                if let Some(uid) = self.user_id {
+                    if let Ok(mls) = MlsManager::new(&self.config.data_dir, uid) {
                         self.mls = Some(mls);
                     }
                 }
@@ -1378,7 +1414,6 @@ impl Conclave {
         }
     }
 
-    /// Fetch missed messages for all rooms that have a group mapping.
     fn fetch_all_missed_messages(&mut self) -> Task<Message> {
         let tasks: Vec<_> = self
             .rooms
@@ -1387,12 +1422,12 @@ impl Conclave {
                 self.group_mapping.contains_key(*group_id)
                     && !self.fetching_groups.contains(*group_id)
             })
-            .cloned()
+            .copied()
             .collect::<Vec<_>>()
             .into_iter()
             .filter_map(|group_id| {
                 let mls_group_id = self.group_mapping.get(&group_id)?.clone();
-                self.fetching_groups.insert(group_id.clone());
+                self.fetching_groups.insert(group_id);
                 let last_seq = self
                     .rooms
                     .get(&group_id)
@@ -1415,13 +1450,13 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
-                operations::accept_welcomes(&api, &data_dir, &username)
+                operations::accept_welcomes(&api, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -1449,7 +1484,7 @@ impl Conclave {
 
     fn fetch_messages_task(
         &self,
-        group_id: String,
+        group_id: i64,
         last_seq: u64,
         mls_group_id: String,
     ) -> Task<Message> {
@@ -1457,18 +1492,24 @@ impl Conclave {
         let accept_invalid_certs = self.config.accept_invalid_certs;
         let token = self.token.clone().unwrap_or_default();
         let data_dir = self.config.data_dir.clone();
-        let username = self.username.clone().unwrap_or_default();
+        let user_id = self.user_id.unwrap_or(0);
+        let members: Vec<_> = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.members.clone())
+            .unwrap_or_default();
         Task::perform(
             async move {
                 let mut api = ApiClient::new(&server_url, accept_invalid_certs);
                 api.set_token(token);
                 operations::fetch_and_decrypt(
                     &api,
-                    &group_id,
+                    group_id,
                     last_seq,
                     &mls_group_id,
                     &data_dir,
-                    &username,
+                    user_id,
+                    &members,
                 )
                 .await
                 .map_err(|e| (group_id, e.to_string()))
@@ -1482,13 +1523,10 @@ impl Conclave {
         self.add_message(None, msg);
     }
 
-    fn add_message(&mut self, group_id: Option<&str>, msg: DisplayMessage) {
-        let effective_gid = group_id
-            .map(|s| s.to_string())
-            .or_else(|| self.active_room.clone());
+    fn add_message(&mut self, group_id: Option<i64>, msg: DisplayMessage) {
+        let effective_gid = group_id.or(self.active_room);
 
-        // Persist to store
-        if let (Some(gid), Some(store)) = (&effective_gid, &self.msg_store) {
+        if let (Some(gid), Some(store)) = (effective_gid, &self.msg_store) {
             if group_id.is_some() {
                 store.push_message(gid, &msg);
             }
@@ -1504,24 +1542,34 @@ impl Conclave {
         }
     }
 
+    fn add_message_to_room(&mut self, group_id: i64, msg: DisplayMessage) {
+        if let Some(store) = &self.msg_store {
+            store.push_message(group_id, &msg);
+        }
+        self.room_messages.entry(group_id).or_default().push(msg);
+    }
+
     fn switch_to_room(&mut self, target: &str) {
         let resolved_gid = if let Some(room) = self.find_room_by_name(target) {
-            Some(room.server_group_id.clone())
-        } else if self.rooms.contains_key(target) {
-            Some(target.to_string())
+            Some(room.server_group_id)
+        } else if let Ok(id) = target.parse::<i64>() {
+            if self.rooms.contains_key(&id) {
+                Some(id)
+            } else {
+                None
+            }
         } else {
             None
         };
 
         if let Some(gid) = resolved_gid {
-            let name = self.rooms[&gid].name.clone();
-            self.active_room = Some(gid.clone());
+            let name = self.rooms[&gid].display_name();
+            self.active_room = Some(gid);
 
-            // Mark as read
             if let Some(room) = self.rooms.get_mut(&gid) {
                 room.last_read_seq = room.last_seen_seq;
                 if let Some(store) = &self.msg_store {
-                    store.set_last_read_seq(&gid, room.last_read_seq);
+                    store.set_last_read_seq(gid, room.last_read_seq);
                 }
             }
 
@@ -1535,15 +1583,17 @@ impl Conclave {
 
     fn find_room_by_name(&self, name: &str) -> Option<&Room> {
         let lower = name.to_lowercase();
-        // Exact match
-        if let Some(room) = self.rooms.values().find(|r| r.name.to_lowercase() == lower) {
+        if let Some(room) = self
+            .rooms
+            .values()
+            .find(|r| r.display_name().to_lowercase() == lower)
+        {
             return Some(room);
         }
-        // Prefix match
         let matches: Vec<_> = self
             .rooms
             .values()
-            .filter(|r| r.name.to_lowercase().starts_with(&lower))
+            .filter(|r| r.display_name().to_lowercase().starts_with(&lower))
             .collect();
         if matches.len() == 1 {
             return Some(matches[0]);
@@ -1580,8 +1630,8 @@ impl Conclave {
     }
 
     fn show_group_info(&mut self) {
-        let group_id = match &self.active_room {
-            Some(id) => id.clone(),
+        let group_id = match self.active_room {
+            Some(id) => id,
             None => {
                 self.push_system_message("No active room — use /join first");
                 return;
@@ -1599,8 +1649,8 @@ impl Conclave {
         let room_name = self
             .rooms
             .get(&group_id)
-            .map(|r| r.name.as_str())
-            .unwrap_or("unknown");
+            .map(|r| r.display_name())
+            .unwrap_or_else(|| "unknown".to_string());
 
         if let Some(mls) = &self.mls {
             match mls.group_info_details(&mls_group_id) {
@@ -1614,13 +1664,17 @@ impl Conclave {
                         "  Members: {} (your index: {})",
                         details.member_count, details.own_index
                     ));
-                    for (index, name) in &details.members {
+                    for (index, user_id) in &details.members {
                         let marker = if *index == details.own_index {
                             " (you)"
                         } else {
                             ""
                         };
-                        self.push_system_message(&format!("    [{index}] {name}{marker}"));
+                        let display = match user_id {
+                            Some(uid) => format!("user#{uid}"),
+                            None => "<unknown>".to_string(),
+                        };
+                        self.push_system_message(&format!("    [{index}] {display}{marker}"));
                     }
                 }
                 Err(e) => {
@@ -1644,7 +1698,7 @@ impl Conclave {
                 if unread > 0 {
                     Some(format!(
                         "  #{}: {unread} new message{}",
-                        room.name,
+                        room.display_name(),
                         if unread == 1 { "" } else { "s" },
                     ))
                 } else {

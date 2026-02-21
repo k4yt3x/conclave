@@ -53,10 +53,9 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
         state.user_id = session.user_id;
         state.logged_in = true;
 
-        if let Some(username) = &session.username {
-            mls = Some(
-                MlsManager::new(&config.data_dir, username).map_err(crate::error::Error::Lib)?,
-            );
+        if let Some(user_id) = session.user_id {
+            mls =
+                Some(MlsManager::new(&config.data_dir, user_id).map_err(crate::error::Error::Lib)?);
 
             // Upload key packages so other users can invite us:
             // 1 last-resort (permanent fallback) + 5 regular (single-use).
@@ -99,16 +98,16 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
             // then fetch any messages that arrived while we were offline.
             if let Some(store) = &msg_store {
                 for (group_id, room) in &mut state.rooms {
-                    let persisted_seq = store.get_last_seen_seq(group_id);
+                    let persisted_seq = store.get_last_seen_seq(*group_id);
                     room.last_seen_seq = persisted_seq;
-                    room.last_read_seq = store.get_last_read_seq(group_id);
+                    room.last_read_seq = store.get_last_read_seq(*group_id);
 
                     // Load persisted message history into memory.
-                    let history = store.load_messages(group_id);
+                    let history = store.load_messages(*group_id);
                     if !history.is_empty() {
                         state
                             .room_messages
-                            .entry(group_id.clone())
+                            .entry(*group_id)
                             .or_default()
                             .extend(history);
                     }
@@ -256,7 +255,7 @@ async fn main_loop(
                             if let Some(gid) = &state.active_room {
                                 if let Some(room) = state.rooms.get_mut(gid) {
                                     room.last_read_seq = room.last_seen_seq;
-                                    store.set_last_read_seq(gid, room.last_read_seq);
+                                    store.set_last_read_seq(*gid, room.last_read_seq);
                                 }
                             }
                         }
@@ -271,7 +270,7 @@ async fn main_loop(
                                 for (group_id, display_msg) in messages {
                                     add_and_render_message(
                                         stdout, state, input,
-                                        Some(&group_id), display_msg,
+                                        Some(group_id), display_msg,
                                         msg_store, &config.notifications,
                                     );
                                 }
@@ -617,16 +616,14 @@ fn add_and_render_message(
     stdout: &mut impl Write,
     state: &mut AppState,
     input: &InputLine,
-    group_id: Option<&str>,
+    group_id: Option<i64>,
     msg: DisplayMessage,
     msg_store: &Option<MessageStore>,
     notifications: &NotificationMethod,
 ) {
     // Determine the effective group_id: system messages (group_id=None) are
     // pushed into the active room's message list so they appear inline.
-    let effective_gid = group_id
-        .map(|s| s.to_string())
-        .or_else(|| state.active_room.clone());
+    let effective_gid = group_id.or(state.active_room);
 
     let is_active_view = match (&state.active_room, &effective_gid) {
         (Some(active), Some(gid)) => active == gid,
@@ -637,27 +634,25 @@ fn add_and_render_message(
     // Persist room messages to disk.
     if let (Some(gid), Some(store)) = (&effective_gid, msg_store) {
         if group_id.is_some() {
-            // Only persist actual room messages, not ephemeral system messages.
-            store.push_message(gid, &msg);
+            store.push_message(*gid, &msg);
         }
-        // Persist the updated last_seen_seq.
-        if let Some(room) = state.rooms.get(gid.as_str()) {
-            store.set_last_seen_seq(gid, room.last_seen_seq);
+        if let Some(room) = state.rooms.get(gid) {
+            store.set_last_seen_seq(*gid, room.last_seen_seq);
         }
     }
 
     match &effective_gid {
-        Some(gid) => state.push_room_message(gid, msg.clone()),
+        Some(gid) => state.push_room_message(*gid, msg.clone()),
         None => state.push_system_message(msg.clone()),
     }
 
     if is_active_view {
         // Mark messages as read when the user is viewing the room.
         if let Some(gid) = &effective_gid {
-            if let Some(room) = state.rooms.get_mut(gid.as_str()) {
+            if let Some(room) = state.rooms.get_mut(gid) {
                 room.last_read_seq = room.last_seen_seq;
                 if let Some(store) = msg_store {
-                    store.set_last_read_seq(gid, room.last_read_seq);
+                    store.set_last_read_seq(*gid, room.last_read_seq);
                 }
             }
         }
@@ -666,9 +661,9 @@ fn add_and_render_message(
         let _ = render::render_new_message(stdout, state, input, &msg);
     } else if !msg.is_system && group_id.is_some() {
         let room_name = group_id
-            .and_then(|gid| state.rooms.get(gid))
-            .map(|r| r.name.as_str())
-            .unwrap_or("unknown");
+            .and_then(|gid| state.rooms.get(&gid))
+            .map(|r| r.display_name())
+            .unwrap_or_else(|| "unknown".to_string());
         let use_native = matches!(
             notifications,
             NotificationMethod::Native | NotificationMethod::Both
@@ -699,14 +694,14 @@ async fn accept_pending_welcomes(
     _mls: &Option<MlsManager>,
     data_dir: &std::path::Path,
 ) {
-    let username = match &state.username {
-        Some(u) => u.as_str(),
+    let user_id = match state.user_id {
+        Some(id) => id,
         None => return,
     };
 
     let welcome_result = {
         let api_guard = api.lock().await;
-        operations::accept_welcomes(&api_guard, data_dir, username).await
+        operations::accept_welcomes(&api_guard, data_dir, user_id).await
     };
     let results = match welcome_result {
         Ok(r) => r,
@@ -725,11 +720,13 @@ async fn accept_pending_welcomes(
     for result in &results {
         state
             .group_mapping
-            .insert(result.group_id.clone(), result.mls_group_id.clone());
+            .insert(result.group_id, result.mls_group_id.clone());
 
+        let id_string = result.group_id.to_string();
+        let display = result.group_alias.as_deref().unwrap_or(&id_string);
         state.system_messages.push(DisplayMessage::system(&format!(
-            "Joined #{} ({})",
-            result.group_name, result.group_id
+            "Joined #{display} ({})",
+            result.group_id
         )));
     }
 
@@ -745,32 +742,37 @@ async fn fetch_missed_messages(
     data_dir: &std::path::Path,
     store: &MessageStore,
 ) {
-    let room_ids: Vec<(String, u64, String)> = state
+    let room_ids: Vec<(i64, u64, String, Vec<conclave_lib::state::RoomMember>)> = state
         .rooms
         .iter()
         .filter_map(|(id, room)| {
-            state
-                .group_mapping
-                .get(id)
-                .map(|mls_id| (id.clone(), room.last_seen_seq, mls_id.clone()))
+            state.group_mapping.get(id).map(|mls_id| {
+                (
+                    *id,
+                    room.last_seen_seq,
+                    mls_id.clone(),
+                    room.members.clone(),
+                )
+            })
         })
         .collect();
 
-    let username = match &state.username {
-        Some(u) => u.clone(),
+    let user_id = match state.user_id {
+        Some(id) => id,
         None => return,
     };
 
-    for (group_id, last_seq, mls_group_id) in &room_ids {
+    for (group_id, last_seq, mls_group_id, members) in &room_ids {
         let fetch_result = {
             let api_guard = api.lock().await;
             operations::fetch_and_decrypt(
                 &api_guard,
-                group_id,
+                *group_id,
                 *last_seq,
                 mls_group_id,
                 data_dir,
-                &username,
+                user_id,
+                members,
             )
             .await
         };
@@ -784,18 +786,18 @@ async fn fetch_missed_messages(
                 DisplayMessage::system(&msg.content)
             } else {
                 let display_msg = DisplayMessage::user(&msg.sender, &msg.content, msg.timestamp);
-                store.push_message(group_id, &display_msg);
+                store.push_message(*group_id, &display_msg);
                 display_msg
             };
-            state.push_room_message(group_id, display_msg);
+            state.push_room_message(*group_id, display_msg);
 
-            if let Some(room) = state.rooms.get_mut(group_id.as_str()) {
+            if let Some(room) = state.rooms.get_mut(group_id) {
                 room.last_seen_seq = room.last_seen_seq.max(msg.sequence_num);
             }
         }
 
-        if let Some(room) = state.rooms.get(group_id.as_str()) {
-            store.set_last_seen_seq(group_id, room.last_seen_seq);
+        if let Some(room) = state.rooms.get(group_id) {
+            store.set_last_seen_seq(*group_id, room.last_seen_seq);
         }
     }
 }

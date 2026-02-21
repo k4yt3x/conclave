@@ -48,7 +48,7 @@ pub enum DecryptedMessage {
 /// Information about changes in a commit.
 #[derive(Debug)]
 pub struct CommitInfo {
-    pub members_added: Vec<String>,
+    pub members_added: Vec<Option<i64>>,
     pub members_removed: Vec<String>,
     pub self_removed: bool,
 }
@@ -59,7 +59,7 @@ pub struct GroupDetails {
     pub cipher_suite: String,
     pub member_count: usize,
     pub own_index: u32,
-    pub members: Vec<(u32, String)>,
+    pub members: Vec<(u32, Option<i64>)>,
 }
 
 /// Persistent MLS state manager for the client.
@@ -70,11 +70,11 @@ pub struct MlsManager {
 }
 
 impl MlsManager {
-    /// Load or create MLS identity for the given username.
+    /// Load or create MLS identity for the given user ID.
     ///
     /// All MLS state is stored directly in `data_dir` (single-account model).
-    /// The `username` is used only for the MLS credential, not for directory paths.
-    pub fn new(data_dir: &Path, username: &str) -> Result<Self> {
+    /// The `user_id` is stored as big-endian i64 bytes in the MLS credential.
+    pub fn new(data_dir: &Path, user_id: i64) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         #[cfg(unix)]
         std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
@@ -101,7 +101,7 @@ impl MlsManager {
                 .signature_key_generate()
                 .map_err(|e| Error::Mls(format!("key generation failed: {e}")))?;
 
-            let basic_credential = BasicCredential::new(username.as_bytes().to_vec());
+            let basic_credential = BasicCredential::new(user_id.to_be_bytes().to_vec());
             let signing_identity =
                 SigningIdentity::new(basic_credential.into_credential(), public_key);
 
@@ -472,8 +472,8 @@ impl MlsManager {
                     for proposal_info in &epoch.applied_proposals {
                         match &proposal_info.proposal {
                             Proposal::Add(add) => {
-                                let name = extract_username_from_identity(add.signing_identity());
-                                members_added.push(name);
+                                let uid = extract_user_id_from_identity(add.signing_identity());
+                                members_added.push(uid);
                             }
                             Proposal::Remove(remove) => {
                                 let removed_index = remove.to_remove();
@@ -589,8 +589,8 @@ impl MlsManager {
         Ok(Some((commit_bytes, group_info_bytes)))
     }
 
-    /// Find a member's leaf index by their identity (username).
-    pub fn find_member_index(&self, mls_group_id: &str, username: &str) -> Result<Option<u32>> {
+    /// Find a member's leaf index by their user ID.
+    pub fn find_member_index(&self, mls_group_id: &str, user_id: i64) -> Result<Option<u32>> {
         let client = self.build_client()?;
         let group_id_bytes =
             hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
@@ -600,8 +600,7 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
 
         for member in group.roster().members_iter() {
-            let name = extract_username_from_identity(&member.signing_identity);
-            if name == username {
+            if extract_user_id_from_identity(&member.signing_identity) == Some(user_id) {
                 return Ok(Some(member.index));
             }
         }
@@ -697,11 +696,11 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
 
         let roster = group.roster();
-        let members: Vec<(u32, String)> = roster
+        let members: Vec<(u32, Option<i64>)> = roster
             .members_iter()
             .map(|m| {
-                let name = extract_username_from_identity(&m.signing_identity);
-                (m.index, name)
+                let uid = extract_user_id_from_identity(&m.signing_identity);
+                (m.index, uid)
             })
             .collect();
 
@@ -759,12 +758,13 @@ impl MlsManager {
     }
 }
 
-/// Extract a username from an MLS SigningIdentity's BasicCredential.
-fn extract_username_from_identity(identity: &SigningIdentity) -> String {
-    match identity.credential.as_basic() {
-        Some(basic) => String::from_utf8_lossy(&basic.identifier).to_string(),
-        None => "<unknown>".to_string(),
-    }
+/// Extract a user ID from an MLS SigningIdentity's BasicCredential.
+///
+/// The credential stores the user ID as big-endian i64 bytes (8 bytes).
+pub fn extract_user_id_from_identity(identity: &SigningIdentity) -> Option<i64> {
+    let basic = identity.credential.as_basic()?;
+    let bytes: [u8; 8] = basic.identifier.as_slice().try_into().ok()?;
+    Some(i64::from_be_bytes(bytes))
 }
 
 // ── MLS codec helpers ─────────────────────────────────────────────
@@ -790,13 +790,13 @@ mod tests {
 
     /// Create an MlsManager in a fresh temporary directory.
     /// The TempDir is returned so it stays alive for the test's duration.
-    fn create_manager(username: &str) -> (TempDir, MlsManager) {
+    fn create_manager(user_id: i64) -> (TempDir, MlsManager) {
         let dir = TempDir::new().unwrap();
-        let mgr = MlsManager::new(dir.path(), username).unwrap();
+        let mgr = MlsManager::new(dir.path(), user_id).unwrap();
         (dir, mgr)
     }
 
-    /// Helper: Alice creates a group containing herself and bob.
+    /// Helper: Alice (user_id=1) creates a group containing herself and bob (user_id=2).
     /// Returns everything needed for further interaction.
     fn setup_alice_bob() -> (
         TempDir,
@@ -808,8 +808,8 @@ mod tests {
         Vec<u8>,
         Vec<u8>,
     ) {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
@@ -834,14 +834,14 @@ mod tests {
 
     #[test]
     fn test_generate_key_package() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let kp = mgr.generate_key_package().unwrap();
         assert!(!kp.is_empty(), "key package bytes must not be empty");
     }
 
     #[test]
     fn test_generate_last_resort_key_package() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let kp = mgr.generate_last_resort_key_package().unwrap();
         assert!(
             !kp.is_empty(),
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_generate_key_packages_batch() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let packages = mgr.generate_key_packages(5).unwrap();
         assert_eq!(packages.len(), 5);
         for kp in &packages {
@@ -867,8 +867,8 @@ mod tests {
 
     #[test]
     fn test_create_group_single_member() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
@@ -945,7 +945,7 @@ mod tests {
 
         bob.join_group(&welcome_bob).unwrap();
 
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
@@ -957,8 +957,8 @@ mod tests {
         match result {
             DecryptedMessage::Commit(info) => {
                 assert!(
-                    info.members_added.contains(&"carol".to_string()),
-                    "commit info must list carol as added, got: {:?}",
+                    info.members_added.contains(&Some(3)),
+                    "commit info must list carol (user_id=3) as added, got: {:?}",
                     info.members_added
                 );
                 assert!(!info.self_removed, "bob must not be self_removed");
@@ -969,9 +969,9 @@ mod tests {
 
     #[test]
     fn test_create_group_multiple_members() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
@@ -997,9 +997,9 @@ mod tests {
 
     #[test]
     fn test_remove_member() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
@@ -1019,7 +1019,7 @@ mod tests {
             .unwrap();
 
         let carol_index = alice
-            .find_member_index(&group_id, "carol")
+            .find_member_index(&group_id, 3)
             .unwrap()
             .expect("carol must be found in group");
 
@@ -1035,7 +1035,7 @@ mod tests {
     fn test_find_member_index_found() {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
 
-        let result = alice.find_member_index(&group_id, "bob").unwrap();
+        let result = alice.find_member_index(&group_id, 2).unwrap();
         assert!(result.is_some(), "bob must be found in the group");
     }
 
@@ -1043,7 +1043,7 @@ mod tests {
     fn test_find_member_index_not_found() {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
 
-        let result = alice.find_member_index(&group_id, "carol").unwrap();
+        let result = alice.find_member_index(&group_id, 3).unwrap();
         assert!(result.is_none(), "carol must not be found in the group");
     }
 
@@ -1101,17 +1101,20 @@ mod tests {
             "members list must not be empty"
         );
 
-        let member_names: Vec<&str> = details.members.iter().map(|(_, n)| n.as_str()).collect();
+        let member_ids: Vec<Option<i64>> = details.members.iter().map(|(_, id)| *id).collect();
         assert!(
-            member_names.contains(&"alice"),
-            "members must include alice"
+            member_ids.contains(&Some(1)),
+            "members must include alice (user_id=1)"
         );
-        assert!(member_names.contains(&"bob"), "members must include bob");
+        assert!(
+            member_ids.contains(&Some(2)),
+            "members must include bob (user_id=2)"
+        );
     }
 
     #[test]
     fn test_group_info_details_nonexistent_group() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         mgr.generate_key_package().unwrap();
 
         let result = mgr.group_info_details("deadbeef");
@@ -1131,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_wipe_local_state() {
-        let (dir, mgr) = create_manager("alice");
+        let (dir, mgr) = create_manager(1);
         mgr.generate_key_package().unwrap();
 
         let data_dir = dir.path();
@@ -1171,7 +1174,7 @@ mod tests {
 
         bob.join_group(&welcome).unwrap();
 
-        let (_dir_new, alice_new) = create_manager("alice_new");
+        let (_dir_new, alice_new) = create_manager(7);
         let (new_group_id, ext_commit) = alice_new
             .external_rejoin_group(&group_info_bytes, None)
             .unwrap();
@@ -1185,7 +1188,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_message_nonexistent_group() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         mgr.generate_key_package().unwrap();
 
         let result = mgr.encrypt_message("deadbeef", b"hello");
@@ -1208,7 +1211,7 @@ mod tests {
     #[test]
     fn test_new_creates_identity_files() {
         let dir = TempDir::new().unwrap();
-        let _mgr = MlsManager::new(dir.path(), "alice").unwrap();
+        let _mgr = MlsManager::new(dir.path(), 1).unwrap();
 
         assert!(
             dir.path().join("mls_identity.bin").exists(),
@@ -1224,11 +1227,11 @@ mod tests {
     fn test_new_loads_existing_identity() {
         let dir = TempDir::new().unwrap();
 
-        let mgr1 = MlsManager::new(dir.path(), "alice").unwrap();
+        let mgr1 = MlsManager::new(dir.path(), 1).unwrap();
         let id1 = mgr1.identity_bytes.clone();
         let sk1 = mgr1.signing_key_bytes.clone();
 
-        let mgr2 = MlsManager::new(dir.path(), "alice").unwrap();
+        let mgr2 = MlsManager::new(dir.path(), 1).unwrap();
         assert_eq!(
             mgr2.identity_bytes, id1,
             "identity must be the same on reload"
@@ -1267,9 +1270,9 @@ mod tests {
 
     #[test]
     fn test_remove_member_then_decrypt() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
@@ -1292,7 +1295,7 @@ mod tests {
             .unwrap();
 
         let carol_index = alice
-            .find_member_index(&group_id, "carol")
+            .find_member_index(&group_id, 3)
             .unwrap()
             .expect("carol must be in the group");
         let (removal_commit, _gi3) = alice.remove_member(&group_id, carol_index).unwrap();
@@ -1469,7 +1472,7 @@ mod tests {
         let (_dir_a, alice, _dir_b, bob, group_id, _commit, welcome, _gi) = setup_alice_bob();
         let bob_group_id = bob.join_group(&welcome).unwrap();
 
-        let bob_index = alice.find_member_index(&group_id, "bob").unwrap().unwrap();
+        let bob_index = alice.find_member_index(&group_id, 2).unwrap().unwrap();
         let (remove_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
 
         let result = bob.decrypt_message(&bob_group_id, &remove_commit).unwrap();
@@ -1518,9 +1521,9 @@ mod tests {
 
     #[test]
     fn test_three_member_group_messaging() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let carol_kp = carol.generate_key_package().unwrap();
@@ -1550,9 +1553,9 @@ mod tests {
 
     #[test]
     fn test_sequential_member_addition() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
@@ -1593,7 +1596,7 @@ mod tests {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, gi) = setup_alice_bob();
 
         // bob2 uses external commit to join (without removing old bob)
-        let (_dir_b2, bob2) = create_manager("bob2");
+        let (_dir_b2, bob2) = create_manager(6);
         let (rejoin_gid, rejoin_commit) = bob2.external_rejoin_group(&gi, None).unwrap();
         assert_eq!(rejoin_gid, group_id);
         assert!(!rejoin_commit.is_empty());
@@ -1616,16 +1619,16 @@ mod tests {
         assert_eq!(details.member_count, 2);
         assert!(details.epoch > 0);
 
-        let member_names: Vec<&str> = details.members.iter().map(|(_, n)| n.as_str()).collect();
-        assert!(member_names.contains(&"alice"));
-        assert!(member_names.contains(&"bob"));
+        let member_ids: Vec<Option<i64>> = details.members.iter().map(|(_, id)| *id).collect();
+        assert!(member_ids.contains(&Some(1)));
+        assert!(member_ids.contains(&Some(2)));
     }
 
     // ── Key Package Properties ────────────────────────────────────
 
     #[test]
     fn test_key_package_uniqueness() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let kp1 = mgr.generate_key_package().unwrap();
         let kp2 = mgr.generate_key_package().unwrap();
         assert_ne!(kp1, kp2, "each key package must be unique");
@@ -1633,7 +1636,7 @@ mod tests {
 
     #[test]
     fn test_last_resort_differs_from_regular() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let regular = mgr.generate_key_package().unwrap();
         let last_resort = mgr.generate_last_resort_key_package().unwrap();
         assert_ne!(
@@ -1675,7 +1678,7 @@ mod tests {
 
     #[test]
     fn test_manager_data_dir() {
-        let (dir, mgr) = create_manager("alice");
+        let (dir, mgr) = create_manager(1);
         assert_eq!(mgr.data_dir(), dir.path());
     }
 
@@ -1683,7 +1686,7 @@ mod tests {
 
     #[test]
     fn test_join_with_invalid_welcome_fails() {
-        let (_dir, mgr) = create_manager("alice");
+        let (_dir, mgr) = create_manager(1);
         let result = mgr.join_group(b"definitely not a valid welcome");
         assert!(result.is_err());
     }
@@ -1693,14 +1696,14 @@ mod tests {
     #[test]
     fn test_find_member_index_for_self() {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
-        let alice_index = alice.find_member_index(&group_id, "alice").unwrap();
+        let alice_index = alice.find_member_index(&group_id, 1).unwrap();
         assert!(alice_index.is_some());
     }
 
     #[test]
     fn test_find_member_index_nonexistent_user() {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
-        let result = alice.find_member_index(&group_id, "nonexistent").unwrap();
+        let result = alice.find_member_index(&group_id, 999).unwrap();
         assert!(result.is_none());
     }
 
@@ -1711,7 +1714,7 @@ mod tests {
         let (_dir_a, alice, _dir_b, _bob, group_id, _commit, _welcome, _gi) = setup_alice_bob();
         let epoch_after_create = alice.group_info_details(&group_id).unwrap().epoch;
 
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut members = HashMap::new();
         members.insert("carol".to_string(), carol_kp);
@@ -1730,7 +1733,7 @@ mod tests {
         bob.join_group(&welcome).unwrap();
 
         let epoch_before = alice.group_info_details(&group_id).unwrap().epoch;
-        let bob_index = alice.find_member_index(&group_id, "bob").unwrap().unwrap();
+        let bob_index = alice.find_member_index(&group_id, 2).unwrap().unwrap();
         alice.remove_member(&group_id, bob_index).unwrap();
         let epoch_after = alice.group_info_details(&group_id).unwrap().epoch;
         assert!(
@@ -1763,10 +1766,10 @@ mod tests {
 
     #[test]
     fn test_wipe_then_recreate_identity() {
-        let (dir, mgr) = create_manager("alice");
+        let (dir, mgr) = create_manager(1);
         mgr.wipe_local_state().unwrap();
 
-        let mgr2 = MlsManager::new(dir.path(), "alice").unwrap();
+        let mgr2 = MlsManager::new(dir.path(), 1).unwrap();
         let kp = mgr2.generate_key_package().unwrap();
         assert!(!kp.is_empty());
     }
@@ -1841,11 +1844,11 @@ mod tests {
 
     #[test]
     fn test_five_member_group() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
-        let (_dir_d, dave) = create_manager("dave");
-        let (_dir_e, eve) = create_manager("eve");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
+        let (_dir_d, dave) = create_manager(4);
+        let (_dir_e, eve) = create_manager(5);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let carol_kp = carol.generate_key_package().unwrap();
@@ -1932,7 +1935,7 @@ mod tests {
         );
 
         // Now invite carol.
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
@@ -1965,9 +1968,9 @@ mod tests {
 
     #[test]
     fn test_removed_member_cannot_rejoin_via_welcome() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
+        let (_dir_c, carol) = create_manager(3);
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
@@ -1990,7 +1993,7 @@ mod tests {
 
         // Remove carol.
         let carol_index = alice
-            .find_member_index(&group_id, "carol")
+            .find_member_index(&group_id, 3)
             .unwrap()
             .expect("carol must be in the group");
         let (removal_commit, _gi) = alice.remove_member(&group_id, carol_index).unwrap();
@@ -2015,12 +2018,12 @@ mod tests {
 
         // Find bob's current leaf index.
         let bob_index = alice
-            .find_member_index(&group_id, "bob")
+            .find_member_index(&group_id, 2)
             .unwrap()
             .expect("bob must be found in group");
 
         // Bob does an external rejoin, removing his old leaf.
-        let (_dir_b2, bob_new) = create_manager("bob");
+        let (_dir_b2, bob_new) = create_manager(2);
         let (rejoin_gid, rejoin_commit) =
             bob_new.external_rejoin_group(&gi, Some(bob_index)).unwrap();
 
@@ -2060,8 +2063,8 @@ mod tests {
 
     #[test]
     fn test_multiple_groups_isolation() {
-        let (_dir_a, alice) = create_manager("alice");
-        let (_dir_b, bob) = create_manager("bob");
+        let (_dir_a, alice) = create_manager(1);
+        let (_dir_b, bob) = create_manager(2);
 
         // Create group 1 (alice + bob).
         let bob_kp1 = bob.generate_key_package().unwrap();
@@ -2176,7 +2179,7 @@ mod tests {
         // Alice removes bob. When bob processes the removal commit, the
         // CommitEffect should be `Removed` which sets self_removed = true.
         let bob_index = alice
-            .find_member_index(&group_id, "bob")
+            .find_member_index(&group_id, 2)
             .unwrap()
             .expect("bob must be found in group");
         let (removal_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
@@ -2195,8 +2198,8 @@ mod tests {
         // Also test the leave_group path: bob tries to leave on his own.
         // mls-rs may or may not support self-removal commits; if it does,
         // alice should see it as a removal commit.
-        let (_dir_a2, alice2) = create_manager("alice");
-        let (_dir_b2, bob2) = create_manager("bob");
+        let (_dir_a2, alice2) = create_manager(1);
+        let (_dir_b2, bob2) = create_manager(2);
 
         let bob2_kp = bob2.generate_key_package().unwrap();
         let mut members = HashMap::new();
@@ -2246,7 +2249,7 @@ mod tests {
         );
 
         // Invite carol.
-        let (_dir_c, carol) = create_manager("carol");
+        let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
@@ -2262,7 +2265,7 @@ mod tests {
 
         // Remove carol.
         let carol_index = alice
-            .find_member_index(&group_id, "carol")
+            .find_member_index(&group_id, 3)
             .unwrap()
             .expect("carol must be in the group");
         let (removal_commit, _gi) = alice.remove_member(&group_id, carol_index).unwrap();

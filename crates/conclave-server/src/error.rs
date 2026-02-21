@@ -19,6 +19,9 @@ pub enum Error {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("validation error: {0}")]
+    Validation(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -47,6 +50,7 @@ impl IntoResponse for Error {
             Error::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             Error::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             Error::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Error::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             Error::ProtobufDecode(_) => {
                 (StatusCode::BAD_REQUEST, "invalid request body".to_string())
             }
