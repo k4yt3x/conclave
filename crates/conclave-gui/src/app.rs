@@ -316,7 +316,7 @@ impl Conclave {
             _ => None,
         });
 
-        if let (Some(token), true) = (&self.token, self.rooms_loaded) {
+        if let Some(token) = &self.token {
             let sse = subscription::sse(
                 self.server_url.clone().unwrap_or_default(),
                 token.clone(),
@@ -717,11 +717,10 @@ impl Conclave {
             SseUpdate::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
 
-                // Accept any pending welcomes (invites received while
-                // disconnected) and fetch missed messages for all rooms.
+                let rooms_task = self.load_rooms_task();
                 let welcome_task = self.accept_welcomes();
                 let fetch_task = self.fetch_all_missed_messages();
-                Task::batch([welcome_task, fetch_task])
+                Task::batch([rooms_task, welcome_task, fetch_task])
             }
             SseUpdate::Connecting => {
                 self.connection_status = ConnectionStatus::Connecting;
