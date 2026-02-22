@@ -6,6 +6,58 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 
+/// A user record from the `users` table.
+#[derive(Debug)]
+pub struct UserRow {
+    pub user_id: i64,
+    pub username: String,
+    pub password_hash: String,
+    pub alias: Option<String>,
+}
+
+/// A pending welcome from the `pending_welcomes` table.
+#[derive(Debug)]
+pub struct PendingWelcomeRow {
+    pub welcome_id: i64,
+    pub group_id: i64,
+    pub group_alias: Option<String>,
+    pub welcome_data: Vec<u8>,
+}
+
+/// Result of `process_commit`: newly added members and optional message sequence number.
+#[derive(Debug)]
+pub struct CommitResult {
+    pub new_members: Vec<NewMember>,
+    pub sequence_number: Option<i64>,
+}
+
+/// A newly added group member from a commit.
+#[derive(Debug)]
+pub struct NewMember {
+    pub user_id: i64,
+    pub username: String,
+}
+
+/// A row from the `groups` table joined with membership info.
+pub struct UserGroupRow {
+    pub group_id: i64,
+    pub group_name: Option<String>,
+    pub alias: Option<String>,
+    pub creator_id: i64,
+    pub created_at: i64,
+    pub mls_group_id: Option<String>,
+}
+
+/// A row from the `messages` table joined with sender info.
+pub struct StoredMessageRow {
+    pub sequence_num: i64,
+    pub sender_id: i64,
+    pub sender_username: String,
+    pub sender_alias: Option<String>,
+    pub mls_message: Vec<u8>,
+    pub created_at: i64,
+}
+
 /// Maximum alias length for users and groups.
 const MAX_ALIAS_LENGTH: usize = 64;
 
@@ -130,7 +182,12 @@ impl Database {
         )?;
 
         // Migration: add mls_group_id column to existing databases.
-        let _ = conn.execute_batch("ALTER TABLE groups ADD COLUMN mls_group_id TEXT;");
+        if let Err(error) = conn.execute_batch("ALTER TABLE groups ADD COLUMN mls_group_id TEXT;") {
+            let message = error.to_string();
+            if !message.contains("duplicate column") {
+                tracing::warn!(%error, "migration failed: add mls_group_id column");
+            }
+        }
 
         Ok(())
     }
@@ -154,16 +211,18 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_user_by_username(
-        &self,
-        username: &str,
-    ) -> Result<Option<(i64, String, String, Option<String>)>> {
+    pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT id, username, password_hash, alias FROM users WHERE username = ?1")?;
         let result = stmt
             .query_row(params![username], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok(UserRow {
+                    user_id: row.get(0)?,
+                    username: row.get(1)?,
+                    password_hash: row.get(2)?,
+                    alias: row.get(3)?,
+                })
             })
             .optional()?;
         Ok(result)
@@ -395,20 +454,7 @@ impl Database {
         Ok(exists.is_some())
     }
 
-    /// Returns (group_id, group_name, alias, creator_id, created_at).
-    pub fn list_user_groups(
-        &self,
-        user_id: i64,
-    ) -> Result<
-        Vec<(
-            i64,
-            Option<String>,
-            Option<String>,
-            i64,
-            i64,
-            Option<String>,
-        )>,
-    > {
+    pub fn list_user_groups(&self, user_id: i64) -> Result<Vec<UserGroupRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT g.id, g.group_name, g.alias, g.creator_id, g.created_at, g.mls_group_id
@@ -419,14 +465,14 @@ impl Database {
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
+                Ok(UserGroupRow {
+                    group_id: row.get(0)?,
+                    group_name: row.get(1)?,
+                    alias: row.get(2)?,
+                    creator_id: row.get(3)?,
+                    created_at: row.get(4)?,
+                    mls_group_id: row.get(5)?,
+                })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -536,13 +582,12 @@ impl Database {
         Ok(next_seq)
     }
 
-    /// Returns (sequence_num, sender_id, sender_username, sender_alias, mls_message, created_at).
     pub fn get_messages(
         &self,
         group_id: i64,
         after_seq: i64,
         limit: i64,
-    ) -> Result<Vec<(i64, i64, String, Option<String>, Vec<u8>, i64)>> {
+    ) -> Result<Vec<StoredMessageRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT m.sequence_num, m.sender_id, u.username, u.alias, m.mls_message, m.created_at
@@ -554,14 +599,14 @@ impl Database {
         )?;
         let rows = stmt
             .query_map(params![group_id, after_seq, limit], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
+                Ok(StoredMessageRow {
+                    sequence_num: row.get(0)?,
+                    sender_id: row.get(1)?,
+                    sender_username: row.get(2)?,
+                    sender_alias: row.get(3)?,
+                    mls_message: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -586,10 +631,7 @@ impl Database {
     }
 
     /// Returns (welcome_id, group_id, group_alias, welcome_data).
-    pub fn get_pending_welcomes(
-        &self,
-        user_id: i64,
-    ) -> Result<Vec<(i64, i64, Option<String>, Vec<u8>)>> {
+    pub fn get_pending_welcomes(&self, user_id: i64) -> Result<Vec<PendingWelcomeRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, group_id, group_alias, welcome_data
@@ -599,7 +641,12 @@ impl Database {
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok(PendingWelcomeRow {
+                    welcome_id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    group_alias: row.get(2)?,
+                    welcome_data: row.get(3)?,
+                })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -641,7 +688,7 @@ impl Database {
         welcome_messages: &std::collections::HashMap<String, Vec<u8>>,
         group_info: &[u8],
         commit_message: &[u8],
-    ) -> Result<(Vec<(i64, String)>, Option<i64>)> {
+    ) -> Result<CommitResult> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let transaction = conn.savepoint()?;
 
@@ -666,7 +713,10 @@ impl Database {
                 params![group_id, group_alias, user_id, welcome_data],
             )?;
 
-            new_members.push((user_id, username.clone()));
+            new_members.push(NewMember {
+                user_id,
+                username: username.clone(),
+            });
         }
 
         if !group_info.is_empty() {
@@ -699,7 +749,10 @@ impl Database {
         };
 
         transaction.commit()?;
-        Ok((new_members, sequence_number))
+        Ok(CommitResult {
+            new_members,
+            sequence_number,
+        })
     }
 
     pub fn get_group_info(&self, group_id: i64) -> Result<Option<Vec<u8>>> {
@@ -736,10 +789,10 @@ mod tests {
         assert!(id > 0);
 
         let user = db.get_user_by_username("alice").unwrap().unwrap();
-        assert_eq!(user.0, id);
-        assert_eq!(user.1, "alice");
-        assert_eq!(user.2, "hash123");
-        assert!(user.3.is_none());
+        assert_eq!(user.user_id, id);
+        assert_eq!(user.username, "alice");
+        assert_eq!(user.password_hash, "hash123");
+        assert!(user.alias.is_none());
 
         // Duplicate username should fail.
         let result = db.create_user("alice", "hash456");
@@ -773,7 +826,7 @@ mod tests {
 
         let groups = db.list_user_groups(alice).unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].2, Some("test-group".to_string()));
+        assert_eq!(groups[0].alias, Some("test-group".to_string()));
 
         let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 2);
@@ -785,13 +838,13 @@ mod tests {
 
         let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].4, b"msg1");
-        assert_eq!(msgs[1].4, b"msg2");
+        assert_eq!(msgs[0].mls_message, b"msg1");
+        assert_eq!(msgs[1].mls_message, b"msg2");
 
         // Fetch after seq 1.
         let msgs = db.get_messages(group_id, 1, 100).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].4, b"msg2");
+        assert_eq!(msgs[0].mls_message, b"msg2");
     }
 
     #[test]
@@ -1061,9 +1114,9 @@ mod tests {
 
         let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0].0, 1);
-        assert_eq!(msgs[1].0, 2);
-        assert_eq!(msgs[2].0, 3);
+        assert_eq!(msgs[0].sequence_num, 1);
+        assert_eq!(msgs[1].sequence_num, 2);
+        assert_eq!(msgs[2].sequence_num, 3);
     }
 
     #[test]
@@ -1091,8 +1144,8 @@ mod tests {
 
         let msgs = db.get_messages(group_id, 0, 2).unwrap();
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].0, 1);
-        assert_eq!(msgs[1].0, 2);
+        assert_eq!(msgs[0].sequence_num, 1);
+        assert_eq!(msgs[1].sequence_num, 2);
     }
 
     #[test]
@@ -1106,11 +1159,11 @@ mod tests {
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
         assert_eq!(welcomes.len(), 1);
-        assert_eq!(welcomes[0].1, group_id);
-        assert_eq!(welcomes[0].2, Some("test-group".to_string()));
-        assert_eq!(welcomes[0].3, b"welcome_data");
+        assert_eq!(welcomes[0].group_id, group_id);
+        assert_eq!(welcomes[0].group_alias, Some("test-group".to_string()));
+        assert_eq!(welcomes[0].welcome_data, b"welcome_data");
 
-        let welcome_id = welcomes[0].0;
+        let welcome_id = welcomes[0].welcome_id;
         db.delete_pending_welcome(welcome_id, alice).unwrap();
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
@@ -1199,7 +1252,7 @@ mod tests {
         welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
         welcomes.insert("charlie".to_string(), b"welcome_charlie".to_vec());
 
-        let (new_members, seq) = db
+        let result = db
             .process_commit(
                 group_id,
                 Some("test-group"),
@@ -1210,7 +1263,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(new_members.len(), 2);
+        assert_eq!(result.new_members.len(), 2);
         assert!(db.is_group_member(group_id, bob).unwrap());
         assert!(db.is_group_member(group_id, charlie).unwrap());
 
@@ -1219,10 +1272,10 @@ mod tests {
         let charlie_welcomes = db.get_pending_welcomes(charlie).unwrap();
         assert_eq!(charlie_welcomes.len(), 1);
 
-        assert_eq!(seq, Some(1));
+        assert_eq!(result.sequence_number, Some(1));
         let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].4, b"commit_msg");
+        assert_eq!(msgs[0].mls_message, b"commit_msg");
     }
 
     #[test]
@@ -1236,7 +1289,7 @@ mod tests {
         let mut welcomes = std::collections::HashMap::new();
         welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
 
-        let (new_members, seq) = db
+        let result = db
             .process_commit(
                 group_id,
                 Some("test-group"),
@@ -1247,8 +1300,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(new_members.len(), 1);
-        assert_eq!(seq, None);
+        assert_eq!(result.new_members.len(), 1);
+        assert_eq!(result.sequence_number, None);
         let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert!(msgs.is_empty());
     }
@@ -1316,11 +1369,11 @@ mod tests {
 
         let msgs_g1 = db.get_messages(g1, 0, 100).unwrap();
         assert_eq!(msgs_g1.len(), 1);
-        assert_eq!(msgs_g1[0].4, b"msg_g1");
+        assert_eq!(msgs_g1[0].mls_message, b"msg_g1");
 
         let msgs_g2 = db.get_messages(g2, 0, 100).unwrap();
         assert_eq!(msgs_g2.len(), 1);
-        assert_eq!(msgs_g2[0].4, b"msg_g2");
+        assert_eq!(msgs_g2[0].mls_message, b"msg_g2");
     }
 
     #[test]
@@ -1364,7 +1417,7 @@ mod tests {
 
         let welcomes = db.get_pending_welcomes(alice).unwrap();
         assert_eq!(welcomes.len(), 1);
-        let welcome_id = welcomes[0].0;
+        let welcome_id = welcomes[0].welcome_id;
 
         db.delete_pending_welcome(welcome_id, bob).unwrap();
 
@@ -1473,9 +1526,9 @@ mod tests {
 
         let groups = db.list_user_groups(alice).unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].0, group_id);
-        assert_eq!(groups[0].1, Some("dev-chat".to_string()));
-        assert_eq!(groups[0].2, Some("Dev Chat Room".to_string()));
+        assert_eq!(groups[0].group_id, group_id);
+        assert_eq!(groups[0].group_name, Some("dev-chat".to_string()));
+        assert_eq!(groups[0].alias, Some("Dev Chat Room".to_string()));
 
         // Update alias.
         db.update_group_alias(group_id, Some("New Dev Chat"))

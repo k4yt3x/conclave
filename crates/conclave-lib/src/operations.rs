@@ -429,26 +429,25 @@ pub async fn create_group(
 
     let data_dir = data_dir.to_path_buf();
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        tokio::task::spawn_blocking(move || {
-            let mls = MlsManager::new(&data_dir, user_id)?;
-            mls.create_group(&member_key_packages)
-        })
-        .await
-        .map_err(|e| Error::Other(format!("task join error: {e}")))??;
+    let result = tokio::task::spawn_blocking(move || {
+        let mls = MlsManager::new(&data_dir, user_id)?;
+        mls.create_group(&member_key_packages)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
     api.upload_commit(
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
-        Some(&mls_group_id),
+        result.commit,
+        result.welcomes,
+        result.group_info,
+        Some(&result.mls_group_id),
     )
     .await?;
 
     Ok(GroupCreatedResult {
         server_group_id,
-        mls_group_id,
+        mls_group_id: result.mls_group_id,
     })
 }
 
@@ -477,7 +476,7 @@ pub async fn invite_members(
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();
 
-    let (commit_bytes, welcome_map, group_info_bytes) = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
         mls.invite_to_group(&mls_group_id, &member_key_packages)
     })
@@ -486,9 +485,9 @@ pub async fn invite_members(
 
     api.upload_commit(
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        result.commit,
+        result.welcomes,
+        result.group_info,
         None,
     )
     .await?;

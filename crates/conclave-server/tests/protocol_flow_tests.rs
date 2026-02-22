@@ -234,16 +234,15 @@ async fn test_e2e_group_creation_and_messaging() {
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "test-room", vec!["bob".into()]).await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
 
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map.clone(),
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes.clone(),
+        create_result.group_info,
     )
     .await;
 
@@ -251,6 +250,7 @@ async fn test_e2e_group_creation_and_messaging() {
     assert_eq!(welcomes.len(), 1);
     assert_eq!(welcomes[0].group_id, server_group_id);
 
+    let mls_group_id = create_result.mls_group_id;
     let bob_mls_group_id = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_group_id, mls_group_id);
 
@@ -328,16 +328,16 @@ async fn test_e2e_three_party_messaging() {
     )
     .await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id;
 
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes,
+        create_result.group_info,
     )
     .await;
 
@@ -408,8 +408,8 @@ async fn test_e2e_post_creation_invite_flow() {
 
     let (server_group_id, _) = create_server_group(&app, &alice_token, "solo-room", vec![]).await;
 
-    let (mls_group_id, _commit, _welcome_map, group_info_bytes) =
-        alice_mls.create_group(&HashMap::new()).unwrap();
+    let create_result = alice_mls.create_group(&HashMap::new()).unwrap();
+    let mls_group_id = create_result.mls_group_id;
 
     upload_commit(
         &app,
@@ -417,7 +417,7 @@ async fn test_e2e_post_creation_invite_flow() {
         server_group_id,
         vec![],
         HashMap::new(),
-        group_info_bytes,
+        create_result.group_info,
     )
     .await;
 
@@ -439,7 +439,7 @@ async fn test_e2e_post_creation_invite_flow() {
     let invite_resp = conclave_proto::InviteToGroupResponse::decode(body_bytes).unwrap();
 
     // Alice performs the MLS invite using bob's key package from the server.
-    let (commit_bytes, welcome_map, group_info_bytes) = alice_mls
+    let invite_result = alice_mls
         .invite_to_group(&mls_group_id, &invite_resp.member_key_packages)
         .unwrap();
 
@@ -448,9 +448,9 @@ async fn test_e2e_post_creation_invite_flow() {
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        invite_result.commit,
+        invite_result.welcomes,
+        invite_result.group_info,
     )
     .await;
 
@@ -507,15 +507,15 @@ async fn test_e2e_member_removal_flow() {
     )
     .await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id;
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes,
+        create_result.group_info,
     )
     .await;
 
@@ -622,15 +622,15 @@ async fn test_e2e_key_rotation_continuity() {
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "rotation-test", vec!["bob".into()]).await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id;
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes,
+        create_result.group_info,
     )
     .await;
 
@@ -705,15 +705,15 @@ async fn test_e2e_external_rejoin_after_removal() {
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "rejoin-test", vec!["bob".into()]).await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id;
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes,
+        create_result.group_info,
     )
     .await;
 
@@ -867,15 +867,15 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     let (server_group_id, member_kps) =
         create_server_group(&app, &alice_token, "ordering-test", vec!["bob".into()]).await;
 
-    let (mls_group_id, commit_bytes, welcome_map, group_info_bytes) =
-        alice_mls.create_group(&member_kps).unwrap();
+    let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id;
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
-        commit_bytes,
-        welcome_map,
-        group_info_bytes,
+        create_result.commit,
+        create_result.welcomes,
+        create_result.group_info,
     )
     .await;
 

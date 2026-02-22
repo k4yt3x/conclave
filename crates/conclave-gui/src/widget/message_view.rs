@@ -92,18 +92,18 @@ fn format_tooltip(msg: &DisplayMessage, members: &[RoomMember], group_id: Option
 
     let mut lines = vec![format!("Timestamp: {datetime}")];
 
-    if !msg.is_system {
-        if let Some(sid) = msg.sender_id {
-            lines.push(format!("Sender ID: {sid}"));
-            let member = members.iter().find(|m| m.user_id == sid);
-            let username = member.map(|m| m.username.as_str()).unwrap_or(&msg.sender);
-            lines.push(format!("Sender username: {username}"));
-            if let Some(alias) = member
-                .and_then(|m| m.alias.as_deref())
-                .filter(|a| !a.is_empty())
-            {
-                lines.push(format!("Sender alias: {alias}"));
-            }
+    if !msg.is_system
+        && let Some(sid) = msg.sender_id
+    {
+        lines.push(format!("Sender ID: {sid}"));
+        let member = members.iter().find(|m| m.user_id == sid);
+        let username = member.map(|m| m.username.as_str()).unwrap_or(&msg.sender);
+        lines.push(format!("Sender username: {username}"));
+        if let Some(alias) = member
+            .and_then(|m| m.alias.as_deref())
+            .filter(|a| !a.is_empty())
+        {
+            lines.push(format!("Sender alias: {alias}"));
         }
     }
 

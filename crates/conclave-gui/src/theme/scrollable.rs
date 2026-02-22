@@ -40,7 +40,7 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
     match status {
         Status::Active { .. } => Style {
             container: iced::widget::container::Style::default(),
-            vertical_rail: rail.clone(),
+            vertical_rail: rail,
             horizontal_rail: rail,
             gap: None,
             auto_scroll: default_auto_scroll(theme),
@@ -61,10 +61,10 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
                             background: Background::Color(theme.text_secondary),
                             ..rail.scroller
                         },
-                        ..rail.clone()
+                        ..rail
                     }
                 } else {
-                    rail.clone()
+                    rail
                 }
             };
 
@@ -92,10 +92,10 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
                             background: Background::Color(theme.primary),
                             ..rail.scroller
                         },
-                        ..rail.clone()
+                        ..rail
                     }
                 } else {
-                    rail.clone()
+                    rail
                 }
             };
 

@@ -42,6 +42,7 @@ impl Dashboard {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn view<'a>(
         &'a self,
         rooms: &'a HashMap<i64, Room>,
@@ -81,6 +82,7 @@ impl Dashboard {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn view_sidebar<'a>(
         &'a self,
         rooms: &'a HashMap<i64, Room>,
@@ -101,7 +103,7 @@ impl Dashboard {
         let mut room_list = column![].spacing(2).padding([0, 8]);
 
         let mut sorted_rooms: Vec<_> = rooms.values().collect();
-        sorted_rooms.sort_by(|a, b| a.display_name().cmp(&b.display_name()));
+        sorted_rooms.sort_by_key(|a| a.display_name());
 
         for room in sorted_rooms {
             let is_active = active_room == &Some(room.server_group_id);
@@ -139,7 +141,7 @@ impl Dashboard {
             .width(Length::Fill)
             .padding([6, 10])
             .class(style)
-            .on_press(Message::RoomSelected(room.server_group_id.clone()));
+            .on_press(Message::RoomSelected(room.server_group_id));
 
             room_list = room_list.push(room_button);
         }
@@ -300,7 +302,7 @@ impl Dashboard {
             .align_y(Vertical::Bottom)
             .padding(iced::Padding::ZERO.bottom(40).left(12));
 
-        opaque(mouse_area(positioned_card).on_press(Message::CloseUserPopover)).into()
+        opaque(mouse_area(positioned_card).on_press(Message::CloseUserPopover))
     }
 
     fn view_main_area<'a>(
@@ -453,9 +455,7 @@ impl Dashboard {
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 
-        let messages_area = scrollable(content)
-            .height(Length::Fill)
-            .anchor_bottom();
+        let messages_area = scrollable(content).height(Length::Fill).anchor_bottom();
 
         if let Some(toast_text) = &self.toast {
             let toast_badge = container(

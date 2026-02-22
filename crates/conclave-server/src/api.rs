@@ -15,7 +15,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::auth::{self, AuthUser};
 use crate::db::validate_alias;
 use crate::error::{Error, Result};
-use crate::state::AppState;
+use crate::state::{AppState, SseEvent};
 
 /// Build the axum router with all API routes.
 pub fn router() -> Router<Arc<AppState>> {
@@ -111,6 +111,27 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
+/// Encode a protobuf `ServerEvent` and broadcast it to the given user IDs via
+/// SSE. Encoding failures are logged at error level; send failures (e.g. no
+/// active receivers) are logged at trace level.
+fn broadcast_sse(
+    sse_tx: &tokio::sync::broadcast::Sender<SseEvent>,
+    event: conclave_proto::ServerEvent,
+    target_user_ids: Vec<i64>,
+) {
+    let mut data = Vec::new();
+    if let Err(error) = event.encode(&mut data) {
+        tracing::error!(%error, "failed to encode SSE event");
+        return;
+    }
+    if let Err(error) = sse_tx.send(SseEvent {
+        data,
+        target_user_ids,
+    }) {
+        tracing::trace!(error = %error, "SSE broadcast dropped (no receivers)");
+    }
+}
+
 // ── Public Endpoints ──────────────────────────────────────────────
 
 async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl IntoResponse> {
@@ -174,33 +195,35 @@ async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<impl I
 
     let user_record = state.db.get_user_by_username(&request.username)?;
 
-    let (user_id, username, password_hash, _alias) = match user_record {
+    let user_record = match user_record {
         Some(record) => record,
         None => {
-            // Verify against a precomputed hash to equalize timing and
-            // prevent username enumeration. Both paths now execute
-            // verify_password with identical computational cost.
+            // Timing equalization: perform dummy password verification to
+            // prevent distinguishing "user not found" from "wrong password"
+            // via timing. The result is intentionally unused.
             let _ = auth::verify_password("dummy", auth::dummy_hash());
             return Err(Error::Unauthorized("invalid username or password".into()));
         }
     };
 
-    if !auth::verify_password(&request.password, &password_hash)? {
+    if !auth::verify_password(&request.password, &user_record.password_hash)? {
         return Err(Error::Unauthorized("invalid username or password".into()));
     }
 
     let token = auth::generate_token();
     let expires_at = unix_now() + state.config.token_ttl_seconds;
-    state.db.create_session(&token, user_id, expires_at)?;
+    state
+        .db
+        .create_session(&token, user_record.user_id, expires_at)?;
 
-    tracing::info!(user_id, username = %username, "user logged in");
+    tracing::info!(user_id = user_record.user_id, username = %user_record.username, "user logged in");
 
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::LoginResponse {
             token,
-            user_id,
-            username,
+            user_id: user_record.user_id,
+            username: user_record.username,
         },
     ))
 }
@@ -245,8 +268,8 @@ async fn update_profile(
 
     // Broadcast GroupUpdateEvent to all co-members so they refresh member lists.
     let user_groups = state.db.list_user_groups(auth.user_id)?;
-    for (group_id, _, _, _, _, _) in &user_groups {
-        let members = state.db.get_group_members(*group_id)?;
+    for group_row in &user_groups {
+        let members = state.db.get_group_members(group_row.group_id)?;
         let target_ids: Vec<i64> = members
             .iter()
             .map(|(id, _, _)| *id)
@@ -257,22 +280,18 @@ async fn update_profile(
             continue;
         }
 
-        let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::GroupUpdate(
-                conclave_proto::GroupUpdateEvent {
-                    group_id: *group_id,
-                    update_type: "member_profile".into(),
-                },
-            )),
-        };
-        let mut event_bytes = Vec::new();
-        if let Err(error) = event.encode(&mut event_bytes) {
-            tracing::error!(%error, "failed to encode SSE event");
-        }
-        let _ = state.sse_tx.send(crate::state::SseEvent {
-            data: event_bytes,
-            target_user_ids: target_ids,
-        });
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                    conclave_proto::GroupUpdateEvent {
+                        group_id: group_row.group_id,
+                        update_type: "member_profile".into(),
+                    },
+                )),
+            },
+            target_ids,
+        );
     }
 
     Ok(proto_response(
@@ -286,7 +305,7 @@ async fn get_user_by_username(
     _auth: AuthUser,
     Path(username): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let (user_id, username, _, alias) = state
+    let user = state
         .db
         .get_user_by_username(&username)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
@@ -294,9 +313,9 @@ async fn get_user_by_username(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id,
-            username,
-            alias: alias.unwrap_or_default(),
+            user_id: user.user_id,
+            username: user.username,
+            alias: user.alias.unwrap_or_default(),
         },
     ))
 }
@@ -420,8 +439,8 @@ async fn list_groups(
     let groups = state.db.list_user_groups(auth.user_id)?;
 
     let mut group_infos = Vec::new();
-    for (group_id, group_name, alias, creator_id, created_at, mls_group_id) in groups {
-        let members = state.db.get_group_members(group_id)?;
+    for row in groups {
+        let members = state.db.get_group_members(row.group_id)?;
         let member_protos = members
             .into_iter()
             .map(|(uid, uname, ualias)| conclave_proto::GroupMember {
@@ -432,13 +451,13 @@ async fn list_groups(
             .collect();
 
         group_infos.push(conclave_proto::GroupInfo {
-            group_id,
-            alias: alias.unwrap_or_default(),
-            group_name: group_name.unwrap_or_default(),
-            creator_id,
+            group_id: row.group_id,
+            alias: row.alias.unwrap_or_default(),
+            group_name: row.group_name.unwrap_or_default(),
+            creator_id: row.creator_id,
             members: member_protos,
-            created_at: created_at as u64,
-            mls_group_id: mls_group_id.unwrap_or_default(),
+            created_at: row.created_at as u64,
+            mls_group_id: row.mls_group_id.unwrap_or_default(),
         });
     }
 
@@ -489,22 +508,18 @@ async fn update_group(
         .collect();
 
     if !target_ids.is_empty() {
-        let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::GroupUpdate(
-                conclave_proto::GroupUpdateEvent {
-                    group_id,
-                    update_type: "group_settings".into(),
-                },
-            )),
-        };
-        let mut event_bytes = Vec::new();
-        if let Err(error) = event.encode(&mut event_bytes) {
-            tracing::error!(%error, "failed to encode SSE event");
-        }
-        let _ = state.sse_tx.send(crate::state::SseEvent {
-            data: event_bytes,
-            target_user_ids: target_ids,
-        });
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                    conclave_proto::GroupUpdateEvent {
+                        group_id,
+                        update_type: "group_settings".into(),
+                    },
+                )),
+            },
+            target_ids,
+        );
     }
 
     Ok(proto_response(
@@ -582,7 +597,7 @@ async fn upload_commit(
     let group_alias = state.db.get_group_alias(group_id)?;
 
     // Perform all DB operations atomically in a single transaction.
-    let (new_members, _sequence_number) = state.db.process_commit(
+    let commit_result = state.db.process_commit(
         group_id,
         group_alias.as_deref(),
         auth.user_id,
@@ -596,52 +611,47 @@ async fn upload_commit(
     }
 
     // Send SSE notifications after the transaction has committed.
-    for (user_id, _) in &new_members {
-        let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::Welcome(
-                conclave_proto::WelcomeEvent {
-                    group_id,
-                    group_alias: group_alias.clone().unwrap_or_default(),
-                },
-            )),
-        };
-        let mut event_bytes = Vec::new();
-        if let Err(error) = event.encode(&mut event_bytes) {
-            tracing::error!(%error, "failed to encode SSE event");
-        }
-        let _ = state.sse_tx.send(crate::state::SseEvent {
-            data: event_bytes,
-            target_user_ids: vec![*user_id],
-        });
+    for member in &commit_result.new_members {
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::Welcome(
+                    conclave_proto::WelcomeEvent {
+                        group_id,
+                        group_alias: group_alias.clone().unwrap_or_default(),
+                    },
+                )),
+            },
+            vec![member.user_id],
+        );
     }
 
     if !request.commit_message.is_empty() {
         // Notify existing members (excluding sender and newly added members).
         let members = state.db.get_group_members(group_id)?;
-        let new_member_ids: std::collections::HashSet<i64> =
-            new_members.iter().map(|(id, _)| *id).collect();
+        let new_member_ids: std::collections::HashSet<i64> = commit_result
+            .new_members
+            .iter()
+            .map(|m| m.user_id)
+            .collect();
         let member_ids: Vec<i64> = members
             .iter()
             .map(|(id, _, _)| *id)
             .filter(|id| *id != auth.user_id && !new_member_ids.contains(id))
             .collect();
 
-        let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::GroupUpdate(
-                conclave_proto::GroupUpdateEvent {
-                    group_id,
-                    update_type: "commit".into(),
-                },
-            )),
-        };
-        let mut event_bytes = Vec::new();
-        if let Err(error) = event.encode(&mut event_bytes) {
-            tracing::error!(%error, "failed to encode SSE event");
-        }
-        let _ = state.sse_tx.send(crate::state::SseEvent {
-            data: event_bytes,
-            target_user_ids: member_ids,
-        });
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                    conclave_proto::GroupUpdateEvent {
+                        group_id,
+                        update_type: "commit".into(),
+                    },
+                )),
+            },
+            member_ids,
+        );
     }
 
     Ok(proto_response(
@@ -674,23 +684,19 @@ async fn send_message(
         .filter(|id| *id != auth.user_id)
         .collect();
 
-    let event = conclave_proto::ServerEvent {
-        event: Some(conclave_proto::server_event::Event::NewMessage(
-            conclave_proto::NewMessageEvent {
-                group_id,
-                sequence_num: sequence_num as u64,
-                sender_id: auth.user_id,
-            },
-        )),
-    };
-    let mut event_bytes = Vec::new();
-    if let Err(error) = event.encode(&mut event_bytes) {
-        tracing::error!(%error, "failed to encode SSE event");
-    }
-    let _ = state.sse_tx.send(crate::state::SseEvent {
-        data: event_bytes,
-        target_user_ids: member_ids,
-    });
+    broadcast_sse(
+        &state.sse_tx,
+        conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::NewMessage(
+                conclave_proto::NewMessageEvent {
+                    group_id,
+                    sequence_num: sequence_num as u64,
+                    sender_id: auth.user_id,
+                },
+            )),
+        },
+        member_ids,
+    );
 
     Ok(proto_response(
         StatusCode::OK,
@@ -727,25 +733,14 @@ async fn get_messages(
 
     let stored_messages: Vec<conclave_proto::StoredMessage> = messages
         .into_iter()
-        .map(
-            |(
-                sequence_number,
-                sender_id,
-                sender_username,
-                sender_alias,
-                mls_message,
-                created_at,
-            )| {
-                conclave_proto::StoredMessage {
-                    sequence_num: sequence_number as u64,
-                    sender_id,
-                    sender_username,
-                    sender_alias: sender_alias.unwrap_or_default(),
-                    mls_message,
-                    created_at: created_at as u64,
-                }
-            },
-        )
+        .map(|row| conclave_proto::StoredMessage {
+            sequence_num: row.sequence_num as u64,
+            sender_id: row.sender_id,
+            sender_username: row.sender_username,
+            sender_alias: row.sender_alias.unwrap_or_default(),
+            mls_message: row.mls_message,
+            created_at: row.created_at as u64,
+        })
         .collect();
 
     Ok(proto_response(
@@ -764,14 +759,12 @@ async fn list_pending_welcomes(
 
     let pending: Vec<conclave_proto::PendingWelcome> = welcomes
         .into_iter()
-        .map(
-            |(id, group_id, group_alias, welcome_data)| conclave_proto::PendingWelcome {
-                group_id,
-                group_alias: group_alias.unwrap_or_default(),
-                welcome_message: welcome_data,
-                welcome_id: id,
-            },
-        )
+        .map(|row| conclave_proto::PendingWelcome {
+            group_id: row.group_id,
+            group_alias: row.group_alias.unwrap_or_default(),
+            welcome_message: row.welcome_data,
+            welcome_id: row.welcome_id,
+        })
         .collect();
 
     Ok(proto_response(
@@ -787,7 +780,7 @@ async fn accept_welcome(
 ) -> Result<impl IntoResponse> {
     // Verify the welcome belongs to this user by checking pending_welcomes.
     let welcomes = state.db.get_pending_welcomes(auth.user_id)?;
-    if !welcomes.iter().any(|(id, _, _, _)| *id == welcome_id) {
+    if !welcomes.iter().any(|row| row.welcome_id == welcome_id) {
         return Err(Error::NotFound("welcome not found".into()));
     }
 
@@ -841,28 +834,21 @@ async fn remove_group_member(
     let members = state.db.get_group_members(group_id)?;
     let member_ids: Vec<i64> = members.iter().map(|(id, _, _)| *id).collect();
 
-    let event = conclave_proto::ServerEvent {
-        event: Some(conclave_proto::server_event::Event::MemberRemoved(
-            conclave_proto::MemberRemovedEvent {
-                group_id,
-                removed_username: request.username.clone(),
-            },
-        )),
-    };
-    let mut event_bytes = Vec::new();
-    if let Err(error) = event.encode(&mut event_bytes) {
-        tracing::error!(%error, "failed to encode SSE event");
-    }
-    let _ = state.sse_tx.send(crate::state::SseEvent {
-        data: event_bytes.clone(),
-        target_user_ids: member_ids,
-    });
-
-    // Also notify the removed user.
-    let _ = state.sse_tx.send(crate::state::SseEvent {
-        data: event_bytes,
-        target_user_ids: vec![target_user_id],
-    });
+    // Notify remaining members and the removed user.
+    let mut all_targets = member_ids;
+    all_targets.push(target_user_id);
+    broadcast_sse(
+        &state.sse_tx,
+        conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::MemberRemoved(
+                conclave_proto::MemberRemovedEvent {
+                    group_id,
+                    removed_username: request.username.clone(),
+                },
+            )),
+        },
+        all_targets,
+    );
 
     Ok(proto_response(
         StatusCode::OK,
@@ -907,22 +893,18 @@ async fn leave_group(
     let members = state.db.get_group_members(group_id)?;
     let member_ids: Vec<i64> = members.iter().map(|(id, _, _)| *id).collect();
 
-    let event = conclave_proto::ServerEvent {
-        event: Some(conclave_proto::server_event::Event::MemberRemoved(
-            conclave_proto::MemberRemovedEvent {
-                group_id,
-                removed_username: username,
-            },
-        )),
-    };
-    let mut event_bytes = Vec::new();
-    if let Err(error) = event.encode(&mut event_bytes) {
-        tracing::error!(%error, "failed to encode SSE event");
-    }
-    let _ = state.sse_tx.send(crate::state::SseEvent {
-        data: event_bytes,
-        target_user_ids: member_ids,
-    });
+    broadcast_sse(
+        &state.sse_tx,
+        conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::MemberRemoved(
+                conclave_proto::MemberRemovedEvent {
+                    group_id,
+                    removed_username: username,
+                },
+            )),
+        },
+        member_ids,
+    );
 
     Ok(proto_response(
         StatusCode::OK,
@@ -1001,22 +983,18 @@ async fn external_join(
             .map(|(_, username, _)| username)
             .unwrap_or_else(|| format!("user#{}", auth.user_id));
 
-        let event = conclave_proto::ServerEvent {
-            event: Some(conclave_proto::server_event::Event::IdentityReset(
-                conclave_proto::IdentityResetEvent {
-                    group_id,
-                    username: reset_username,
-                },
-            )),
-        };
-        let mut event_bytes = Vec::new();
-        if let Err(error) = event.encode(&mut event_bytes) {
-            tracing::error!(%error, "failed to encode SSE event");
-        }
-        let _ = state.sse_tx.send(crate::state::SseEvent {
-            data: event_bytes,
-            target_user_ids: member_ids,
-        });
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::IdentityReset(
+                    conclave_proto::IdentityResetEvent {
+                        group_id,
+                        username: reset_username,
+                    },
+                )),
+            },
+            member_ids,
+        );
     }
 
     Ok(proto_response(
@@ -1056,7 +1034,11 @@ async fn sse_stream(
             Some(Ok(Event::default().data(encoded)))
         }
         Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
-            tracing::warn!(user_id = user_id, count = count, "SSE client lagged, events dropped");
+            tracing::warn!(
+                user_id = user_id,
+                count = count,
+                "SSE client lagged, events dropped"
+            );
             Some(Ok(Event::default().event("lagged").data(count.to_string())))
         }
         _ => None,

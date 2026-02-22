@@ -63,12 +63,11 @@ impl ThemeConfig {
     /// Returns default (all `None`) if the file is missing or malformed.
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join("config.toml");
-        if path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(config) = toml::from_str::<ConfigFile>(&contents) {
-                    return config.theme;
-                }
-            }
+        if path.exists()
+            && let Ok(contents) = std::fs::read_to_string(&path)
+            && let Ok(config) = toml::from_str::<ConfigFile>(&contents)
+        {
+            return config.theme;
         }
         Self::default()
     }

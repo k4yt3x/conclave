@@ -103,10 +103,10 @@ impl DisplayMessage {
 /// name (alias if set, otherwise username). Falls back to the stored `sender`
 /// string for system messages or when the sender is not in the member list.
 pub fn resolve_sender_name(msg: &DisplayMessage, members: &[RoomMember]) -> String {
-    if let Some(sid) = msg.sender_id {
-        if let Some(member) = members.iter().find(|m| m.user_id == sid) {
-            return member.display_name().to_string();
-        }
+    if let Some(sid) = msg.sender_id
+        && let Some(member) = members.iter().find(|m| m.user_id == sid)
+    {
+        return member.display_name().to_string();
     }
     msg.sender.clone()
 }

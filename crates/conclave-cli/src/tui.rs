@@ -255,11 +255,11 @@ async fn main_loop(
 
                             // Persist updated last_read_seq if the user is
                             // viewing a room (auto-mark as read).
-                            if let Some(gid) = &state.active_room {
-                                if let Some(room) = state.rooms.get_mut(gid) {
-                                    room.last_read_seq = room.last_seen_seq;
-                                    store.set_last_read_seq(*gid, room.last_read_seq);
-                                }
+                            if let Some(gid) = &state.active_room
+                                && let Some(room) = state.rooms.get_mut(gid)
+                            {
+                                room.last_read_seq = room.last_seen_seq;
+                                store.set_last_read_seq(*gid, room.last_read_seq);
                             }
                         }
 
@@ -474,16 +474,16 @@ async fn handle_key_event(
                             if should_start_sse {
                                 // Open the message store after a fresh /login
                                 // so messages and seq values are persisted.
-                                if msg_store.is_none() {
-                                    if let Ok(store) = MessageStore::open(&config.data_dir) {
-                                        *msg_store = Some(store);
-                                    }
+                                if msg_store.is_none()
+                                    && let Ok(store) = MessageStore::open(&config.data_dir)
+                                {
+                                    *msg_store = Some(store);
                                 }
-                                if sse_source.is_none() {
-                                    if let Ok(es) = api.lock().await.connect_sse() {
-                                        *sse_source = Some(es);
-                                        state.connection_status = ConnectionStatus::Connecting;
-                                    }
+                                if sse_source.is_none()
+                                    && let Ok(es) = api.lock().await.connect_sse()
+                                {
+                                    *sse_source = Some(es);
+                                    state.connection_status = ConnectionStatus::Connecting;
                                 }
                             }
                         }
@@ -655,12 +655,12 @@ fn add_and_render_message(
 
     if is_active_view {
         // Mark messages as read when the user is viewing the room.
-        if let Some(gid) = &effective_gid {
-            if let Some(room) = state.rooms.get_mut(gid) {
-                room.last_read_seq = room.last_seen_seq;
-                if let Some(store) = msg_store {
-                    store.set_last_read_seq(*gid, room.last_read_seq);
-                }
+        if let Some(gid) = &effective_gid
+            && let Some(room) = state.rooms.get_mut(gid)
+        {
+            room.last_read_seq = room.last_seen_seq;
+            if let Some(store) = msg_store {
+                store.set_last_read_seq(*gid, room.last_read_seq);
             }
         }
         // Reset scroll to bottom when new messages arrive.

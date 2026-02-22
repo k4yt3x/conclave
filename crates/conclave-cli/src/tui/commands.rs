@@ -689,10 +689,10 @@ pub async fn execute(
 
             // Delete saved session file.
             let session_path = config.data_dir.join("session.toml");
-            if let Err(error) = std::fs::remove_file(&session_path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(%error, "failed to remove session file");
-                }
+            if let Err(error) = std::fs::remove_file(&session_path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, "failed to remove session file");
             }
 
             msgs.push(DisplayMessage::system("Logged out. Session revoked."));
@@ -898,10 +898,10 @@ pub async fn load_rooms(
             state.group_mapping.remove(id);
         }
 
-        if let Some(active) = state.active_room {
-            if stale_ids.contains(&active) {
-                state.active_room = None;
-            }
+        if let Some(active) = state.active_room
+            && stale_ids.contains(&active)
+        {
+            state.active_room = None;
         }
     }
 

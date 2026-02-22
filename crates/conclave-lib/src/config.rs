@@ -80,9 +80,15 @@ impl ClientConfig {
         let config_dir = default_config_dir();
         let path = config_dir.join("config.toml");
         if path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(config) = toml::from_str::<Self>(&contents) {
-                    return config;
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => match toml::from_str::<Self>(&contents) {
+                    Ok(config) => return config,
+                    Err(error) => {
+                        tracing::warn!(%error, ?path, "failed to parse config, using defaults")
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, ?path, "failed to read config, using defaults")
                 }
             }
         }
@@ -100,7 +106,7 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn load(data_dir: &PathBuf) -> Self {
+    pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join("session.toml");
         if path.exists() {
             let contents = std::fs::read_to_string(&path).unwrap_or_default();
@@ -110,7 +116,7 @@ impl SessionState {
         }
     }
 
-    pub fn save(&self, data_dir: &PathBuf) -> crate::error::Result<()> {
+    pub fn save(&self, data_dir: &Path) -> crate::error::Result<()> {
         std::fs::create_dir_all(data_dir)?;
         #[cfg(unix)]
         std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;

@@ -27,7 +27,10 @@ impl ApiClient {
         let client = Client::builder()
             .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "HTTP client build failed, using default");
+                Client::new()
+            });
 
         Self {
             client,
@@ -452,8 +455,7 @@ impl ApiClient {
             .client
             .get(&url)
             .header("Authorization", format!("Bearer {token}"));
-        Ok(EventSource::new(builder)
-            .map_err(|e| Error::Other(format!("SSE connection failed: {e}")))?)
+        EventSource::new(builder).map_err(|e| Error::Other(format!("SSE connection failed: {e}")))
     }
 }
 

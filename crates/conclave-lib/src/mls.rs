@@ -21,6 +21,21 @@ use mls_rs_provider_sqlite::connection_strategy::FileConnectionStrategy;
 
 use crate::error::{Error, Result};
 
+/// Result of creating a new MLS group.
+pub struct GroupCreationResult {
+    pub mls_group_id: String,
+    pub commit: Vec<u8>,
+    pub welcomes: HashMap<String, Vec<u8>>,
+    pub group_info: Vec<u8>,
+}
+
+/// Result of inviting new members to an existing MLS group.
+pub struct InviteResult {
+    pub commit: Vec<u8>,
+    pub welcomes: HashMap<String, Vec<u8>>,
+    pub group_info: Vec<u8>,
+}
+
 const CIPHERSUITE: CipherSuite = CipherSuite::CURVE448_CHACHA;
 
 /// Number of prior MLS epochs to retain for decrypting old messages.
@@ -217,11 +232,10 @@ impl MlsManager {
     }
 
     /// Create a new MLS group, add members from their key packages.
-    /// Returns: (group_id_hex, commit_bytes, welcome_messages_by_username, group_info_bytes)
     pub fn create_group(
         &self,
         member_key_packages: &HashMap<String, Vec<u8>>,
-    ) -> Result<(String, Vec<u8>, HashMap<String, Vec<u8>>, Vec<u8>)> {
+    ) -> Result<GroupCreationResult> {
         let client = self.build_client()?;
         let mut group = client
             .create_group(ExtensionList::default(), Default::default(), None)
@@ -291,16 +305,20 @@ impl MlsManager {
 
         let group_id = hex::encode(group.group_id());
 
-        Ok((group_id, commit_bytes, welcome_map, group_info_bytes))
+        Ok(GroupCreationResult {
+            mls_group_id: group_id,
+            commit: commit_bytes,
+            welcomes: welcome_map,
+            group_info: group_info_bytes,
+        })
     }
 
     /// Invite new members to an existing group.
-    /// Returns: (commit_bytes, welcome_messages_by_username, group_info_bytes)
     pub fn invite_to_group(
         &self,
         mls_group_id: &str,
         member_key_packages: &HashMap<String, Vec<u8>>,
-    ) -> Result<(Vec<u8>, HashMap<String, Vec<u8>>, Vec<u8>)> {
+    ) -> Result<InviteResult> {
         let client = self.build_client()?;
         let group_id_bytes =
             hex::decode(mls_group_id).map_err(|e| Error::Mls(format!("invalid group ID: {e}")))?;
@@ -366,7 +384,11 @@ impl MlsManager {
             .write_to_storage()
             .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
 
-        Ok((commit_bytes, welcome_map, group_info_bytes))
+        Ok(InviteResult {
+            commit: commit_bytes,
+            welcomes: welcome_map,
+            group_info: group_info_bytes,
+        })
     }
 
     /// Join a group via a welcome message.
@@ -777,10 +799,10 @@ impl MlsManager {
             self.data_dir.join("mls_state.db-wal"),
             self.data_dir.join("mls_state.db-shm"),
         ] {
-            if let Err(error) = std::fs::remove_file(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(?path, %error, "failed to remove MLS state file");
-                }
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(?path, %error, "failed to remove MLS state file");
             }
         }
 
@@ -845,20 +867,19 @@ mod tests {
         let mut members = HashMap::new();
         members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, commit_bytes, welcome_map, group_info_bytes) =
-            alice.create_group(&members).unwrap();
+        let result = alice.create_group(&members).unwrap();
 
-        let welcome_bytes = welcome_map.get("bob").unwrap().clone();
+        let welcome_bytes = result.welcomes.get("bob").unwrap().clone();
 
         (
             _dir_a,
             alice,
             _dir_b,
             bob,
-            group_id,
-            commit_bytes,
+            result.mls_group_id,
+            result.commit,
             welcome_bytes,
-            group_info_bytes,
+            result.group_info,
         )
     }
 
@@ -904,21 +925,29 @@ mod tests {
         let mut members = HashMap::new();
         members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, commit_bytes, welcome_map, group_info_bytes) =
-            alice.create_group(&members).unwrap();
+        let result = alice.create_group(&members).unwrap();
 
-        assert!(!group_id.is_empty(), "group_id must not be empty");
-        assert!(hex::decode(&group_id).is_ok(), "group_id must be valid hex");
-        assert!(!commit_bytes.is_empty(), "commit must not be empty");
         assert!(
-            welcome_map.contains_key("bob"),
+            !result.mls_group_id.is_empty(),
+            "group_id must not be empty"
+        );
+        assert!(
+            hex::decode(&result.mls_group_id).is_ok(),
+            "group_id must be valid hex"
+        );
+        assert!(!result.commit.is_empty(), "commit must not be empty");
+        assert!(
+            result.welcomes.contains_key("bob"),
             "welcome_map must contain bob"
         );
         assert!(
-            !welcome_map.get("bob").unwrap().is_empty(),
+            !result.welcomes.get("bob").unwrap().is_empty(),
             "bob's welcome must not be empty"
         );
-        assert!(!group_info_bytes.is_empty(), "group_info must not be empty");
+        assert!(
+            !result.group_info.is_empty(),
+            "group_info must not be empty"
+        );
     }
 
     #[test]
@@ -980,10 +1009,11 @@ mod tests {
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (invite_commit, _welcome_map, _gi2) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
-        let result = bob.decrypt_message(&group_id, &invite_commit).unwrap();
+        let result = bob
+            .decrypt_message(&group_id, &invite_result.commit)
+            .unwrap();
         match result {
             DecryptedMessage::Commit(info) => {
                 assert!(
@@ -1007,22 +1037,31 @@ mod tests {
         let mut bob_members = HashMap::new();
         bob_members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
+        let create_result = alice.create_group(&bob_members).unwrap();
 
-        let bob_gid = bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
-        assert_eq!(bob_gid, group_id, "bob's group_id must match");
+        let bob_gid = bob
+            .join_group(create_result.welcomes.get("bob").unwrap())
+            .unwrap();
+        assert_eq!(
+            bob_gid, create_result.mls_group_id,
+            "bob's group_id must match"
+        );
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (_invite_commit, welcome_map_carol, _gi2) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice
+            .invite_to_group(&create_result.mls_group_id, &carol_members)
+            .unwrap();
 
         let carol_gid = carol
-            .join_group(welcome_map_carol.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
-        assert_eq!(carol_gid, group_id, "carol's group_id must match");
+        assert_eq!(
+            carol_gid, create_result.mls_group_id,
+            "carol's group_id must match"
+        );
     }
 
     #[test]
@@ -1035,17 +1074,18 @@ mod tests {
         let mut bob_members = HashMap::new();
         bob_members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
-        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+        let create_result = alice.create_group(&bob_members).unwrap();
+        let group_id = create_result.mls_group_id;
+        bob.join_group(create_result.welcomes.get("bob").unwrap())
+            .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (_invite_commit, welcome_map_carol, _gi2) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
         carol
-            .join_group(welcome_map_carol.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
 
         let carol_index = alice
@@ -1308,20 +1348,22 @@ mod tests {
         let mut bob_members = HashMap::new();
         bob_members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
-        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+        let create_result = alice.create_group(&bob_members).unwrap();
+        let group_id = create_result.mls_group_id;
+        bob.join_group(create_result.welcomes.get("bob").unwrap())
+            .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (invite_commit, welcome_map_carol, _gi2) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
-        bob.decrypt_message(&group_id, &invite_commit).unwrap();
+        bob.decrypt_message(&group_id, &invite_result.commit)
+            .unwrap();
 
         carol
-            .join_group(welcome_map_carol.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
 
         let carol_index = alice
@@ -1562,9 +1604,12 @@ mod tests {
         members.insert("bob".to_string(), bob_kp);
         members.insert("carol".to_string(), carol_kp);
 
-        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
-        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
-        let carol_gid = carol.join_group(welcome_map.get("carol").unwrap()).unwrap();
+        let result = alice.create_group(&members).unwrap();
+        let group_id = result.mls_group_id;
+        let bob_gid = bob.join_group(result.welcomes.get("bob").unwrap()).unwrap();
+        let carol_gid = carol
+            .join_group(result.welcomes.get("carol").unwrap())
+            .unwrap();
         assert_eq!(bob_gid, group_id);
         assert_eq!(carol_gid, group_id);
 
@@ -1591,20 +1636,23 @@ mod tests {
         let mut members = HashMap::new();
         members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
-        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
+        let create_result = alice.create_group(&members).unwrap();
+        let group_id = create_result.mls_group_id;
+        let bob_gid = bob
+            .join_group(create_result.welcomes.get("bob").unwrap())
+            .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (invite_commit, carol_welcome_map, _gi) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
-        bob.decrypt_message(&bob_gid, &invite_commit).unwrap();
+        bob.decrypt_message(&bob_gid, &invite_result.commit)
+            .unwrap();
 
         let carol_gid = carol
-            .join_group(carol_welcome_map.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
         assert_eq!(carol_gid, group_id);
 
@@ -1891,12 +1939,17 @@ mod tests {
         members.insert("dave".to_string(), dave_kp);
         members.insert("eve".to_string(), eve_kp);
 
-        let (group_id, _commit, welcome_map, _gi) = alice.create_group(&members).unwrap();
+        let result = alice.create_group(&members).unwrap();
+        let group_id = result.mls_group_id;
 
-        let bob_gid = bob.join_group(welcome_map.get("bob").unwrap()).unwrap();
-        let carol_gid = carol.join_group(welcome_map.get("carol").unwrap()).unwrap();
-        let dave_gid = dave.join_group(welcome_map.get("dave").unwrap()).unwrap();
-        let eve_gid = eve.join_group(welcome_map.get("eve").unwrap()).unwrap();
+        let bob_gid = bob.join_group(result.welcomes.get("bob").unwrap()).unwrap();
+        let carol_gid = carol
+            .join_group(result.welcomes.get("carol").unwrap())
+            .unwrap();
+        let dave_gid = dave
+            .join_group(result.welcomes.get("dave").unwrap())
+            .unwrap();
+        let eve_gid = eve.join_group(result.welcomes.get("eve").unwrap()).unwrap();
 
         assert_eq!(bob_gid, group_id);
         assert_eq!(carol_gid, group_id);
@@ -1970,13 +2023,13 @@ mod tests {
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (invite_commit, carol_welcome_map, _gi) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
-        bob.decrypt_message(&bob_group_id, &invite_commit).unwrap();
+        bob.decrypt_message(&bob_group_id, &invite_result.commit)
+            .unwrap();
 
         let carol_gid = carol
-            .join_group(carol_welcome_map.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
         assert_eq!(carol_gid, group_id, "carol's group_id must match");
 
@@ -2006,19 +2059,21 @@ mod tests {
         let mut bob_members = HashMap::new();
         bob_members.insert("bob".to_string(), bob_kp);
 
-        let (group_id, _commit, welcome_map_bob, _gi) = alice.create_group(&bob_members).unwrap();
-        bob.join_group(welcome_map_bob.get("bob").unwrap()).unwrap();
+        let create_result = alice.create_group(&bob_members).unwrap();
+        let group_id = create_result.mls_group_id;
+        bob.join_group(create_result.welcomes.get("bob").unwrap())
+            .unwrap();
 
         // Invite carol.
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
 
-        let (invite_commit, carol_welcome_map, _gi) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
-        bob.decrypt_message(&group_id, &invite_commit).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
+        bob.decrypt_message(&group_id, &invite_result.commit)
+            .unwrap();
         carol
-            .join_group(carol_welcome_map.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get("carol").unwrap())
             .unwrap();
 
         // Remove carol.
@@ -2031,7 +2086,7 @@ mod tests {
 
         // Carol tries to rejoin using her old welcome message, which should
         // fail because the key package was already consumed and state is stale.
-        let old_welcome = carol_welcome_map.get("carol").unwrap();
+        let old_welcome = invite_result.welcomes.get("carol").unwrap();
         let rejoin_result = carol.join_group(old_welcome);
         assert!(
             rejoin_result.is_err(),
@@ -2100,15 +2155,21 @@ mod tests {
         let bob_kp1 = bob.generate_key_package().unwrap();
         let mut members1 = HashMap::new();
         members1.insert("bob".to_string(), bob_kp1);
-        let (group1_id, _commit1, welcome_map1, _gi1) = alice.create_group(&members1).unwrap();
-        let bob_gid1 = bob.join_group(welcome_map1.get("bob").unwrap()).unwrap();
+        let result1 = alice.create_group(&members1).unwrap();
+        let group1_id = result1.mls_group_id;
+        let bob_gid1 = bob
+            .join_group(result1.welcomes.get("bob").unwrap())
+            .unwrap();
 
         // Create group 2 (alice + bob).
         let bob_kp2 = bob.generate_key_package().unwrap();
         let mut members2 = HashMap::new();
         members2.insert("bob".to_string(), bob_kp2);
-        let (group2_id, _commit2, welcome_map2, _gi2) = alice.create_group(&members2).unwrap();
-        let bob_gid2 = bob.join_group(welcome_map2.get("bob").unwrap()).unwrap();
+        let result2 = alice.create_group(&members2).unwrap();
+        let group2_id = result2.mls_group_id;
+        let bob_gid2 = bob
+            .join_group(result2.welcomes.get("bob").unwrap())
+            .unwrap();
 
         assert_ne!(group1_id, group2_id, "two groups must have different IDs");
 
@@ -2234,8 +2295,11 @@ mod tests {
         let bob2_kp = bob2.generate_key_package().unwrap();
         let mut members = HashMap::new();
         members.insert("bob".to_string(), bob2_kp);
-        let (group2_id, _commit2, welcome_map2, _gi2) = alice2.create_group(&members).unwrap();
-        let bob2_gid = bob2.join_group(welcome_map2.get("bob").unwrap()).unwrap();
+        let result2 = alice2.create_group(&members).unwrap();
+        let group2_id = result2.mls_group_id;
+        let bob2_gid = bob2
+            .join_group(result2.welcomes.get("bob").unwrap())
+            .unwrap();
 
         let leave_result = bob2.leave_group(&bob2_gid).unwrap();
         if let Some((leave_commit, _gi)) = leave_result {
@@ -2283,9 +2347,9 @@ mod tests {
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
         carol_members.insert("carol".to_string(), carol_kp);
-        let (invite_commit, _carol_welcome, _gi) =
-            alice.invite_to_group(&group_id, &carol_members).unwrap();
-        bob.decrypt_message(&bob_group_id, &invite_commit).unwrap();
+        let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
+        bob.decrypt_message(&bob_group_id, &invite_result.commit)
+            .unwrap();
         let epoch_after_invite = alice.group_info_details(&group_id).unwrap().epoch;
         assert_eq!(
             epoch_after_invite,

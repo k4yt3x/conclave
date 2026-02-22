@@ -16,6 +16,23 @@ use crate::screen;
 use crate::subscription::{self, SseUpdate};
 use crate::widget::Element;
 
+/// Snapshot of API connection parameters for use in async tasks.
+/// Captures the minimum state needed to construct an [`ApiClient`] outside
+/// of `&self` so the future can be `Send`.
+struct ApiParams {
+    server_url: String,
+    accept_invalid_certs: bool,
+    token: String,
+}
+
+impl ApiParams {
+    fn into_client(self) -> ApiClient {
+        let mut api = ApiClient::new(&self.server_url, self.accept_invalid_certs);
+        api.set_token(self.token);
+        api
+    }
+}
+
 pub struct Conclave {
     screen: screen::Screen,
     theme: crate::theme::Theme,
@@ -46,6 +63,7 @@ pub struct Conclave {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Message {
     // Screen messages
     Login(screen::login::Message),
@@ -196,6 +214,14 @@ impl Conclave {
 
     pub fn theme(&self) -> crate::theme::Theme {
         self.theme.clone()
+    }
+
+    fn api_params(&self) -> ApiParams {
+        ApiParams {
+            server_url: self.server_url.clone().unwrap_or_default(),
+            accept_invalid_certs: self.config.accept_invalid_certs,
+            token: self.token.clone().unwrap_or_default(),
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -505,9 +531,13 @@ impl Conclave {
                     user_id: Some(info.user_id),
                     username: Some(info.username.clone()),
                 };
-                let _ = session.save(&self.config.data_dir);
+                if let Err(error) = session.save(&self.config.data_dir) {
+                    tracing::warn!(%error, "failed to save session");
+                }
 
-                let _ = std::fs::create_dir_all(&self.config.data_dir);
+                if let Err(error) = std::fs::create_dir_all(&self.config.data_dir) {
+                    tracing::warn!(%error, "failed to create data directory");
+                }
                 if let Ok(mls) = MlsManager::new(&self.config.data_dir, info.user_id) {
                     self.mls = Some(mls);
                 }
@@ -578,14 +608,12 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok(entries) => {
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
+                let params = self.api_params();
                 Task::perform(
                     async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        api.upload_key_packages(entries)
+                        params
+                            .into_client()
+                            .upload_key_packages(entries)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -691,14 +719,11 @@ impl Conclave {
                 Task::none()
             }
             Ok(Command::List) => {
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
+                let params = self.api_params();
                 let active_room = self.active_room;
                 Task::perform(
                     async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
+                        let api = params.into_client();
                         let rooms = operations::load_rooms(&api)
                             .await
                             .map_err(|e| e.to_string())?;
@@ -770,14 +795,10 @@ impl Conclave {
                 Task::none()
             }
             Ok(Command::Whois) => {
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
+                let params = self.api_params();
                 Task::perform(
                     async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        let resp = api.me().await.map_err(|e| e.to_string())?;
+                        let resp = params.into_client().me().await.map_err(|e| e.to_string())?;
                         Ok(vec![DisplayMessage::system(&format!(
                             "User: {} (ID: {})",
                             resp.username, resp.user_id
@@ -787,14 +808,12 @@ impl Conclave {
                 )
             }
             Ok(Command::Nick { alias }) => {
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
+                let params = self.api_params();
                 Task::perform(
                     async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        api.update_profile(&alias)
+                        params
+                            .into_client()
+                            .update_profile(&alias)
                             .await
                             .map_err(|e| e.to_string())?;
                         Ok(alias)
@@ -810,14 +829,12 @@ impl Conclave {
                         return Task::none();
                     }
                 };
-                let server_url = self.server_url.clone().unwrap_or_default();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
-                let token = self.token.clone().unwrap_or_default();
+                let params = self.api_params();
                 Task::perform(
                     async move {
-                        let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                        api.set_token(token);
-                        api.update_group(group_id, Some(&topic))
+                        params
+                            .into_client()
+                            .update_group(group_id, Some(&topic))
                             .await
                             .map_err(|e| e.to_string())?;
                         Ok(topic)
@@ -1014,12 +1031,13 @@ impl Conclave {
                         },
                     );
 
-                    if let Some(store) = &self.msg_store {
-                        if !self.room_messages.contains_key(&info.group_id) {
-                            let history = store.load_messages(info.group_id);
-                            if !history.is_empty() {
-                                self.room_messages.insert(info.group_id, history);
-                            }
+                    if let Some(store) = &self.msg_store
+                        && let std::collections::hash_map::Entry::Vacant(entry) =
+                            self.room_messages.entry(info.group_id)
+                    {
+                        let history = store.load_messages(info.group_id);
+                        if !history.is_empty() {
+                            entry.insert(history);
                         }
                     }
                 }
@@ -1038,10 +1056,10 @@ impl Conclave {
                         self.group_mapping.remove(id);
                     }
 
-                    if let Some(active) = self.active_room {
-                        if stale_ids.contains(&active) {
-                            self.active_room = None;
-                        }
+                    if let Some(active) = self.active_room
+                        && stale_ids.contains(&active)
+                    {
+                        self.active_room = None;
                     }
                 }
             }
@@ -1125,12 +1143,12 @@ impl Conclave {
                     }
                 }
 
-                if self.active_room == Some(fetched.group_id) {
-                    if let Some(room) = self.rooms.get_mut(&fetched.group_id) {
-                        room.last_read_seq = room.last_seen_seq;
-                        if let Some(store) = &self.msg_store {
-                            store.set_last_read_seq(fetched.group_id, room.last_read_seq);
-                        }
+                if self.active_room == Some(fetched.group_id)
+                    && let Some(room) = self.rooms.get_mut(&fetched.group_id)
+                {
+                    room.last_read_seq = room.last_seen_seq;
+                    if let Some(store) = &self.msg_store {
+                        store.set_last_read_seq(fetched.group_id, room.last_read_seq);
                     }
                 }
 
@@ -1284,17 +1302,14 @@ impl Conclave {
             }
         };
 
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
         let text = text.to_string();
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 let result = operations::send_message(
                     &api,
                     group_id,
@@ -1314,16 +1329,13 @@ impl Conclave {
     // ── Group operations ──────────────────────────────────────────
 
     fn create_group(&mut self, name: String, members: Vec<String>) -> Task<Message> {
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::create_group(&api, None, Some(&name), members, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
@@ -1349,16 +1361,13 @@ impl Conclave {
             }
         };
 
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 let invited = operations::invite_members(
                     &api,
                     group_id,
@@ -1413,16 +1422,13 @@ impl Conclave {
             return Task::none();
         };
 
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::kick_member(
                     &api,
                     group_id,
@@ -1460,9 +1466,7 @@ impl Conclave {
             .map(|r| r.display_name())
             .unwrap_or_default();
 
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
@@ -1473,8 +1477,7 @@ impl Conclave {
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::leave_group(
                     &api,
                     group_id,
@@ -1507,16 +1510,13 @@ impl Conclave {
             }
         };
 
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::rotate_keys(&api, group_id, &mls_group_id, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -1535,9 +1535,7 @@ impl Conclave {
             return Task::none();
         }
 
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
@@ -1545,8 +1543,7 @@ impl Conclave {
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::reset_account(&api, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
@@ -1563,10 +1560,10 @@ impl Conclave {
             Ok(info) => {
                 self.group_mapping = info.new_group_mapping;
 
-                if let Some(uid) = self.user_id {
-                    if let Ok(mls) = MlsManager::new(&self.config.data_dir, uid) {
-                        self.mls = Some(mls);
-                    }
+                if let Some(uid) = self.user_id
+                    && let Ok(mls) = MlsManager::new(&self.config.data_dir, uid)
+                {
+                    self.mls = Some(mls);
                 }
 
                 // Clear stale fetch state from pre-reset MLS groups
@@ -1621,16 +1618,13 @@ impl Conclave {
     }
 
     fn accept_welcomes(&mut self) -> Task<Message> {
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
 
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::accept_welcomes(&api, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
@@ -1642,14 +1636,10 @@ impl Conclave {
     // ── Helpers ───────────────────────────────────────────────────
 
     fn load_rooms_task(&self) -> Task<Message> {
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
-                operations::load_rooms(&api)
+                operations::load_rooms(&params.into_client())
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -1658,14 +1648,10 @@ impl Conclave {
     }
 
     fn fetch_user_alias(&self) -> Task<Message> {
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
-                let resp = api.me().await.map_err(|e| e.to_string())?;
+                let resp = params.into_client().me().await.map_err(|e| e.to_string())?;
                 let alias = if resp.alias.is_empty() {
                     None
                 } else {
@@ -1683,9 +1669,7 @@ impl Conclave {
         last_seq: u64,
         mls_group_id: String,
     ) -> Task<Message> {
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
         let user_id = self.user_id.unwrap_or(0);
         let members: Vec<_> = self
@@ -1695,8 +1679,7 @@ impl Conclave {
             .unwrap_or_default();
         Task::perform(
             async move {
-                let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                api.set_token(token);
+                let api = params.into_client();
                 operations::fetch_and_decrypt(
                     &api,
                     group_id,
@@ -1721,10 +1704,10 @@ impl Conclave {
     fn add_message(&mut self, group_id: Option<i64>, msg: DisplayMessage) {
         let effective_gid = group_id.or(self.active_room);
 
-        if let (Some(gid), Some(store)) = (effective_gid, &self.msg_store) {
-            if group_id.is_some() {
-                store.push_message(gid, &msg);
-            }
+        if let (Some(gid), Some(store)) = (effective_gid, &self.msg_store)
+            && group_id.is_some()
+        {
+            store.push_message(gid, &msg);
         }
 
         match effective_gid {
@@ -1916,9 +1899,7 @@ impl Conclave {
     fn perform_logout(&mut self) -> Task<Message> {
         // Capture server info before clearing state so we can revoke the
         // server-side token asynchronously.
-        let server_url = self.server_url.clone().unwrap_or_default();
-        let accept_invalid_certs = self.config.accept_invalid_certs;
-        let token = self.token.clone().unwrap_or_default();
+        let params = self.api_params();
 
         // Clear local state.
         self.token = None;
@@ -1939,10 +1920,10 @@ impl Conclave {
 
         // Delete session file.
         let session_path = self.config.data_dir.join("session.toml");
-        if let Err(error) = std::fs::remove_file(session_path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(%error, "failed to remove session file");
-            }
+        if let Err(error) = std::fs::remove_file(session_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "failed to remove session file");
         }
 
         // Go back to login screen.
@@ -1951,12 +1932,10 @@ impl Conclave {
         ));
 
         // Revoke the server-side token in the background.
-        if !token.is_empty() {
+        if !params.token.is_empty() {
             Task::perform(
                 async move {
-                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
-                    api.set_token(token);
-                    if let Err(error) = api.logout().await {
+                    if let Err(error) = params.into_client().logout().await {
                         tracing::warn!(%error, "server-side token revocation failed");
                     }
                     Ok::<_, String>(vec![])

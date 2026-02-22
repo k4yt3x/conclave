@@ -117,24 +117,23 @@ impl InputLine {
         if self.history.is_empty() {
             return;
         }
-        match self.history_index {
+        let index = match self.history_index {
             None => {
                 self.saved_current = self.content();
-                self.history_index = Some(self.history.len() - 1);
+                self.history.len() - 1
             }
             Some(0) => return,
-            Some(i) => {
-                self.history_index = Some(i - 1);
-            }
-        }
-        let entry = &self.history[self.history_index.unwrap()];
+            Some(i) => i - 1,
+        };
+        self.history_index = Some(index);
+        let entry = &self.history[index];
         self.buffer = entry.chars().collect();
         self.cursor = self.buffer.len();
     }
 
     pub fn history_down(&mut self) {
         match self.history_index {
-            None => return,
+            None => (),
             Some(i) if i + 1 >= self.history.len() => {
                 self.history_index = None;
                 self.buffer = self.saved_current.chars().collect();
