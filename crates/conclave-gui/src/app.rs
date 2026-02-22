@@ -803,8 +803,17 @@ impl Conclave {
             Ok(Command::Who) => {
                 if let Some(room_id) = self.active_room {
                     if let Some(room) = self.rooms.get(&room_id) {
-                        let member_names: Vec<&str> =
-                            room.members.iter().map(|m| m.display_name()).collect();
+                        let member_names: Vec<String> = room
+                            .members
+                            .iter()
+                            .map(|m| {
+                                if m.role == "admin" {
+                                    format!("{} (admin)", m.display_name())
+                                } else {
+                                    m.display_name().to_string()
+                                }
+                            })
+                            .collect();
                         self.push_system_message(&format!(
                             "Members of #{}: {}",
                             room.display_name(),
@@ -893,6 +902,34 @@ impl Conclave {
             Ok(Command::Create { name, members }) => self.create_group(name, members),
             Ok(Command::Invite { members }) => self.invite_members(members),
             Ok(Command::Kick { username }) => self.kick_member(username),
+            Ok(Command::Promote { username }) => self.promote_member(username),
+            Ok(Command::Demote { username }) => self.demote_member(username),
+            Ok(Command::Admins) => {
+                if let Some(room_id) = self.active_room {
+                    if let Some(room) = self.rooms.get(&room_id) {
+                        let admin_names: Vec<String> = room
+                            .members
+                            .iter()
+                            .filter(|m| m.role == "admin")
+                            .map(|m| {
+                                if let Some(alias) = m.alias.as_deref().filter(|a| !a.is_empty()) {
+                                    format!("{alias} (@{})", m.username)
+                                } else {
+                                    m.username.clone()
+                                }
+                            })
+                            .collect();
+                        self.push_system_message(&format!(
+                            "Admins of #{}: {}",
+                            room.display_name(),
+                            admin_names.join(", ")
+                        ));
+                    }
+                } else {
+                    self.push_system_message("No active room.");
+                }
+                Task::none()
+            }
             Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
             Ok(Command::Reset) => self.reset_account(),
@@ -1278,10 +1315,6 @@ impl Conclave {
                     self.push_system_message(&format!("Joined #{display} ({})", w.group_id));
                 }
 
-                if let Some(last) = welcomes.last() {
-                    self.active_room = Some(last.group_id);
-                }
-
                 // Defer the missed-message fetch until rooms_task completes
                 // so that newly joined groups are in self.rooms when
                 // fetch_all_missed_messages iterates over them.
@@ -1486,6 +1519,58 @@ impl Conclave {
 
                 Ok(vec![DisplayMessage::system(&format!(
                     "Removed {target} from the room"
+                ))])
+            },
+            Message::RefreshRooms,
+        )
+    }
+
+    fn promote_member(&mut self, target: String) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first");
+                return Task::none();
+            }
+        };
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                api.promote_member(group_id, &target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                Ok(vec![DisplayMessage::system(&format!(
+                    "Promoted {target} to admin"
+                ))])
+            },
+            Message::RefreshRooms,
+        )
+    }
+
+    fn demote_member(&mut self, target: String) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first");
+                return Task::none();
+            }
+        };
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                api.demote_member(group_id, &target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                Ok(vec![DisplayMessage::system(&format!(
+                    "Demoted {target} to regular member"
                 ))])
             },
             Message::RefreshRooms,

@@ -115,6 +115,7 @@ mod tests {
                 user_id: 1,
                 username: "alice".to_string(),
                 alias: None,
+                role: "admin".to_string(),
             }],
             last_seen_seq: 0,
             last_read_seq: 0,

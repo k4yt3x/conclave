@@ -43,7 +43,6 @@ pub struct UserGroupRow {
     pub group_id: i64,
     pub group_name: String,
     pub alias: Option<String>,
-    pub creator_id: i64,
     pub created_at: i64,
     pub mls_group_id: Option<String>,
 }
@@ -187,7 +186,6 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_name TEXT UNIQUE NOT NULL,
                 alias TEXT,
-                creator_id INTEGER NOT NULL REFERENCES users(id),
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 mls_group_id TEXT
             );
@@ -195,6 +193,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS group_members (
                 group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role TEXT NOT NULL DEFAULT 'member',
                 PRIMARY KEY (group_id, user_id)
             );
 
@@ -459,8 +458,8 @@ impl Database {
         }
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO groups (group_name, alias, creator_id) VALUES (?1, ?2, ?3)",
-            params![group_name, alias, creator_id],
+            "INSERT INTO groups (group_name, alias) VALUES (?1, ?2)",
+            params![group_name, alias],
         )
         .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(err, _)
@@ -471,9 +470,9 @@ impl Database {
             other => Error::Database(other),
         })?;
         let group_id = conn.last_insert_rowid();
-        // Creator is automatically a member.
+        // Creator is automatically a member with admin role.
         conn.execute(
-            "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
+            "INSERT INTO group_members (group_id, user_id, role) VALUES (?1, ?2, 'admin')",
             params![group_id, creator_id],
         )?;
         Ok(group_id)
@@ -501,7 +500,7 @@ impl Database {
     pub fn list_user_groups(&self, user_id: i64) -> Result<Vec<UserGroupRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.group_name, g.alias, g.creator_id, g.created_at, g.mls_group_id
+            "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id
              FROM groups g
              JOIN group_members gm ON g.id = gm.group_id
              WHERE gm.user_id = ?1
@@ -513,9 +512,8 @@ impl Database {
                     group_id: row.get(0)?,
                     group_name: row.get(1)?,
                     alias: row.get(2)?,
-                    creator_id: row.get(3)?,
-                    created_at: row.get(4)?,
-                    mls_group_id: row.get(5)?,
+                    created_at: row.get(3)?,
+                    mls_group_id: row.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -540,18 +538,22 @@ impl Database {
         Ok(())
     }
 
-    /// Returns (user_id, username, alias) for each group member.
-    pub fn get_group_members(&self, group_id: i64) -> Result<Vec<(i64, String, Option<String>)>> {
+    /// Returns (user_id, username, alias, role) for each group member.
+    #[allow(clippy::type_complexity)]
+    pub fn get_group_members(
+        &self,
+        group_id: i64,
+    ) -> Result<Vec<(i64, String, Option<String>, String)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.alias
+            "SELECT u.id, u.username, u.alias, gm.role
              FROM users u
              JOIN group_members gm ON u.id = gm.user_id
              WHERE gm.group_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![group_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -591,7 +593,7 @@ impl Database {
             {
                 Error::Conflict(format!(
                     "group_name '{}' already exists",
-                    group_name.unwrap_or("<none>")
+                    group_name.unwrap_or_default()
                 ))
             }
             other => Error::Database(other),
@@ -599,14 +601,64 @@ impl Database {
         Ok(())
     }
 
-    /// Get the creator_id for a group.
-    pub fn get_group_creator(&self, group_id: i64) -> Result<Option<i64>> {
+    /// Check whether a user is an admin of a group.
+    pub fn is_group_admin(&self, group_id: i64, user_id: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT creator_id FROM groups WHERE id = ?1")?;
-        let result = stmt
-            .query_row(params![group_id], |row| row.get(0))
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2 AND role = 'admin'",
+        )?;
+        let exists: Option<i64> = stmt
+            .query_row(params![group_id, user_id], |row| row.get(0))
             .optional()?;
-        Ok(result)
+        Ok(exists.is_some())
+    }
+
+    /// Promote a member to admin.
+    pub fn promote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
+            params![group_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Demote an admin to regular member.
+    pub fn demote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE group_members SET role = 'member' WHERE group_id = ?1 AND user_id = ?2",
+            params![group_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Count the number of admins in a group.
+    pub fn count_group_admins(&self, group_id: i64) -> Result<i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND role = 'admin'",
+            params![group_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// List admin members of a group: (user_id, username, alias).
+    pub fn get_group_admins(&self, group_id: i64) -> Result<Vec<(i64, String, Option<String>)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, u.alias
+             FROM users u
+             JOIN group_members gm ON u.id = gm.user_id
+             WHERE gm.group_id = ?1 AND gm.role = 'admin'",
+        )?;
+        let rows = stmt
+            .query_map(params![group_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     // ── Messages ───────────────────────────────────────────────────
@@ -1684,5 +1736,142 @@ mod tests {
 
         let result = db.update_user_alias(uid, Some("bad\x01alias"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_group_creator_is_admin() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+
+        assert!(db.is_group_admin(group_id, alice).unwrap());
+
+        let members = db.get_group_members(group_id).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].3, "admin");
+    }
+
+    #[test]
+    fn test_add_member_default_role() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+
+        assert!(!db.is_group_admin(group_id, bob).unwrap());
+
+        let members = db.get_group_members(group_id).unwrap();
+        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
+        assert_eq!(bob_member.3, "member");
+    }
+
+    #[test]
+    fn test_promote_member() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+
+        assert!(!db.is_group_admin(group_id, bob).unwrap());
+        db.promote_member(group_id, bob).unwrap();
+        assert!(db.is_group_admin(group_id, bob).unwrap());
+
+        let members = db.get_group_members(group_id).unwrap();
+        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
+        assert_eq!(bob_member.3, "admin");
+    }
+
+    #[test]
+    fn test_demote_member() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+        db.promote_member(group_id, bob).unwrap();
+        assert!(db.is_group_admin(group_id, bob).unwrap());
+
+        db.demote_member(group_id, bob).unwrap();
+        assert!(!db.is_group_admin(group_id, bob).unwrap());
+
+        let members = db.get_group_members(group_id).unwrap();
+        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
+        assert_eq!(bob_member.3, "member");
+    }
+
+    #[test]
+    fn test_is_group_admin() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+
+        assert!(db.is_group_admin(group_id, alice).unwrap());
+        assert!(!db.is_group_admin(group_id, bob).unwrap());
+
+        // Non-member should return false.
+        let charlie = db.create_user("charlie", "hash").unwrap();
+        assert!(!db.is_group_admin(group_id, charlie).unwrap());
+    }
+
+    #[test]
+    fn test_count_group_admins() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+
+        assert_eq!(db.count_group_admins(group_id).unwrap(), 1);
+
+        db.add_group_member(group_id, bob).unwrap();
+        assert_eq!(db.count_group_admins(group_id).unwrap(), 1);
+
+        db.promote_member(group_id, bob).unwrap();
+        assert_eq!(db.count_group_admins(group_id).unwrap(), 2);
+
+        db.demote_member(group_id, bob).unwrap();
+        assert_eq!(db.count_group_admins(group_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_get_group_admins() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+        db.add_group_member(group_id, bob).unwrap();
+
+        let admins = db.get_group_admins(group_id).unwrap();
+        assert_eq!(admins.len(), 1);
+        assert_eq!(admins[0].0, alice);
+        assert_eq!(admins[0].1, "alice");
+
+        db.promote_member(group_id, bob).unwrap();
+        let admins = db.get_group_admins(group_id).unwrap();
+        assert_eq!(admins.len(), 2);
     }
 }

@@ -39,6 +39,7 @@ pub struct MemberInfo {
     pub user_id: i64,
     pub username: String,
     pub alias: Option<String>,
+    pub role: String,
 }
 
 impl MemberInfo {
@@ -54,6 +55,7 @@ impl MemberInfo {
             user_id: self.user_id,
             username: self.username.clone(),
             alias: self.alias.clone(),
+            role: self.role.clone(),
         }
     }
 }
@@ -202,6 +204,7 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
                     } else {
                         Some(m.alias)
                     },
+                    role: m.role,
                 })
                 .collect(),
             mls_group_id: if group.mls_group_id.is_empty() {
@@ -874,6 +877,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: Some("Alice W.".into()),
+            role: "admin".into(),
         };
         assert_eq!(info.display_name(), "Alice W.");
     }
@@ -884,6 +888,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: None,
+            role: "member".into(),
         };
         assert_eq!(info.display_name(), "alice");
     }
@@ -894,6 +899,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: Some(String::new()),
+            role: "member".into(),
         };
         assert_eq!(info.display_name(), "alice");
     }
@@ -904,11 +910,13 @@ mod tests {
             user_id: 42,
             username: "bob".into(),
             alias: Some("Bobby".into()),
+            role: "admin".into(),
         };
         let member = info.to_room_member();
         assert_eq!(member.user_id, 42);
         assert_eq!(member.username, "bob");
         assert_eq!(member.alias, Some("Bobby".into()));
+        assert_eq!(member.role, "admin");
     }
 
     #[test]
@@ -1054,6 +1062,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: Some("Alice W.".into()),
+            role: "admin".into(),
         }];
         assert_eq!(resolve_user_display_name(Some(1), &members), "Alice W.");
     }
@@ -1064,6 +1073,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: None,
+            role: "member".into(),
         }];
         assert_eq!(resolve_user_display_name(Some(1), &members), "alice");
     }
@@ -1074,6 +1084,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: None,
+            role: "member".into(),
         }];
         assert_eq!(resolve_user_display_name(Some(99), &members), "user#99");
     }

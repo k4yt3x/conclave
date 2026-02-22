@@ -12,6 +12,7 @@ pub struct RoomMember {
     pub user_id: i64,
     pub username: String,
     pub alias: Option<String>,
+    pub role: String,
 }
 
 impl RoomMember {
@@ -116,6 +117,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: Some("Alice W.".into()),
+            role: "member".into(),
         };
         assert_eq!(member.display_name(), "Alice W.");
     }
@@ -126,6 +128,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: Some(String::new()),
+            role: "member".into(),
         };
         assert_eq!(member.display_name(), "alice");
     }
@@ -136,6 +139,7 @@ mod tests {
             user_id: 1,
             username: "alice".into(),
             alias: None,
+            role: "member".into(),
         };
         assert_eq!(member.display_name(), "alice");
     }
@@ -206,11 +210,13 @@ mod tests {
                 user_id: 1,
                 username: "alice".into(),
                 alias: Some("Alice W.".into()),
+                role: "admin".into(),
             },
             RoomMember {
                 user_id: 2,
                 username: "bob".into(),
                 alias: None,
+                role: "member".into(),
             },
         ];
         let msg = DisplayMessage::user(1, "old_name", "hi", 100);

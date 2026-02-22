@@ -37,6 +37,9 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/welcomes", get(list_pending_welcomes))
         .route("/api/v1/welcomes/{welcome_id}/accept", post(accept_welcome))
+        .route("/api/v1/groups/{group_id}/promote", post(promote_member))
+        .route("/api/v1/groups/{group_id}/demote", post(demote_member))
+        .route("/api/v1/groups/{group_id}/admins", get(list_admins))
         .route(
             "/api/v1/groups/{group_id}/remove",
             post(remove_group_member),
@@ -252,7 +255,7 @@ async fn update_profile(
         let members = state.db.get_group_members(group_row.group_id)?;
         let target_ids: Vec<i64> = members
             .iter()
-            .map(|(id, _, _)| *id)
+            .map(|(id, _, _, _)| *id)
             .filter(|id| *id != auth.user_id)
             .collect();
 
@@ -423,10 +426,11 @@ async fn list_groups(
         let members = state.db.get_group_members(row.group_id)?;
         let member_protos = members
             .into_iter()
-            .map(|(uid, uname, ualias)| conclave_proto::GroupMember {
+            .map(|(uid, uname, ualias, role)| conclave_proto::GroupMember {
                 user_id: uid,
                 username: uname,
                 alias: ualias.unwrap_or_default(),
+                role,
             })
             .collect();
 
@@ -434,7 +438,6 @@ async fn list_groups(
             group_id: row.group_id,
             alias: row.alias.unwrap_or_default(),
             group_name: row.group_name,
-            creator_id: row.creator_id,
             members: member_protos,
             created_at: row.created_at as u64,
             mls_group_id: row.mls_group_id.unwrap_or_default(),
@@ -457,14 +460,10 @@ async fn update_group(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::UpdateGroupRequest>(&body)?;
 
-    // Only the creator can update group settings, and they must still be a member.
-    let creator_id = state
-        .db
-        .get_group_creator(group_id)?
-        .ok_or_else(|| Error::NotFound("group not found".into()))?;
-    if creator_id != auth.user_id || !state.db.is_group_member(group_id, auth.user_id)? {
+    // Only admins can update group settings.
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
         return Err(Error::Unauthorized(
-            "only the group creator can update group settings".into(),
+            "only group admins can update group settings".into(),
         ));
     }
 
@@ -484,7 +483,7 @@ async fn update_group(
     let members = state.db.get_group_members(group_id)?;
     let target_ids: Vec<i64> = members
         .iter()
-        .map(|(id, _, _)| *id)
+        .map(|(id, _, _, _)| *id)
         .filter(|id| *id != auth.user_id)
         .collect();
 
@@ -523,9 +522,11 @@ async fn invite_to_group(
         ));
     }
 
-    // Verify the inviter is a group member.
-    if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+    // Only admins can invite members.
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can invite members".into(),
+        ));
     }
 
     // Collect key packages for the invitees.
@@ -617,7 +618,7 @@ async fn upload_commit(
             .collect();
         let member_ids: Vec<i64> = members
             .iter()
-            .map(|(id, _, _)| *id)
+            .map(|(id, _, _, _)| *id)
             .filter(|id| *id != auth.user_id && !new_member_ids.contains(id))
             .collect();
 
@@ -661,7 +662,7 @@ async fn send_message(
     let members = state.db.get_group_members(group_id)?;
     let member_ids: Vec<i64> = members
         .iter()
-        .map(|(id, _, _)| *id)
+        .map(|(id, _, _, _)| *id)
         .filter(|id| *id != auth.user_id)
         .collect();
 
@@ -780,8 +781,11 @@ async fn remove_group_member(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
 
-    if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+    // Only admins can remove members.
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can remove members".into(),
+        ));
     }
 
     let target_user_id = state
@@ -813,7 +817,7 @@ async fn remove_group_member(
 
     // Notify all remaining members via SSE.
     let members = state.db.get_group_members(group_id)?;
-    let member_ids: Vec<i64> = members.iter().map(|(id, _, _)| *id).collect();
+    let member_ids: Vec<i64> = members.iter().map(|(id, _, _, _)| *id).collect();
 
     // Notify remaining members and the removed user.
     let mut all_targets = member_ids;
@@ -834,6 +838,164 @@ async fn remove_group_member(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::RemoveMemberResponse {},
+    ))
+}
+
+async fn promote_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::PromoteMemberRequest>(&body)?;
+
+    // Requester must be an admin.
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can promote members".into(),
+        ));
+    }
+
+    let target_user_id = state
+        .db
+        .get_user_id_by_username(&request.username)?
+        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
+
+    if !state.db.is_group_member(group_id, target_user_id)? {
+        return Err(Error::BadRequest(format!(
+            "user '{}' is not a member of this group",
+            request.username
+        )));
+    }
+
+    if state.db.is_group_admin(group_id, target_user_id)? {
+        return Err(Error::Conflict(format!(
+            "user '{}' is already an admin",
+            request.username
+        )));
+    }
+
+    state.db.promote_member(group_id, target_user_id)?;
+
+    // Broadcast role change to all members.
+    let members = state.db.get_group_members(group_id)?;
+    let target_ids: Vec<i64> = members
+        .iter()
+        .map(|(id, _, _, _)| *id)
+        .filter(|id| *id != auth.user_id)
+        .collect();
+
+    if !target_ids.is_empty() {
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                    conclave_proto::GroupUpdateEvent {
+                        group_id,
+                        update_type: "role_change".into(),
+                    },
+                )),
+            },
+            target_ids,
+        );
+    }
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::PromoteMemberResponse {},
+    ))
+}
+
+async fn demote_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::DemoteMemberRequest>(&body)?;
+
+    // Requester must be an admin.
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can demote members".into(),
+        ));
+    }
+
+    let target_user_id = state
+        .db
+        .get_user_id_by_username(&request.username)?
+        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
+
+    if !state.db.is_group_admin(group_id, target_user_id)? {
+        return Err(Error::BadRequest(format!(
+            "user '{}' is not an admin",
+            request.username
+        )));
+    }
+
+    // Prevent demoting the last admin.
+    let admin_count = state.db.count_group_admins(group_id)?;
+    if admin_count <= 1 {
+        return Err(Error::BadRequest("cannot demote the last admin".into()));
+    }
+
+    state.db.demote_member(group_id, target_user_id)?;
+
+    // Broadcast role change to all members.
+    let members = state.db.get_group_members(group_id)?;
+    let target_ids: Vec<i64> = members
+        .iter()
+        .map(|(id, _, _, _)| *id)
+        .filter(|id| *id != auth.user_id)
+        .collect();
+
+    if !target_ids.is_empty() {
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupUpdate(
+                    conclave_proto::GroupUpdateEvent {
+                        group_id,
+                        update_type: "role_change".into(),
+                    },
+                )),
+            },
+            target_ids,
+        );
+    }
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::DemoteMemberResponse {},
+    ))
+}
+
+async fn list_admins(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+) -> Result<impl IntoResponse> {
+    // Must be a group member to list admins.
+    if !state.db.is_group_member(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
+    let admins = state.db.get_group_admins(group_id)?;
+    let admin_protos = admins
+        .into_iter()
+        .map(|(uid, uname, ualias)| conclave_proto::GroupMember {
+            user_id: uid,
+            username: uname,
+            alias: ualias.unwrap_or_default(),
+            role: "admin".into(),
+        })
+        .collect();
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ListAdminsResponse {
+            admins: admin_protos,
+        },
     ))
 }
 
@@ -872,7 +1034,7 @@ async fn leave_group(
 
     // Notify remaining members via SSE.
     let members = state.db.get_group_members(group_id)?;
-    let member_ids: Vec<i64> = members.iter().map(|(id, _, _)| *id).collect();
+    let member_ids: Vec<i64> = members.iter().map(|(id, _, _, _)| *id).collect();
 
     broadcast_sse(
         &state.sse_tx,
@@ -954,7 +1116,7 @@ async fn external_join(
         let members = state.db.get_group_members(group_id)?;
         let member_ids: Vec<i64> = members
             .iter()
-            .map(|(id, _, _)| *id)
+            .map(|(id, _, _, _)| *id)
             .filter(|id| *id != auth.user_id)
             .collect();
 

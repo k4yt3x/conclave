@@ -444,11 +444,19 @@ impl Dashboard {
 
         if let Some(room) = active_room.and_then(|id| rooms.get(&id)) {
             let mut sorted_members: Vec<&_> = room.members.iter().collect();
-            sorted_members.sort_by(|a, b| a.display_name().cmp(b.display_name()));
+            sorted_members.sort_by(|a, b| {
+                // Sort admins before regular members, then alphabetically.
+                let role_ord = if a.role == "admin" { 0 } else { 1 };
+                let role_ord_b = if b.role == "admin" { 0 } else { 1 };
+                role_ord
+                    .cmp(&role_ord_b)
+                    .then_with(|| a.display_name().cmp(b.display_name()))
+            });
             for member in sorted_members {
+                let admin_suffix = if member.role == "admin" { " *" } else { "" };
                 let member_display = match member.alias.as_deref().filter(|a| !a.is_empty()) {
-                    Some(alias) => format!("{alias} (@{})", member.username),
-                    None => format!("@{}", member.username),
+                    Some(alias) => format!("{alias} (@{}){admin_suffix}", member.username),
+                    None => format!("@{}{admin_suffix}", member.username),
                 };
                 member_list = member_list.push(
                     text(member_display)

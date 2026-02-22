@@ -364,6 +364,63 @@ pub async fn execute(
             )));
         }
 
+        Command::Promote { username: target } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            api.lock().await.promote_member(group_id, &target).await?;
+
+            load_rooms(api, state).await?;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Promoted {target} to admin"
+            )));
+        }
+
+        Command::Demote { username: target } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            api.lock().await.demote_member(group_id, &target).await?;
+
+            load_rooms(api, state).await?;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Demoted {target} to regular member"
+            )));
+        }
+
+        Command::Admins => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            let response = api.lock().await.list_admins(group_id).await?;
+            let admin_names: Vec<String> = response
+                .admins
+                .iter()
+                .map(|a| {
+                    if a.alias.is_empty() {
+                        a.username.clone()
+                    } else {
+                        format!("{} (@{})", a.alias, a.username)
+                    }
+                })
+                .collect();
+
+            let room_name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.display_name())
+                .unwrap_or_default();
+            msgs.push(DisplayMessage::system(&format!(
+                "Admins of #{room_name}: {}",
+                admin_names.join(", ")
+            )));
+        }
+
         Command::Part => {
             let user_id = require_user_id(state)?;
 
@@ -563,8 +620,17 @@ pub async fn execute(
         Command::Who => {
             if let Some(room) = state.active_room_info() {
                 let name = room.display_name();
-                let member_display: Vec<&str> =
-                    room.members.iter().map(|m| m.display_name()).collect();
+                let member_display: Vec<String> = room
+                    .members
+                    .iter()
+                    .map(|m| {
+                        if m.role == "admin" {
+                            format!("{} (admin)", m.display_name())
+                        } else {
+                            m.display_name().to_string()
+                        }
+                    })
+                    .collect();
                 msgs.push(DisplayMessage::system(&format!(
                     "Members of #{name}: {}",
                     member_display.join(", ")
@@ -763,6 +829,9 @@ pub async fn execute(
                 "/join <room>                  Switch to a room",
                 "/invite <user1,user2>         Invite to the active room",
                 "/kick <username>              Remove a member from the room",
+                "/promote <username>           Promote a member to admin",
+                "/demote <username>            Demote an admin to member",
+                "/admins                       List admins of active room",
                 "/nick <alias>                 Set your display name",
                 "/topic <text>                 Set active room's display alias",
                 "/part                         Leave the room (MLS removal)",

@@ -351,6 +351,35 @@ impl ApiClient {
         Ok(())
     }
 
+    // ── Admin Management ──────────────────────────────────────────
+
+    pub async fn promote_member(&self, group_id: i64, username: &str) -> Result<()> {
+        let request = conclave_proto::PromoteMemberRequest {
+            username: username.to_string(),
+        };
+        self.post(&format!("/api/v1/groups/{group_id}/promote"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn demote_member(&self, group_id: i64, username: &str) -> Result<()> {
+        let request = conclave_proto::DemoteMemberRequest {
+            username: username.to_string(),
+        };
+        self.post(&format!("/api/v1/groups/{group_id}/demote"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_admins(&self, group_id: i64) -> Result<conclave_proto::ListAdminsResponse> {
+        let bytes = self
+            .get(&format!("/api/v1/groups/{group_id}/admins"))
+            .await?;
+        Ok(conclave_proto::ListAdminsResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
     // ── Member Management ──────────────────────────────────────────
 
     pub async fn remove_member(

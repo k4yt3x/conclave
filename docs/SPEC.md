@@ -199,13 +199,13 @@ CREATE TABLE groups (
     group_name TEXT UNIQUE NOT NULL,
     alias TEXT,
     mls_group_id TEXT,
-    creator_id INTEGER NOT NULL REFERENCES users(id),
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE group_members (
     group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member',
     PRIMARY KEY (group_id, user_id)
 );
 
@@ -266,13 +266,16 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
 | POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group, get member key packages    |
-| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (creator+member) |
+| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (admin only)     |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
-| POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members, get their key packages   |
+| POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members (admin only)              |
 | POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + welcome messages     |
 | POST   | `/api/v1/groups/{id}/messages`      | SendMessageRequest    | SendMessageResponse         | Send encrypted message                   |
 | GET    | `/api/v1/groups/{id}/messages`      | —  (`?after=&limit=`) | GetMessagesResponse         | Fetch messages (paginated by seq num)    |
-| POST   | `/api/v1/groups/{id}/remove`        | RemoveMemberRequest   | RemoveMemberResponse        | Remove a member from the group           |
+| POST   | `/api/v1/groups/{id}/remove`        | RemoveMemberRequest   | RemoveMemberResponse        | Remove a member (admin only)             |
+| POST   | `/api/v1/groups/{id}/promote`       | PromoteMemberRequest  | PromoteMemberResponse       | Promote member to admin (admin only)     |
+| POST   | `/api/v1/groups/{id}/demote`        | DemoteMemberRequest   | DemoteMemberResponse        | Demote admin to member (admin only)      |
+| GET    | `/api/v1/groups/{id}/admins`        | —                     | ListAdminsResponse          | List group admins (requires membership)  |
 | POST   | `/api/v1/groups/{id}/leave`         | LeaveGroupRequest     | LeaveGroupResponse          | Leave a group                            |
 | GET    | `/api/v1/groups/{id}/group-info`    | —                     | GetGroupInfoResponse        | Get stored GroupInfo for external commit  |
 | POST   | `/api/v1/groups/{id}/external-join` | ExternalJoinRequest   | ExternalJoinResponse        | Rejoin group via external commit         |
@@ -285,7 +288,10 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 
 - **`POST /api/v1/key-packages`**: Supports both single-upload (via `key_package_data` field) and batch-upload (via `entries` repeated field with `KeyPackageEntry` messages containing `data` and `is_last_resort` flag). All uploads are validated for MLS wire format correctness (version 0x0001, wire format 0x0005 for `mls_key_package` per RFC 9420 Section 6). Uploading a last-resort package replaces any existing last-resort package for that user.
 - **`GET /api/v1/key-packages/{user_id}`**: Rate-limited to 10 requests per minute per target user. Consumes the oldest regular key package (FIFO). Falls back to the last-resort package (without deleting it) when no regular packages remain.
-- **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, on group creation).
+- **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, on group creation). Newly added members are assigned the `member` role by default.
+- **`POST /api/v1/groups/{id}/promote`**: Requires the requesting user to be an admin of the group. Promotes a member to the `admin` role. Broadcasts a `GroupUpdateEvent` with `update_type: "role_change"` to all group members.
+- **`POST /api/v1/groups/{id}/demote`**: Requires the requesting user to be an admin of the group. Demotes an admin to the `member` role. The last remaining admin of a group cannot be demoted — the server rejects the request to ensure every group always has at least one admin. Broadcasts a `GroupUpdateEvent` with `update_type: "role_change"` to all group members.
+- **`GET /api/v1/groups/{id}/admins`**: Requires group membership. Returns the list of group members who have the `admin` role.
 - **`POST /api/v1/groups/{id}/leave`**: Accepts an optional `commit_message` and `group_info` in the request body. If a commit message is provided, it is stored as a group message so remaining members can process the MLS removal and advance their epoch. If group info is provided, it is stored for potential external rejoin. The user is then removed from the server's group membership, and remaining members are notified via `MemberRemovedEvent`.
 - **`POST /api/v1/groups/{id}/external-join`**: Requires the group to exist and have a stored `GroupInfo` (set by prior `upload_commit` or `remove` operations). This prevents arbitrary users from joining groups they were never associated with — only groups whose authorized members have published a GroupInfo can be externally joined. The external commit is stored as a group message and existing members receive an `IdentityResetEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, preserving the original).
 
@@ -295,7 +301,7 @@ The `/api/v1/events` endpoint provides a Server-Sent Events stream. Events are h
 
 Event types:
 - **NewMessageEvent**: New message in a group (group_id, sequence_num, sender_id).
-- **GroupUpdateEvent**: Group state changed (group_id, update_type). Emitted for MLS commits (`update_type: "commit"`) and member profile changes (`update_type: "member_profile"`). Profile updates are broadcast to all co-members when a user changes their alias via `PATCH /api/v1/me`.
+- **GroupUpdateEvent**: Group state changed (group_id, update_type). Emitted for MLS commits (`update_type: "commit"`), member profile changes (`update_type: "member_profile"`), and role changes (`update_type: "role_change"`). Profile updates are broadcast to all co-members when a user changes their alias via `PATCH /api/v1/me`. Role change events are broadcast to all group members when a member is promoted or demoted.
 - **WelcomeEvent**: User was invited to a group (group_id, group_alias).
 - **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_user_id, removed_username). Sent to both remaining members and the removed user.
 - **IdentityResetEvent**: A member reset their encryption identity via external rejoin (group_id, username). Sent to other group members when a user performs an account reset. Clients display a warning that the user's encryption keys have changed.
@@ -407,9 +413,12 @@ Running `conclave-cli` with no subcommand enters the IRC-style interactive TUI. 
 /create <name> <user1,user2>  Create a room with members
 /join                         Accept pending invitations
 /join <room>                  Switch to a room
-/invite <user1,user2>         Invite to the active room
-/kick <username>              Remove a member from the room
+/invite <user1,user2>         Invite to the active room (admin only)
+/kick <username>              Remove a member from the room (admin only)
 /leave                        Leave the room (MLS removal)
+/admins                       List admins of the active room
+/promote <username>           Promote a member to admin
+/demote <username>            Demote an admin to regular member
 /part                         Switch away without leaving
 /rotate                       Rotate keys (forward secrecy)
 /reset                        Reset account and rejoin groups
@@ -473,7 +482,8 @@ Alice                               Server                              Bob
   |                                   |                                   |
   |--- POST /groups/{id}/commit ----->|  Store commit as message seq 1    |
   |    (commit, welcomes, group_info) |  Store welcome for Bob            |
-  |<-- OK                             |  Add Bob to group_members         |
+  |<-- OK                             |  Alice gets role='admin'          |
+  |                                   |  Bob added with role='member'     |
   |                                   |  Notify Bob via SSE               |
   |                                   |                                   |
   |                                   |<--- GET /welcomes --------------- |
@@ -517,6 +527,7 @@ Alice                               Server                              Bob
 - **Timing attack mitigation**: The login endpoint runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist. This ensures both the valid-user and invalid-user code paths have equivalent computational profiles, preventing username enumeration via timing analysis.
 - **Key package validation**: The server validates all uploaded key packages for MLS wire format correctness (MLS version 1.0 header, `mls_key_package` wire format type) per RFC 9420 Section 6. This prevents malformed or non-MLS data from being stored and later causing failures during group creation or invitation on the inviter's client.
 - **Key package exhaustion protection**: The `GET /api/v1/key-packages/{user_id}` endpoint is rate-limited to prevent an attacker from draining a user's regular key packages, which would force fallback to the reusable last-resort package (with associated reuse risks per RFC 9420 Section 16.8).
+- **Admin role authorization**: Group management operations (invite, remove, update group, promote, demote) require the `admin` role. The group creator is automatically assigned the `admin` role; new members receive the `member` role. The last admin of a group cannot be demoted, ensuring every group always has at least one admin. This replaces the previous creator-based authorization model with a more flexible role-based system.
 - **External join authorization**: The external join endpoint requires a stored `GroupInfo` to exist for the target group. Since `GroupInfo` is only stored by authorized members via `upload_commit` or `remove` operations, this prevents arbitrary users from joining groups they have no association with.
 - **Transactional integrity**: The `upload_commit` endpoint performs all database mutations (member additions, welcome storage, group info updates, message storage) within a single SQLite savepoint transaction. This ensures atomicity — a crash mid-operation cannot leave the database in an inconsistent state.
 - **Trust model**: Currently uses `BasicCredential` with `BasicIdentityProvider`, which does not validate identities. This is suitable for closed communities. X.509 credentials can be added for stronger identity assurance.
@@ -525,4 +536,4 @@ Alice                               Server                              Bob
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response` (with `mls_group_id` set on group creation), `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response` (with `mls_group_id` set on group creation), `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`), `ErrorResponse`, `UserInfoResponse`.

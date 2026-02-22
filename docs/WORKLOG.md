@@ -1,5 +1,35 @@
 # Conclave Work Log
 
+## 2026-02-22: Introduce Group Admin Role System
+
+Replaced the single `creator_id` ownership model with a proper admin role system. The `creator_id` column was removed from the `groups` table. A `role TEXT NOT NULL DEFAULT 'member'` column was added to `group_members`. The group creator starts as admin. Admins can promote/demote other members. The last admin cannot be demoted (deadlock prevention).
+
+### Changes
+
+- **Database**: Removed `creator_id` from `groups` table. Added `role` column to `group_members`. Added `is_group_admin()`, `promote_member()`, `demote_member()`, `count_group_admins()`, `get_group_admins()` functions. Removed `get_group_creator()`.
+- **API**: Added three new endpoints: `POST /groups/{id}/promote`, `POST /groups/{id}/demote`, `GET /groups/{id}/admins`. Updated `invite_to_group`, `remove_group_member`, and `update_group` to require admin instead of creator/member.
+- **Protobuf**: Added `role` field to `GroupMember`, removed `creator_id` from `GroupInfo`. Added `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse` messages.
+- **Client**: Added `promote_member()`, `demote_member()`, `list_admins()` API methods. Added `role` field to `RoomMember` and `MemberInfo`. Added `/promote`, `/demote`, `/admins` commands.
+- **TUI/GUI**: Added command handlers. Updated `/who` to show admin annotations. GUI member sidebar sorts admins first with indicator.
+- **Tests**: Added 26 new tests (7 DB, 14 API, 5 command parser).
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto`
+- `crates/conclave-server/src/db.rs`
+- `crates/conclave-server/src/api.rs`
+- `crates/conclave-server/tests/api_tests.rs`
+- `crates/conclave-lib/src/api.rs`
+- `crates/conclave-lib/src/state.rs`
+- `crates/conclave-lib/src/operations.rs`
+- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-cli/src/tui/commands.rs`
+- `crates/conclave-cli/src/tui/state.rs`
+- `crates/conclave-gui/src/app.rs`
+- `crates/conclave-gui/src/screen/dashboard.rs`
+- `docs/SPEC.md`
+- `CLAUDE.md`
+
 ## 2026-02-22: Fix Removed Creator Can Update Group
 
 The `update_group` handler only checked that the requester was the group creator, not that they were still a member. A creator removed from a group could still rename it or change its alias. Added an `is_group_member` check alongside the existing creator check.

@@ -26,6 +26,13 @@ pub enum Command {
     Kick {
         username: String,
     },
+    Promote {
+        username: String,
+    },
+    Demote {
+        username: String,
+    },
+    Admins,
     /// Leave the room (MLS removal). IRC: /part
     Part,
     /// Switch away from the active room without leaving. IRC: /close
@@ -131,6 +138,23 @@ pub fn parse(input: &str) -> Result<Command> {
                 username: parts[1].to_string(),
             })
         }
+        "/promote" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /promote <username>".into()));
+            }
+            Ok(Command::Promote {
+                username: parts[1].to_string(),
+            })
+        }
+        "/demote" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /demote <username>".into()));
+            }
+            Ok(Command::Demote {
+                username: parts[1].to_string(),
+            })
+        }
+        "/admins" => Ok(Command::Admins),
         "/part" => Ok(Command::Part),
         "/close" => Ok(Command::Close),
         "/rotate" => Ok(Command::Rotate),
@@ -453,5 +477,41 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn test_parse_admins() {
+        let cmd = parse("/admins").unwrap();
+        assert!(matches!(cmd, Command::Admins));
+    }
+
+    #[test]
+    fn test_parse_promote() {
+        let cmd = parse("/promote alice").unwrap();
+        if let Command::Promote { username } = cmd {
+            assert_eq!(username, "alice");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_promote_missing_username() {
+        assert!(parse("/promote").is_err());
+    }
+
+    #[test]
+    fn test_parse_demote() {
+        let cmd = parse("/demote bob").unwrap();
+        if let Command::Demote { username } = cmd {
+            assert_eq!(username, "bob");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_demote_missing_username() {
+        assert!(parse("/demote").is_err());
     }
 }
