@@ -3539,6 +3539,83 @@ async fn test_update_group_invalid_alias() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn test_update_group_removed_creator_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
+
+    let group_id = create_group_for(
+        &app,
+        &alice_token,
+        "creator_rm_test",
+        vec!["bob".to_string()],
+    )
+    .await;
+
+    // Upload commit with welcome to add Bob as a member.
+    let mut welcomes = HashMap::new();
+    welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
+    let commit_body = conclave_proto::UploadCommitRequest {
+        commit_message: b"add_bob".to_vec(),
+        welcome_messages: welcomes,
+        group_info: b"gi".to_vec(),
+        mls_group_id: String::new(),
+    };
+    let mut body = Vec::new();
+    commit_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/commit"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Bob removes Alice (the creator) from the group.
+    let remove_body = conclave_proto::RemoveMemberRequest {
+        username: "alice".to_string(),
+        commit_message: b"remove_alice".to_vec(),
+        group_info: b"gi2".to_vec(),
+    };
+    let mut body = Vec::new();
+    remove_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/remove"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Alice (removed creator) tries to update the group — should be rejected.
+    let update_body = conclave_proto::UpdateGroupRequest {
+        alias: "hijacked".to_string(),
+        group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    update_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 // ── Group Name Validation ────────────────────────────────────────
 
 #[tokio::test]

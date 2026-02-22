@@ -457,12 +457,12 @@ async fn update_group(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::UpdateGroupRequest>(&body)?;
 
-    // Only the creator can update group settings.
+    // Only the creator can update group settings, and they must still be a member.
     let creator_id = state
         .db
         .get_group_creator(group_id)?
         .ok_or_else(|| Error::NotFound("group not found".into()))?;
-    if creator_id != auth.user_id {
+    if creator_id != auth.user_id || !state.db.is_group_member(group_id, auth.user_id)? {
         return Err(Error::Unauthorized(
             "only the group creator can update group settings".into(),
         ));

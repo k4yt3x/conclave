@@ -1,5 +1,15 @@
 # Conclave Work Log
 
+## 2026-02-22: Fix Removed Creator Can Update Group
+
+The `update_group` handler only checked that the requester was the group creator, not that they were still a member. A creator removed from a group could still rename it or change its alias. Added an `is_group_member` check alongside the existing creator check.
+
+### Files Modified
+
+- `crates/conclave-server/src/api.rs` — added membership check to `update_group`
+- `crates/conclave-server/tests/api_tests.rs` — added `test_update_group_removed_creator_rejected`
+- `docs/SPEC.md` — updated endpoint description
+
 ## 2026-02-22: Restrict Username and Group Name Characters
 
 Tightened validation for usernames and group names to only allow alphanumeric characters and underscores (Telegram-style). Removed hyphens and dots from the allowed character set.

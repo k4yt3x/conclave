@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~435 tests across 9 suites)
+cargo test --workspace                   # Run all tests (~436 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-lib               # Client library tests only
 cargo clippy --workspace                 # Lint

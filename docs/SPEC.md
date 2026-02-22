@@ -266,7 +266,7 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
 | POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group, get member key packages    |
-| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (creator only)   |
+| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (creator+member) |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
 | POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members, get their key packages   |
 | POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + welcome messages     |
