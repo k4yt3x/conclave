@@ -109,7 +109,7 @@ mod tests {
     fn make_room(id: i64, name: &str) -> Room {
         Room {
             server_group_id: id,
-            group_name: Some(name.to_string()),
+            group_name: name.to_string(),
             alias: None,
             members: vec![RoomMember {
                 user_id: 1,

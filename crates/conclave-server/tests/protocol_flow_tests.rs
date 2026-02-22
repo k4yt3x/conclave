@@ -100,7 +100,7 @@ async fn create_server_group(
     let req_body = conclave_proto::CreateGroupRequest {
         alias: name.to_string(),
         member_usernames: members,
-        group_name: String::new(),
+        group_name: name.to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -232,7 +232,7 @@ async fn test_e2e_group_creation_and_messaging() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "test-room", vec!["bob".into()]).await;
+        create_server_group(&app, &alice_token, "test_room", vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
 
@@ -323,7 +323,7 @@ async fn test_e2e_three_party_messaging() {
     let (server_group_id, member_kps) = create_server_group(
         &app,
         &alice_token,
-        "trio-room",
+        "trio_room",
         vec!["bob".into(), "charlie".into()],
     )
     .await;
@@ -406,7 +406,7 @@ async fn test_e2e_post_creation_invite_flow() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, _) = create_server_group(&app, &alice_token, "solo-room", vec![]).await;
+    let (server_group_id, _) = create_server_group(&app, &alice_token, "solo_room", vec![]).await;
 
     let create_result = alice_mls.create_group(&HashMap::new()).unwrap();
     let mls_group_id = create_result.mls_group_id;
@@ -502,7 +502,7 @@ async fn test_e2e_member_removal_flow() {
     let (server_group_id, member_kps) = create_server_group(
         &app,
         &alice_token,
-        "removal-test",
+        "removal_test",
         vec!["bob".into(), "charlie".into()],
     )
     .await;
@@ -620,7 +620,7 @@ async fn test_e2e_key_rotation_continuity() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "rotation-test", vec!["bob".into()]).await;
+        create_server_group(&app, &alice_token, "rotation_test", vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id;
@@ -703,7 +703,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "rejoin-test", vec!["bob".into()]).await;
+        create_server_group(&app, &alice_token, "rejoin_test", vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id;
@@ -865,7 +865,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "ordering-test", vec!["bob".into()]).await;
+        create_server_group(&app, &alice_token, "ordering_test", vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id;

@@ -28,7 +28,7 @@ impl RoomMember {
 #[derive(Debug, Clone)]
 pub struct Room {
     pub server_group_id: i64,
-    pub group_name: Option<String>,
+    pub group_name: String,
     pub alias: Option<String>,
     pub members: Vec<RoomMember>,
     /// Highest sequence number processed by MLS (fetched + decrypted).
@@ -38,19 +38,14 @@ pub struct Room {
 }
 
 impl Room {
-    /// Display name: alias > group_name > id as string.
+    /// Display name: alias if set, otherwise group_name.
     pub fn display_name(&self) -> String {
         if let Some(alias) = &self.alias
             && !alias.is_empty()
         {
             return alias.clone();
         }
-        if let Some(group_name) = &self.group_name
-            && !group_name.is_empty()
-        {
-            return group_name.clone();
-        }
-        self.server_group_id.to_string()
+        self.group_name.clone()
     }
 }
 
@@ -149,7 +144,7 @@ mod tests {
     fn test_room_display_name_alias_priority() {
         let room = Room {
             server_group_id: 42,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: Some("Dev Team".into()),
             members: vec![],
             last_seen_seq: 0,
@@ -162,52 +157,26 @@ mod tests {
     fn test_room_display_name_group_name_fallback() {
         let room = Room {
             server_group_id: 42,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: None,
             members: vec![],
             last_seen_seq: 0,
             last_read_seq: 0,
         };
         assert_eq!(room.display_name(), "devs");
-    }
-
-    #[test]
-    fn test_room_display_name_id_fallback() {
-        let room = Room {
-            server_group_id: 42,
-            group_name: None,
-            alias: None,
-            members: vec![],
-            last_seen_seq: 0,
-            last_read_seq: 0,
-        };
-        assert_eq!(room.display_name(), "42");
     }
 
     #[test]
     fn test_room_display_name_empty_alias_falls_through() {
         let room = Room {
             server_group_id: 42,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: Some(String::new()),
             members: vec![],
             last_seen_seq: 0,
             last_read_seq: 0,
         };
         assert_eq!(room.display_name(), "devs");
-    }
-
-    #[test]
-    fn test_room_display_name_empty_group_name_falls_through() {
-        let room = Room {
-            server_group_id: 42,
-            group_name: Some(String::new()),
-            alias: None,
-            members: vec![],
-            last_seen_seq: 0,
-            last_read_seq: 0,
-        };
-        assert_eq!(room.display_name(), "42");
     }
 
     #[test]

@@ -196,7 +196,7 @@ CREATE TABLE key_packages (
 
 CREATE TABLE groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_name TEXT UNIQUE,
+    group_name TEXT UNIQUE NOT NULL,
     alias TEXT,
     mls_group_id TEXT,
     creator_id INTEGER NOT NULL REFERENCES users(id),
@@ -238,7 +238,7 @@ CREATE TABLE group_infos (
 
 ### 3.3 Authentication
 
-- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ASCII alphanumeric start, max 64 chars, no control characters or Unicode homoglyphs) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored. After registration, all clients (CLI, TUI, GUI) automatically log in, upload initial key packages, and establish a full session — the user does not need to log in separately.
+- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$` (ASCII alphanumeric start, max 64 chars, only letters, digits, and underscores) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored. After registration, all clients (CLI, TUI, GUI) automatically log in, upload initial key packages, and establish a full session — the user does not need to log in separately.
 - **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it. To prevent username enumeration via timing analysis, the server runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist, ensuring both code paths have equivalent computational profiles.
 - **Authenticated requests**: Client sends `Authorization: Bearer <token>` header. Server validates against the `sessions` table, checking expiry. An `AuthUser` axum extractor handles this transparently for all protected endpoints.
 - **Key packages**: Each user maintains up to 10 regular key packages plus 1 last-resort package. Regular packages are consumed FIFO (oldest first) and deleted on consumption. The last-resort package is returned but never deleted when all regular packages are exhausted, ensuring the user is always reachable (RFC 9420 Section 16.6). Uploading a new last-resort package replaces the previous one. Clients pre-publish 5 regular + 1 last-resort on registration/login/reset and replenish after each consumption. The server validates key package uploads by checking the MLS wire format header (version must be MLS 1.0, wire format must be `mls_key_package`) per RFC 9420 Section 6.
@@ -512,7 +512,8 @@ Alice                               Server                              Bob
 - **Password storage**: Argon2id with random salts. No plaintext passwords stored.
 - **Token security**: 256-bit cryptographically random tokens from `OsRng`. Tokens have configurable expiry.
 - **MLS identity keys**: Stored locally on the client filesystem. The `mls_signing_key.bin` file contains the private key and must be protected by filesystem permissions.
-- **Username validation**: Usernames are restricted to ASCII alphanumeric characters, underscores, hyphens, and periods (`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`). This prevents control characters, Unicode homoglyphs, and whitespace-only usernames that could be used for impersonation or display attacks.
+- **Username validation**: Usernames are restricted to ASCII alphanumeric characters and underscores (`^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$`). This prevents control characters, Unicode homoglyphs, and whitespace-only usernames that could be used for impersonation or display attacks.
+- **Group name validation**: Group names follow the same rules as usernames — mandatory, unique, restricted to `^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$`. The `group_name` column is `NOT NULL` and `UNIQUE` in the database schema. The server validates group names at creation and update time, rejecting empty or malformed names with a 400 error.
 - **Timing attack mitigation**: The login endpoint runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist. This ensures both the valid-user and invalid-user code paths have equivalent computational profiles, preventing username enumeration via timing analysis.
 - **Key package validation**: The server validates all uploaded key packages for MLS wire format correctness (MLS version 1.0 header, `mls_key_package` wire format type) per RFC 9420 Section 6. This prevents malformed or non-MLS data from being stored and later causing failures during group creation or invitation on the inviter's client.
 - **Key package exhaustion protection**: The `GET /api/v1/key-packages/{user_id}` endpoint is rate-limited to prevent an attacker from draining a user's regular key packages, which would force fallback to the reusable last-resort package (with associated reuse risks per RFC 9420 Section 16.8).

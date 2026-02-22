@@ -242,8 +242,8 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
 
             let result = operations::create_group(
                 &api,
-                Some(&name),
                 None,
+                &name,
                 member_names,
                 &config.data_dir,
                 user_id,

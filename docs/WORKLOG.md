@@ -1,5 +1,61 @@
 # Conclave Work Log
 
+## 2026-02-22: Restrict Username and Group Name Characters
+
+Tightened validation for usernames and group names to only allow alphanumeric characters and underscores (Telegram-style). Removed hyphens and dots from the allowed character set.
+
+### Changes
+
+- **Validation**: New pattern `^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$` for both usernames and group names. Extracted `validate_username()` function from inline code in the `register()` handler. Added `validate_group_name()` call to the `update_group()` handler (was previously unvalidated).
+- **Tests**: Added 11 new rejection tests (username with dot/hyphen, group name with dot/hyphen/space/unicode/leading-underscore/empty/too-long, group name update with dot/hyphen). Replaced all hyphenated test names with underscore versions across 3 test files.
+
+### Files Modified
+
+- `crates/conclave-server/src/db.rs` — `validate_username()`, `validate_group_name()` updated
+- `crates/conclave-server/src/api.rs` — use `validate_username()`, add validation to `update_group()`
+- `crates/conclave-server/tests/api_tests.rs` — fix test names, add rejection tests
+- `crates/conclave-server/tests/protocol_flow_tests.rs` — fix test names
+- `docs/SPEC.md` — updated regex patterns
+
+## 2026-02-22: GUI Draggable Sidebars
+
+Added drag-to-resize for the left and right sidebars in the GUI dashboard. Transparent mouse-area overlays capture drag events globally during resize. Sidebar widths are clamped between 100px and 500px.
+
+### Files Modified
+
+- `crates/conclave-gui/src/screen/dashboard.rs` — drag state, handle rendering, overlay logic
+- `crates/conclave-gui/src/app.rs` — DragStarted/DragUpdate/DragEnded message handlers
+- `crates/conclave-gui/src/theme/container.rs` — drag_handle style
+
+## 2026-02-22: Make group_name Mandatory
+
+Made `group_name` a required field for group creation, matching the username model. Groups are identified by IDs internally; group_name is the unique human-readable identifier.
+
+### Changes
+
+- **Server DB**: `group_name TEXT UNIQUE` → `group_name TEXT UNIQUE NOT NULL`. Added `validate_group_name()` with same rules as username (`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`). Changed `create_group` signature from `Option<&str>` to `&str`. Changed `UserGroupRow.group_name` from `Option<String>` to `String`.
+- **Server API**: Reject empty/invalid group names with 400 error in `create_group` handler.
+- **Client lib**: Changed `api.rs`, `operations.rs` (`RoomInfo`), and `state.rs` (`Room`) — all `group_name` fields from `Option<String>` to `String`. Simplified `display_name()` methods.
+- **TUI**: `/create <name>` now passes name as `group_name` (was incorrectly passing as `alias`).
+- **GUI**: Updated `create_group` call signature. Simplified sidebar display to use non-optional `group_name`.
+- **Tests**: Updated all group creation calls across api_tests.rs, protocol_flow_tests.rs, db.rs, and state.rs. Removed 4 tests for ID-fallback behavior that no longer applies.
+
+### Files Modified
+
+- `docs/SPEC.md` — schema NOT NULL, group name validation in security section
+- `crates/conclave-server/src/db.rs` — schema, validation, signatures, UserGroupRow
+- `crates/conclave-server/src/api.rs` — validation, response mapping
+- `crates/conclave-server/tests/api_tests.rs` — unique group names in all tests
+- `crates/conclave-server/tests/protocol_flow_tests.rs` — group creation helper
+- `crates/conclave-lib/src/api.rs` — create_group signature
+- `crates/conclave-lib/src/operations.rs` — RoomInfo, create_group, load_rooms
+- `crates/conclave-lib/src/state.rs` — Room struct, display_name
+- `crates/conclave-cli/src/main.rs` — one-shot create-group command
+- `crates/conclave-cli/src/tui/commands.rs` — /create passes group_name
+- `crates/conclave-cli/src/tui/state.rs` — test helper make_room
+- `crates/conclave-gui/src/app.rs` — create_group call, Room construction
+- `crates/conclave-gui/src/screen/dashboard.rs` — sidebar display
+
 ## 2026-02-21: Logging Consistency Review
 
 Reviewed all logging statements across the codebase for consistent style, tone, and punctuation. Fixed inconsistencies and added logging where it had debugging value.

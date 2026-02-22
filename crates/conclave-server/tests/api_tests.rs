@@ -85,7 +85,7 @@ async fn create_group_for(app: &Router, token: &str, name: &str, members: Vec<St
     let req_body = conclave_proto::CreateGroupRequest {
         alias: name.to_string(),
         member_usernames: members,
-        group_name: String::new(),
+        group_name: name.to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -547,7 +547,7 @@ async fn test_create_group_success() {
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    let group_id = create_group_for(&app, &token, "test-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "test_group", vec![]).await;
     assert!(group_id > 0);
 }
 
@@ -560,7 +560,7 @@ async fn test_create_group_empty_alias_and_name() {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: String::new(),
         member_usernames: vec![],
-        group_name: String::new(),
+        group_name: "empty_alias_test_group".to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -587,7 +587,7 @@ async fn test_create_group_long_alias() {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: long_alias,
         member_usernames: vec![],
-        group_name: String::new(),
+        group_name: "long_alias_test_group".to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -631,7 +631,7 @@ async fn test_list_groups_with_groups() {
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    let group_id = create_group_for(&app, &token, "my-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "my_group", vec![]).await;
 
     let request = Request::builder()
         .method("GET")
@@ -647,7 +647,7 @@ async fn test_list_groups_with_groups() {
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups.len(), 1);
     assert_eq!(resp.groups[0].group_id, group_id);
-    assert_eq!(resp.groups[0].alias, "my-group");
+    assert_eq!(resp.groups[0].alias, "my_group");
 }
 
 // ── Message Tests (25-29) ─────────────────────────────────────────
@@ -657,7 +657,7 @@ async fn test_send_message_success() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "msg-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "msg_group", vec![]).await;
 
     let req_body = conclave_proto::SendMessageRequest {
         mls_message: b"test_message".to_vec(),
@@ -687,7 +687,7 @@ async fn test_send_message_not_member() {
     // Alice creates a group
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "alice-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "alice_group", vec![]).await;
 
     // Bob is not a member
     register_user(&app, "bob", "password123").await;
@@ -716,7 +716,7 @@ async fn test_get_messages_success() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "msg-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "msg_group", vec![]).await;
 
     // Send a message
     let req_body = conclave_proto::SendMessageRequest {
@@ -757,7 +757,7 @@ async fn test_get_messages_not_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "alice-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "alice_group", vec![]).await;
 
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -778,7 +778,7 @@ async fn test_get_messages_after_seq() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "msg-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "msg_group", vec![]).await;
 
     // Send two messages
     for msg in &[b"msg_one".as_slice(), b"msg_two".as_slice()] {
@@ -824,7 +824,7 @@ async fn test_invite_no_usernames() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "inv-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "inv_group", vec![]).await;
 
     let req_body = conclave_proto::InviteToGroupRequest { usernames: vec![] };
     let mut body = Vec::new();
@@ -848,7 +848,7 @@ async fn test_invite_not_member() {
     // Alice creates a group
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "alice-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "alice_group", vec![]).await;
 
     // Bob is not a member and tries to invite
     register_user(&app, "bob", "password123").await;
@@ -889,7 +889,7 @@ async fn test_remove_member_success() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_key_package")).await;
 
     // Create group with bob as a member
-    let group_id = create_group_for(&app, &alice_token, "rm-group", vec!["bob".to_string()]).await;
+    let group_id = create_group_for(&app, &alice_token, "rm_group", vec!["bob".to_string()]).await;
 
     // Alice needs to upload a commit with welcome for bob so bob gets added
     let mut welcomes = HashMap::new();
@@ -958,7 +958,7 @@ async fn test_remove_member_not_group_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "rm-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "rm_group", vec![]).await;
 
     // Bob is not a group member
     register_user(&app, "bob", "password123").await;
@@ -989,7 +989,7 @@ async fn test_remove_member_target_not_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "rm-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "rm_group", vec![]).await;
 
     // Bob exists but is not in the group
     register_user(&app, "bob", "password123").await;
@@ -1019,7 +1019,7 @@ async fn test_remove_member_target_not_found() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "rm-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "rm_group", vec![]).await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
         username: "nonexistent_user".to_string(),
@@ -1056,7 +1056,7 @@ async fn test_leave_group_success() {
 
     // Create group with bob
     let group_id =
-        create_group_for(&app, &alice_token, "leave-group", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "leave_group", vec!["bob".to_string()]).await;
 
     // Upload commit with welcome to add bob as member
     let mut welcomes = HashMap::new();
@@ -1115,7 +1115,7 @@ async fn test_leave_group_not_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "leave-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "leave_group", vec![]).await;
 
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -1138,7 +1138,7 @@ async fn test_get_group_info_success() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "info-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "info_group", vec![]).await;
 
     // Store group info via upload_commit
     let req_body = conclave_proto::UploadCommitRequest {
@@ -1182,7 +1182,7 @@ async fn test_get_group_info_not_found() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "info-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "info_group", vec![]).await;
 
     // No group info has been stored yet
     let request = Request::builder()
@@ -1201,7 +1201,7 @@ async fn test_get_group_info_not_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "info-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "info_group", vec![]).await;
 
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -1224,7 +1224,7 @@ async fn test_external_join_success() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "ext-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "ext_group", vec![]).await;
 
     // Register Bob and add him to the group via a commit with a welcome message.
     register_user(&app, "bob", "password123").await;
@@ -1328,7 +1328,7 @@ async fn test_upload_commit_stores_group_info() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "commit-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "commit_group", vec![]).await;
 
     // Upload commit with group_info
     let req_body = conclave_proto::UploadCommitRequest {
@@ -1372,7 +1372,7 @@ async fn test_upload_commit_not_member() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "commit-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "commit_group", vec![]).await;
 
     register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -1412,7 +1412,7 @@ async fn test_accept_welcome_success() {
 
     // Create group with bob as member
     let group_id =
-        create_group_for(&app, &alice_token, "welcome-group", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "welcome_group", vec!["bob".to_string()]).await;
 
     // Upload commit with welcome for bob
     let mut welcomes = HashMap::new();
@@ -1806,7 +1806,7 @@ async fn test_invite_consumes_key_package() {
     create_group_for(
         &app,
         &alice_token,
-        "invite-consume",
+        "invite_consume",
         vec!["bob".to_string()],
     )
     .await;
@@ -1831,7 +1831,7 @@ async fn test_invite_existing_member_conflict() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "dup-invite", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "dup_invite", vec!["bob".to_string()]).await;
 
     let mut welcomes = HashMap::new();
     welcomes.insert("bob".to_string(), b"welcome".to_vec());
@@ -1875,7 +1875,7 @@ async fn test_invite_nonexistent_user() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "ghost-invite", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "ghost_invite", vec![]).await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
         usernames: vec!["ghost_user".to_string()],
@@ -1905,7 +1905,7 @@ async fn test_upload_commit_with_welcome_creates_pending_welcome() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "welcome-test", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "welcome_test", vec!["bob".to_string()]).await;
 
     let mut welcomes = HashMap::new();
     welcomes.insert("bob".to_string(), b"welcome_data".to_vec());
@@ -1953,7 +1953,7 @@ async fn test_leave_group_stores_commit_message() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "leave-commit", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "leave_commit", vec!["bob".to_string()]).await;
 
     let mut welcomes = HashMap::new();
     welcomes.insert("bob".to_string(), b"welcome".to_vec());
@@ -2018,7 +2018,7 @@ async fn test_remove_member_stores_group_info() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "rm-gi-group", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "rm_gi_group", vec!["bob".to_string()]).await;
 
     let mut welcomes = HashMap::new();
     welcomes.insert("bob".to_string(), b"welcome".to_vec());
@@ -2123,7 +2123,7 @@ async fn test_create_group_with_member_returns_key_packages() {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: "kp-test-group".to_string(),
         member_usernames: vec!["bob".to_string()],
-        group_name: String::new(),
+        group_name: "kp_return_group".to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2156,7 +2156,7 @@ async fn test_create_group_member_no_key_package() {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: "no-kp-group".to_string(),
         member_usernames: vec!["bob".to_string()],
-        group_name: String::new(),
+        group_name: "no_kp_member_group".to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2178,9 +2178,9 @@ async fn test_create_group_nonexistent_member() {
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::CreateGroupRequest {
-        alias: "ghost-group".to_string(),
+        alias: "ghost_group".to_string(),
         member_usernames: vec!["ghost_user".to_string()],
-        group_name: String::new(),
+        group_name: "nonexistent_member_group".to_string(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2229,9 +2229,9 @@ async fn test_list_multiple_groups() {
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
-    create_group_for(&app, &token, "group-1", vec![]).await;
-    create_group_for(&app, &token, "group-2", vec![]).await;
-    create_group_for(&app, &token, "group-3", vec![]).await;
+    create_group_for(&app, &token, "group_1", vec![]).await;
+    create_group_for(&app, &token, "group_2", vec![]).await;
+    create_group_for(&app, &token, "group_3", vec![]).await;
 
     let request = Request::builder()
         .method("GET")
@@ -2258,7 +2258,7 @@ async fn test_list_groups_includes_members() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "member-group", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "member_group", vec!["bob".to_string()]).await;
 
     let mut welcomes = HashMap::new();
     welcomes.insert("bob".to_string(), b"welcome".to_vec());
@@ -2305,7 +2305,7 @@ async fn test_message_sequence_numbers_increment() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "seq-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "seq_group", vec![]).await;
 
     for expected_seq in 1u64..=3 {
         let req_body = conclave_proto::SendMessageRequest {
@@ -2491,7 +2491,7 @@ async fn test_invite_self_is_skipped() {
     let alice_token = login_user(&app, "alice", "password123").await;
     upload_key_package_for(&app, &alice_token, &fake_key_package(b"alice_kp")).await;
 
-    let group_id = create_group_for(&app, &alice_token, "self-invite", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "self_invite", vec![]).await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
         usernames: vec!["alice".to_string()],
@@ -2550,7 +2550,7 @@ async fn test_get_messages_respects_after_parameter() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "paging-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "paging_group", vec![]).await;
 
     for i in 1..=5 {
         let req_body = conclave_proto::SendMessageRequest {
@@ -2659,10 +2659,54 @@ async fn test_register_username_starting_with_hyphen() {
 }
 
 #[tokio::test]
-async fn test_register_username_valid_special_chars() {
+async fn test_register_username_valid_with_underscores() {
     let app = setup();
-    let user_id = register_user(&app, "user.name-with_all123", "password123").await;
+    let user_id = register_user(&app, "user_name_with_all123", "password123").await;
     assert!(user_id > 0);
+}
+
+#[tokio::test]
+async fn test_register_username_with_dot_rejected() {
+    let app = setup();
+    let req_body = conclave_proto::RegisterRequest {
+        username: "user.name".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_register_username_with_hyphen_rejected() {
+    let app = setup();
+    let req_body = conclave_proto::RegisterRequest {
+        username: "user-name".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -2742,7 +2786,7 @@ async fn test_external_join_no_group_info_stored() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "no-info-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "no_info_group", vec![]).await;
 
     // Alice (a member) attempts external join but no group_info has been uploaded.
     let req_body = conclave_proto::ExternalJoinRequest {
@@ -2771,7 +2815,7 @@ async fn test_get_messages_limit_capped_at_500() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "big-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "big_group", vec![]).await;
 
     // Send 600 messages.
     for i in 1..=600 {
@@ -2873,7 +2917,7 @@ async fn test_upload_commit_with_multiple_welcomes() {
     let group_id = create_group_for(
         &app,
         &alice_token,
-        "multi-welcome",
+        "multi_welcome",
         vec!["bob".to_string(), "charlie".to_string()],
     )
     .await;
@@ -2965,7 +3009,7 @@ async fn test_leave_group_stores_group_info() {
     let bob_token = login_user(&app, "bob", "password123").await;
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
-    let group_id = create_group_for(&app, &alice_token, "leave-gi", vec!["bob".to_string()]).await;
+    let group_id = create_group_for(&app, &alice_token, "leave_gi", vec!["bob".to_string()]).await;
 
     // Add bob as a member via commit.
     let mut welcomes = HashMap::new();
@@ -3025,7 +3069,7 @@ async fn test_external_join_commit_stored_as_message() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "ext-msg-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "ext_msg_group", vec![]).await;
 
     // Register Bob and add him to the group via a commit with a welcome.
     register_user(&app, "bob", "password123").await;
@@ -3097,7 +3141,7 @@ async fn test_external_join_requires_membership() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &alice_token, "private-group", vec![]).await;
+    let group_id = create_group_for(&app, &alice_token, "private_group", vec![]).await;
 
     // Alice uploads commit with group_info.
     let commit_body = conclave_proto::UploadCommitRequest {
@@ -3290,11 +3334,11 @@ async fn test_update_group_alias_by_creator() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "original-alias", vec![]).await;
+    let group_id = create_group_for(&app, &token, "original_alias", vec![]).await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
-        alias: "updated-alias".to_string(),
-        group_name: String::new(),
+        alias: "updated_alias".to_string(),
+        group_name: "alias_update_group".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3323,7 +3367,7 @@ async fn test_update_group_alias_by_creator() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(groups_response.groups.len(), 1);
-    assert_eq!(groups_response.groups[0].alias, "updated-alias");
+    assert_eq!(groups_response.groups[0].alias, "updated_alias");
 }
 
 #[tokio::test]
@@ -3331,11 +3375,11 @@ async fn test_update_group_name_by_creator() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "my-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "my_group", vec![]).await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
         alias: String::new(),
-        group_name: "new-group-name".to_string(),
+        group_name: "new_group_name".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3364,7 +3408,7 @@ async fn test_update_group_name_by_creator() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(groups_response.groups.len(), 1);
-    assert_eq!(groups_response.groups[0].group_name, "new-group-name");
+    assert_eq!(groups_response.groups[0].group_name, "new_group_name");
 }
 
 #[tokio::test]
@@ -3377,11 +3421,11 @@ async fn test_update_group_non_creator_rejected() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
 
     let group_id =
-        create_group_for(&app, &alice_token, "alice-group", vec!["bob".to_string()]).await;
+        create_group_for(&app, &alice_token, "alice_group", vec!["bob".to_string()]).await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
         alias: "hijacked".to_string(),
-        group_name: String::new(),
+        group_name: "non_creator_update_group".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3406,7 +3450,7 @@ async fn test_update_group_not_found() {
 
     let request_body = conclave_proto::UpdateGroupRequest {
         alias: "phantom".to_string(),
-        group_name: String::new(),
+        group_name: "not_found_update_group".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3432,7 +3476,7 @@ async fn test_update_group_duplicate_group_name() {
     let first_group_body = conclave_proto::CreateGroupRequest {
         alias: "first".to_string(),
         member_usernames: vec![],
-        group_name: "unique-name".to_string(),
+        group_name: "unique_name".to_string(),
     };
     let mut body = Vec::new();
     first_group_body.encode(&mut body).unwrap();
@@ -3452,7 +3496,7 @@ async fn test_update_group_duplicate_group_name() {
 
     let request_body = conclave_proto::UpdateGroupRequest {
         alias: String::new(),
-        group_name: "unique-name".to_string(),
+        group_name: "unique_name".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3474,11 +3518,247 @@ async fn test_update_group_invalid_alias() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
-    let group_id = create_group_for(&app, &token, "my-group", vec![]).await;
+    let group_id = create_group_for(&app, &token, "my_group", vec![]).await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
         alias: "a".repeat(65),
+        group_name: "invalid_alias_group".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── Group Name Validation ────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_group_name_with_dot_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "my.group".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_with_hyphen_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "my-group".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_with_space_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "my group".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_with_unicode_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "gr\u{00fc}ppe".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_starting_with_underscore_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "_mygroup".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_empty_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
         group_name: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_group_name_too_long_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::CreateGroupRequest {
+        alias: String::new(),
+        member_usernames: vec![],
+        group_name: "a".repeat(65),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_group_name_with_dot_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "my_group", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: String::new(),
+        group_name: "new.name".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_group_name_with_hyphen_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "my_group2", vec![]).await;
+
+    let request_body = conclave_proto::UpdateGroupRequest {
+        alias: String::new(),
+        group_name: "new-name".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3627,8 +3907,8 @@ async fn test_update_group_broadcasts_to_members() {
 
     // Alice updates the group alias.
     let request_body = conclave_proto::UpdateGroupRequest {
-        alias: "new-topic".to_string(),
-        group_name: String::new(),
+        alias: "new_topic".to_string(),
+        group_name: "broadcast_update_group".to_string(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();

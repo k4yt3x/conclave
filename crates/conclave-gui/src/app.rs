@@ -707,6 +707,49 @@ impl Conclave {
                 Task::none()
             }
             screen::dashboard::Message::Logout => self.perform_logout(),
+            screen::dashboard::Message::DragStarted(target) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.dragging = Some(target);
+                    dashboard.last_drag_x = 0.0;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::DragUpdate(cursor_x) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && dashboard.dragging.is_some()
+                {
+                    let last_x = dashboard.last_drag_x;
+                    if last_x > 0.0 {
+                        let delta = cursor_x - last_x;
+                        match dashboard.dragging {
+                            Some(screen::dashboard::DragTarget::LeftHandle) => {
+                                dashboard.left_sidebar_width =
+                                    (dashboard.left_sidebar_width + delta).clamp(
+                                        screen::dashboard::SIDEBAR_MIN_WIDTH,
+                                        screen::dashboard::SIDEBAR_MAX_WIDTH,
+                                    );
+                            }
+                            Some(screen::dashboard::DragTarget::RightHandle) => {
+                                dashboard.right_sidebar_width =
+                                    (dashboard.right_sidebar_width - delta).clamp(
+                                        screen::dashboard::SIDEBAR_MIN_WIDTH,
+                                        screen::dashboard::SIDEBAR_MAX_WIDTH,
+                                    );
+                            }
+                            None => {}
+                        }
+                    }
+                    dashboard.last_drag_x = cursor_x;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::DragEnded => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.dragging = None;
+                    dashboard.last_drag_x = 0.0;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1336,7 +1379,7 @@ impl Conclave {
         Task::perform(
             async move {
                 let api = params.into_client();
-                operations::create_group(&api, None, Some(&name), members, &data_dir, user_id)
+                operations::create_group(&api, None, &name, members, &data_dir, user_id)
                     .await
                     .map_err(|e| e.to_string())
             },

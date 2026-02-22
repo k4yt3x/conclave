@@ -228,13 +228,13 @@ impl ApiClient {
     pub async fn create_group(
         &self,
         alias: Option<&str>,
-        group_name: Option<&str>,
+        group_name: &str,
         member_usernames: Vec<String>,
     ) -> Result<conclave_proto::CreateGroupResponse> {
         let request = conclave_proto::CreateGroupRequest {
             alias: alias.unwrap_or_default().to_string(),
             member_usernames,
-            group_name: group_name.unwrap_or_default().to_string(),
+            group_name: group_name.to_string(),
         };
         let bytes = self.post("/api/v1/groups", &request).await?;
         Ok(conclave_proto::CreateGroupResponse::decode(

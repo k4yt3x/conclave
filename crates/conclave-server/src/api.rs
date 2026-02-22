@@ -13,7 +13,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::{self, AuthUser};
-use crate::db::validate_alias;
+use crate::db::{validate_alias, validate_group_name, validate_username};
 use crate::error::{Error, Result};
 use crate::state::{AppState, SseEvent};
 
@@ -143,27 +143,7 @@ async fn register(State(state): State<Arc<AppState>>, body: Bytes) -> Result<imp
         ));
     }
 
-    if request.username.len() > 64 {
-        return Err(Error::BadRequest(
-            "username must be 64 characters or fewer".into(),
-        ));
-    }
-
-    // Restrict to safe ASCII characters to prevent homoglyph impersonation,
-    // control character injection, and display issues. Must start with an
-    // alphanumeric character.
-    if !request
-        .username
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-        || !request
-            .username
-            .starts_with(|c: char| c.is_ascii_alphanumeric())
-    {
-        return Err(Error::BadRequest(
-            "username must start with a letter or digit and contain only ASCII letters, digits, underscores, hyphens, or dots".into(),
-        ));
-    }
+    validate_username(&request.username)?;
 
     if request.password.len() < 8 {
         return Err(Error::BadRequest(
@@ -389,16 +369,14 @@ async fn create_group(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::CreateGroupRequest>(&body)?;
 
+    if request.group_name.is_empty() {
+        return Err(Error::BadRequest("group_name is required".into()));
+    }
+
     let alias = if request.alias.is_empty() {
         None
     } else {
         Some(request.alias.as_str())
-    };
-
-    let group_name = if request.group_name.is_empty() {
-        None
-    } else {
-        Some(request.group_name.as_str())
     };
 
     // Collect key packages for all requested members (skip the creator).
@@ -421,7 +399,9 @@ async fn create_group(
     }
 
     // Create the group in the database (auto-increment ID).
-    let group_id = state.db.create_group(group_name, alias, auth.user_id)?;
+    let group_id = state
+        .db
+        .create_group(&request.group_name, alias, auth.user_id)?;
 
     Ok(proto_response(
         StatusCode::CREATED,
@@ -453,7 +433,7 @@ async fn list_groups(
         group_infos.push(conclave_proto::GroupInfo {
             group_id: row.group_id,
             alias: row.alias.unwrap_or_default(),
-            group_name: row.group_name.unwrap_or_default(),
+            group_name: row.group_name,
             creator_id: row.creator_id,
             members: member_protos,
             created_at: row.created_at as u64,
@@ -494,6 +474,7 @@ async fn update_group(
             .update_group_alias(group_id, Some(&request.alias))?;
     }
     if !request.group_name.is_empty() {
+        validate_group_name(&request.group_name)?;
         state
             .db
             .update_group_name(group_id, Some(&request.group_name))?;

@@ -15,26 +15,21 @@ use crate::state::RoomMember;
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
     pub group_id: i64,
-    pub group_name: Option<String>,
+    pub group_name: String,
     pub alias: Option<String>,
     pub members: Vec<MemberInfo>,
     pub mls_group_id: Option<String>,
 }
 
 impl RoomInfo {
-    /// Display name: alias > group_name > id as string.
+    /// Display name: alias if set, otherwise group_name.
     pub fn display_name(&self) -> String {
         if let Some(alias) = &self.alias
             && !alias.is_empty()
         {
             return alias.clone();
         }
-        if let Some(group_name) = &self.group_name
-            && !group_name.is_empty()
-        {
-            return group_name.clone();
-        }
-        self.group_id.to_string()
+        self.group_name.clone()
     }
 }
 
@@ -190,11 +185,7 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
         .into_iter()
         .map(|group| RoomInfo {
             group_id: group.group_id,
-            group_name: if group.group_name.is_empty() {
-                None
-            } else {
-                Some(group.group_name)
-            },
+            group_name: group.group_name,
             alias: if group.alias.is_empty() {
                 None
             } else {
@@ -418,7 +409,7 @@ pub async fn send_message(
 pub async fn create_group(
     api: &ApiClient,
     alias: Option<&str>,
-    group_name: Option<&str>,
+    group_name: &str,
     members: Vec<String>,
     data_dir: &Path,
     user_id: i64,
@@ -845,7 +836,7 @@ mod tests {
     fn test_room_info_display_name_alias() {
         let info = RoomInfo {
             group_id: 1,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: Some("Dev Team".into()),
             members: vec![],
             mls_group_id: None,
@@ -857,48 +848,24 @@ mod tests {
     fn test_room_info_display_name_group_name_fallback() {
         let info = RoomInfo {
             group_id: 1,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: None,
             members: vec![],
             mls_group_id: None,
         };
         assert_eq!(info.display_name(), "devs");
-    }
-
-    #[test]
-    fn test_room_info_display_name_id_fallback() {
-        let info = RoomInfo {
-            group_id: 99,
-            group_name: None,
-            alias: None,
-            members: vec![],
-            mls_group_id: None,
-        };
-        assert_eq!(info.display_name(), "99");
     }
 
     #[test]
     fn test_room_info_display_name_empty_alias_falls_through() {
         let info = RoomInfo {
             group_id: 1,
-            group_name: Some("devs".into()),
+            group_name: "devs".into(),
             alias: Some(String::new()),
             members: vec![],
             mls_group_id: None,
         };
         assert_eq!(info.display_name(), "devs");
-    }
-
-    #[test]
-    fn test_room_info_display_name_empty_group_name_falls_through() {
-        let info = RoomInfo {
-            group_id: 7,
-            group_name: Some(String::new()),
-            alias: None,
-            members: vec![],
-            mls_group_id: None,
-        };
-        assert_eq!(info.display_name(), "7");
     }
 
     #[test]

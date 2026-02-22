@@ -174,8 +174,8 @@ pub async fn execute(
                 let api_guard = api.lock().await;
                 operations::create_group(
                     &api_guard,
-                    Some(&name),
                     None,
+                    &name,
                     members,
                     &config.data_dir,
                     user_id,

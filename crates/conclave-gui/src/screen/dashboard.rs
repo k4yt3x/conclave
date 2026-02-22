@@ -12,6 +12,16 @@ use crate::theme;
 use crate::widget::Element;
 use crate::widget::message_view;
 
+pub const SIDEBAR_MIN_WIDTH: f32 = 100.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 500.0;
+const DRAG_HANDLE_WIDTH: f32 = 4.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DragTarget {
+    LeftHandle,
+    RightHandle,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     RoomSelected(i64),
@@ -23,6 +33,9 @@ pub enum Message {
     CopyText(String),
     DismissToast,
     Logout,
+    DragStarted(DragTarget),
+    DragUpdate(f32),
+    DragEnded,
 }
 
 pub struct Dashboard {
@@ -30,6 +43,10 @@ pub struct Dashboard {
     pub show_user_popover: bool,
     pub show_members_sidebar: bool,
     pub toast: Option<String>,
+    pub left_sidebar_width: f32,
+    pub right_sidebar_width: f32,
+    pub dragging: Option<DragTarget>,
+    pub last_drag_x: f32,
 }
 
 impl Dashboard {
@@ -39,6 +56,10 @@ impl Dashboard {
             show_user_popover: false,
             show_members_sidebar: false,
             toast: None,
+            left_sidebar_width: 200.0,
+            right_sidebar_width: 180.0,
+            dragging: None,
+            last_drag_x: 0.0,
         }
     }
 
@@ -66,15 +87,28 @@ impl Dashboard {
             server_url,
             accept_invalid_certs,
         );
+        let left_handle = self.view_drag_handle(DragTarget::LeftHandle);
         let main_area =
             self.view_main_area(rooms, active_room, room_messages, system_messages, theme);
 
-        let mut base = row![sidebar, main_area];
+        let mut base = row![sidebar, left_handle, main_area];
         if self.show_members_sidebar && active_room.is_some() {
+            let right_handle = self.view_drag_handle(DragTarget::RightHandle);
+            base = base.push(right_handle);
             base = base.push(self.view_members_sidebar(rooms, active_room));
         }
 
-        if self.show_user_popover {
+        if self.dragging.is_some() {
+            let overlay = mouse_area(
+                container(iced::widget::Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .on_move(|point| Message::DragUpdate(point.x))
+            .on_release(Message::DragEnded)
+            .interaction(iced::mouse::Interaction::ResizingHorizontally);
+            stack![base, overlay].into()
+        } else if self.show_user_popover {
             let popover = self.view_user_popover(username, user_alias, user_id, server_url);
             stack![base, popover].into()
         } else {
@@ -109,15 +143,9 @@ impl Dashboard {
             let is_active = active_room == &Some(room.server_group_id);
             let unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
 
-            let unique_name = room
-                .group_name
-                .as_deref()
-                .filter(|n| !n.is_empty())
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| room.server_group_id.to_string());
             let room_display = match room.alias.as_deref().filter(|a| !a.is_empty()) {
-                Some(alias) => format!("{alias} (#{unique_name})"),
-                None => format!("#{unique_name}"),
+                Some(alias) => format!("{alias} (#{})", room.group_name),
+                None => format!("#{}", room.group_name),
             };
 
             let label = if unread > 0 {
@@ -235,10 +263,26 @@ impl Dashboard {
             .height(Length::Fill);
 
         container(sidebar_content)
-            .width(200)
+            .width(self.left_sidebar_width)
             .height(Length::Fill)
             .clip(true)
             .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)
+            .into()
+    }
+
+    fn view_drag_handle(&self, target: DragTarget) -> Element<'_, Message> {
+        let handle = container(
+            iced::widget::Space::new()
+                .width(DRAG_HANDLE_WIDTH)
+                .height(Length::Fill),
+        )
+        .width(DRAG_HANDLE_WIDTH)
+        .height(Length::Fill)
+        .class(Box::new(theme::container::drag_handle) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        mouse_area(handle)
+            .interaction(iced::mouse::Interaction::ResizingHorizontally)
+            .on_press(Message::DragStarted(target))
             .into()
     }
 
@@ -419,7 +463,7 @@ impl Dashboard {
             column![header, scrollable(member_list).height(Length::Fill)].height(Length::Fill);
 
         container(sidebar_content)
-            .width(180)
+            .width(self.right_sidebar_width)
             .height(Length::Fill)
             .clip(true)
             .class(Box::new(theme::container::sidebar) as Box<dyn Fn(&theme::Theme) -> _>)

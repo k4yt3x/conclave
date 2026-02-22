@@ -97,6 +97,13 @@ pub fn input_area(theme: &Theme) -> Style {
     }
 }
 
+pub fn drag_handle(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.border)),
+        ..Style::default()
+    }
+}
+
 pub fn toast(theme: &Theme) -> Style {
     Style {
         background: Some(Background::Color(theme.surface_bright)),
