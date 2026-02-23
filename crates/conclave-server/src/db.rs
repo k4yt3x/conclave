@@ -38,6 +38,30 @@ pub struct NewMember {
     pub username: String,
 }
 
+/// A pending invite held in escrow until the invitee accepts or declines.
+#[derive(Debug)]
+pub struct PendingInviteRow {
+    pub invite_id: i64,
+    pub group_id: i64,
+    pub inviter_id: i64,
+    pub invitee_id: i64,
+    pub commit_message: Vec<u8>,
+    pub welcome_data: Vec<u8>,
+    pub group_info: Vec<u8>,
+    pub created_at: i64,
+}
+
+/// Result of accepting a pending invite.
+#[derive(Debug)]
+pub struct AcceptedInvite {
+    pub group_id: i64,
+    pub inviter_id: i64,
+    pub invitee_id: i64,
+    pub invitee_username: String,
+    pub group_alias: Option<String>,
+    pub sequence_number: i64,
+}
+
 /// A row from the `groups` table joined with membership info.
 pub struct UserGroupRow {
     pub group_id: i64,
@@ -223,6 +247,20 @@ impl Database {
                 group_info_data BLOB NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
+
+            CREATE TABLE IF NOT EXISTS pending_invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                inviter_id INTEGER NOT NULL REFERENCES users(id),
+                invitee_id INTEGER NOT NULL REFERENCES users(id),
+                commit_message BLOB NOT NULL,
+                welcome_data BLOB NOT NULL,
+                group_info BLOB NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                UNIQUE(group_id, invitee_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_invites_invitee
+                ON pending_invites(invitee_id);
             ",
         )?;
 
@@ -560,6 +598,15 @@ impl Database {
     }
 
     /// Get the alias for a group.
+    pub fn get_group_name(&self, group_id: i64) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result: Option<String> = conn
+            .prepare("SELECT group_name FROM groups WHERE id = ?1")?
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?;
+        Ok(result)
+    }
+
     pub fn get_group_alias(&self, group_id: i64) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT alias FROM groups WHERE id = ?1")?;
@@ -859,6 +906,206 @@ impl Database {
             .query_row(params![group_id], |row| row.get(0))
             .optional()?;
         Ok(result)
+    }
+
+    // ── Pending Invites (Escrow) ─────────────────────────────────
+
+    pub fn create_pending_invite(
+        &self,
+        group_id: i64,
+        inviter_id: i64,
+        invitee_id: i64,
+        commit_message: &[u8],
+        welcome_data: &[u8],
+        group_info: &[u8],
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO pending_invites (group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Error::Conflict(
+                    "a pending invite already exists for this user and group".into(),
+                )
+            }
+            other => Error::Database(other),
+        })?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_pending_invite(&self, invite_id: i64) -> Result<Option<PendingInviteRow>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
+             FROM pending_invites WHERE id = ?1",
+        )?;
+        let row = stmt
+            .query_row(params![invite_id], |row| {
+                Ok(PendingInviteRow {
+                    invite_id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    inviter_id: row.get(2)?,
+                    invitee_id: row.get(3)?,
+                    commit_message: row.get(4)?,
+                    welcome_data: row.get(5)?,
+                    group_info: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn list_pending_invites_for_user(&self, user_id: i64) -> Result<Vec<PendingInviteRow>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
+             FROM pending_invites WHERE invitee_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok(PendingInviteRow {
+                    invite_id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    inviter_id: row.get(2)?,
+                    invitee_id: row.get(3)?,
+                    commit_message: row.get(4)?,
+                    welcome_data: row.get(5)?,
+                    group_info: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Atomically accept a pending invite: remove from pending_invites, add to
+    /// group_members, store the welcome in pending_welcomes, and store the commit
+    /// as a group message.
+    pub fn accept_pending_invite(&self, invite_id: i64) -> Result<AcceptedInvite> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = conn.savepoint()?;
+
+        let invite = transaction
+            .prepare(
+                "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info
+                 FROM pending_invites WHERE id = ?1",
+            )?
+            .query_row(params![invite_id], |row| {
+                Ok((
+                    row.get::<_, i64>(1)?,       // group_id
+                    row.get::<_, i64>(2)?,       // inviter_id
+                    row.get::<_, i64>(3)?,       // invitee_id
+                    row.get::<_, Vec<u8>>(4)?,   // commit_message
+                    row.get::<_, Vec<u8>>(5)?,   // welcome_data
+                    row.get::<_, Vec<u8>>(6)?,   // group_info
+                ))
+            })
+            .optional()?
+            .ok_or_else(|| Error::NotFound("pending invite not found".into()))?;
+
+        let (group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info) = invite;
+
+        let invitee_username: String = transaction
+            .prepare("SELECT username FROM users WHERE id = ?1")?
+            .query_row(params![invitee_id], |row| row.get(0))?;
+
+        let group_alias: Option<String> = transaction
+            .prepare("SELECT alias FROM groups WHERE id = ?1")?
+            .query_row(params![group_id], |row| row.get(0))?;
+
+        // Verify the invitee is not already a member (could happen if they
+        // joined via another path between invite creation and acceptance).
+        let already_member: bool = transaction
+            .prepare(
+                "SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2)",
+            )?
+            .query_row(params![group_id, invitee_id], |row| row.get(0))?;
+        if already_member {
+            return Err(Error::Conflict(
+                "user is already a member of this group".into(),
+            ));
+        }
+
+        // Add the invitee to group members.
+        transaction.execute(
+            "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
+            params![group_id, invitee_id],
+        )?;
+
+        // Store the welcome for the invitee.
+        transaction.execute(
+            "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data, created_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![group_id, group_alias, invitee_id, welcome_data],
+        )?;
+
+        // Store the commit as a group message.
+        let max_seq: Option<i64> = transaction
+            .prepare("SELECT MAX(sequence_num) FROM messages WHERE group_id = ?1")?
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?
+            .flatten();
+        let next_seq = max_seq.unwrap_or(0) + 1;
+
+        transaction.execute(
+            "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num, created_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![group_id, inviter_id, commit_message, next_seq],
+        )?;
+
+        // Update group info.
+        if !group_info.is_empty() {
+            transaction.execute(
+                "INSERT INTO group_infos (group_id, group_info_data, updated_at)
+                 VALUES (?1, ?2, unixepoch())
+                 ON CONFLICT(group_id) DO UPDATE SET
+                     group_info_data = excluded.group_info_data,
+                     updated_at = excluded.updated_at",
+                params![group_id, group_info],
+            )?;
+        }
+
+        // Delete the pending invite.
+        transaction.execute(
+            "DELETE FROM pending_invites WHERE id = ?1",
+            params![invite_id],
+        )?;
+
+        transaction.commit()?;
+
+        Ok(AcceptedInvite {
+            group_id,
+            inviter_id,
+            invitee_id,
+            invitee_username,
+            group_alias,
+            sequence_number: next_seq,
+        })
+    }
+
+    pub fn delete_pending_invite(&self, invite_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM pending_invites WHERE id = ?1",
+            params![invite_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn cleanup_expired_invites(&self, max_age_secs: i64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let deleted = conn.execute(
+            "DELETE FROM pending_invites WHERE created_at < (unixepoch() - ?1)",
+            params![max_age_secs],
+        )?;
+        Ok(deleted as u64)
     }
 
     // ── Account Reset ──────────────────────────────────────────────
@@ -1873,5 +2120,135 @@ mod tests {
         db.promote_member(group_id, bob).unwrap();
         let admins = db.get_group_admins(group_id).unwrap();
         assert_eq!(admins.len(), 2);
+    }
+
+    #[test]
+    fn test_create_and_get_pending_invite() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("test_group"), alice)
+            .unwrap();
+
+        let invite_id = db
+            .create_pending_invite(group_id, alice, bob, b"commit", b"welcome", b"ginfo")
+            .unwrap();
+        assert!(invite_id > 0);
+
+        let invite = db.get_pending_invite(invite_id).unwrap().unwrap();
+        assert_eq!(invite.group_id, group_id);
+        assert_eq!(invite.inviter_id, alice);
+        assert_eq!(invite.invitee_id, bob);
+        assert_eq!(invite.commit_message, b"commit");
+        assert_eq!(invite.welcome_data, b"welcome");
+        assert_eq!(invite.group_info, b"ginfo");
+    }
+
+    #[test]
+    fn test_list_pending_invites_for_user() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group1 = db.create_group("group1", None, alice).unwrap();
+        let group2 = db.create_group("group2", None, alice).unwrap();
+
+        db.create_pending_invite(group1, alice, bob, b"c1", b"w1", b"g1")
+            .unwrap();
+        db.create_pending_invite(group2, alice, bob, b"c2", b"w2", b"g2")
+            .unwrap();
+
+        let invites = db.list_pending_invites_for_user(bob).unwrap();
+        assert_eq!(invites.len(), 2);
+
+        // Alice should have no pending invites.
+        let invites = db.list_pending_invites_for_user(alice).unwrap();
+        assert!(invites.is_empty());
+    }
+
+    #[test]
+    fn test_pending_invite_unique_constraint() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db.create_group("test_group", None, alice).unwrap();
+
+        db.create_pending_invite(group_id, alice, bob, b"c1", b"w1", b"g1")
+            .unwrap();
+
+        // Duplicate invite for same group+invitee should fail.
+        let result = db.create_pending_invite(group_id, alice, bob, b"c2", b"w2", b"g2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_pending_invite() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db
+            .create_group("test_group", Some("Test Group"), alice)
+            .unwrap();
+
+        let invite_id = db
+            .create_pending_invite(
+                group_id,
+                alice,
+                bob,
+                b"commit_data",
+                b"welcome_data",
+                b"ginfo",
+            )
+            .unwrap();
+
+        let result = db.accept_pending_invite(invite_id).unwrap();
+        assert_eq!(result.group_id, group_id);
+        assert_eq!(result.inviter_id, alice);
+        assert_eq!(result.invitee_id, bob);
+        assert_eq!(result.invitee_username, "bob");
+        assert_eq!(result.group_alias, Some("Test Group".to_string()));
+        assert_eq!(result.sequence_number, 1);
+
+        // Bob should now be a group member.
+        assert!(db.is_group_member(group_id, bob).unwrap());
+
+        // The pending invite should be gone.
+        assert!(db.get_pending_invite(invite_id).unwrap().is_none());
+
+        // There should be a pending welcome for Bob.
+        let welcomes = db.get_pending_welcomes(bob).unwrap();
+        assert_eq!(welcomes.len(), 1);
+        assert_eq!(welcomes[0].welcome_data, b"welcome_data");
+
+        // There should be a message in the group.
+        let messages = db.get_messages(group_id, 0, 100).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].mls_message, b"commit_data");
+    }
+
+    #[test]
+    fn test_delete_pending_invite() {
+        let db = Database::open_in_memory().unwrap();
+        let alice = db.create_user("alice", "hash").unwrap();
+        let bob = db.create_user("bob", "hash").unwrap();
+
+        let group_id = db.create_group("test_group", None, alice).unwrap();
+        let invite_id = db
+            .create_pending_invite(group_id, alice, bob, b"c", b"w", b"g")
+            .unwrap();
+
+        db.delete_pending_invite(invite_id).unwrap();
+        assert!(db.get_pending_invite(invite_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_accept_nonexistent_invite() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.accept_pending_invite(9999);
+        assert!(result.is_err());
     }
 }

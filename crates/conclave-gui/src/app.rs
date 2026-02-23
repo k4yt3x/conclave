@@ -930,6 +930,9 @@ impl Conclave {
                 }
                 Task::none()
             }
+            Ok(Command::Invites) => self.list_invites(),
+            Ok(Command::Accept { invite_id }) => self.accept_invites(invite_id),
+            Ok(Command::Decline { invite_id }) => self.decline_invite(invite_id),
             Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
             Ok(Command::Reset) => self.reset_account(),
@@ -1043,6 +1046,58 @@ impl Conclave {
                     );
 
                     self.handle_sse_event(SseUpdate::NewMessage { group_id })
+                }
+            }
+            SseUpdate::InviteReceived {
+                invite_id,
+                group_id,
+                group_name,
+                group_alias,
+                inviter_username,
+            } => {
+                let display = if group_alias.is_empty() {
+                    &group_name
+                } else {
+                    &group_alias
+                };
+                self.push_system_message(&format!(
+                    "Invitation from {inviter_username} to join #{display} ({group_id}). \
+                     Use /accept {invite_id} or /decline {invite_id}."
+                ));
+                Task::none()
+            }
+            SseUpdate::InviteDeclined {
+                group_id,
+                declined_username,
+            } => {
+                self.push_system_message(&format!("{declined_username} declined the invitation."));
+
+                // Auto-rotate keys to clean up the phantom MLS leaf.
+                if let Some(mls_group_id) = self.group_mapping.get(&group_id).cloned() {
+                    let params = self.api_params();
+                    let data_dir = self.config.data_dir.clone();
+                    let user_id = self.user_id.unwrap_or(0);
+
+                    Task::perform(
+                        async move {
+                            let api = params.into_client();
+                            if let Err(error) = operations::handle_invite_declined(
+                                &api,
+                                group_id,
+                                &mls_group_id,
+                                &data_dir,
+                                user_id,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%error, "failed to rotate keys after invite decline");
+                            }
+                            Ok(vec![])
+                        },
+                        Message::CommandResult,
+                    )
+                } else {
+                    Task::none()
                 }
             }
         }
@@ -1465,6 +1520,101 @@ impl Conclave {
                 }
             },
             Message::RefreshRooms,
+        )
+    }
+
+    fn list_invites(&mut self) -> Task<Message> {
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                let invites = operations::list_pending_invites(&api)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                if invites.is_empty() {
+                    Ok(vec![DisplayMessage::system("No pending invitations.")])
+                } else {
+                    let mut messages = Vec::new();
+                    for invite in &invites {
+                        let display = if invite.group_alias.is_empty() {
+                            &invite.group_name
+                        } else {
+                            &invite.group_alias
+                        };
+                        messages.push(DisplayMessage::system(&format!(
+                            "[{}] #{display} — invited by {}",
+                            invite.invite_id, invite.inviter_username
+                        )));
+                    }
+                    messages.push(DisplayMessage::system(
+                        "Use /accept <id> or /decline <id> to respond.",
+                    ));
+                    Ok(messages)
+                }
+            },
+            Message::CommandResult,
+        )
+    }
+
+    fn accept_invites(&mut self, invite_id: Option<i64>) -> Task<Message> {
+        let params = self.api_params();
+        let data_dir = self.config.data_dir.clone();
+        let user_id = self.user_id.unwrap_or(0);
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+
+                let invite_ids = if let Some(id) = invite_id {
+                    vec![id]
+                } else {
+                    let pending = operations::list_pending_invites(&api)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    pending.iter().map(|i| i.invite_id).collect()
+                };
+
+                if invite_ids.is_empty() {
+                    return Ok(vec![DisplayMessage::system(
+                        "No pending invitations to accept.",
+                    )]);
+                }
+
+                let mut messages = Vec::new();
+                for id in invite_ids {
+                    let results = operations::accept_invite(&api, id, &data_dir, user_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    for result in &results {
+                        let id_string = result.group_id.to_string();
+                        let display = result.group_alias.as_deref().unwrap_or(&id_string);
+                        messages.push(DisplayMessage::system(&format!(
+                            "Joined #{display} ({})",
+                            result.group_id
+                        )));
+                    }
+                }
+                Ok(messages)
+            },
+            Message::RefreshRooms,
+        )
+    }
+
+    fn decline_invite(&mut self, invite_id: i64) -> Task<Message> {
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                operations::decline_invite(&api, invite_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![DisplayMessage::system("Invitation declined.")])
+            },
+            Message::CommandResult,
         )
     }
 

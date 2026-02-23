@@ -167,20 +167,12 @@ pub async fn execute(
             start_sse = true;
         }
 
-        Command::Create { name, members } => {
+        Command::Create { name } => {
             let user_id = require_user_id(state)?;
 
             let result = {
                 let api_guard = api.lock().await;
-                operations::create_group(
-                    &api_guard,
-                    None,
-                    &name,
-                    members,
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?
+                operations::create_group(&api_guard, None, &name, &config.data_dir, user_id).await?
             };
 
             state
@@ -419,6 +411,93 @@ pub async fn execute(
                 "Admins of #{room_name}: {}",
                 admin_names.join(", ")
             )));
+        }
+
+        Command::Invites => {
+            let invites = {
+                let api_guard = api.lock().await;
+                operations::list_pending_invites(&api_guard).await?
+            };
+
+            if invites.is_empty() {
+                msgs.push(DisplayMessage::system("No pending invitations."));
+            } else {
+                for invite in &invites {
+                    let display = if invite.group_alias.is_empty() {
+                        &invite.group_name
+                    } else {
+                        &invite.group_alias
+                    };
+                    msgs.push(DisplayMessage::system(&format!(
+                        "[{}] #{display} — invited by {}",
+                        invite.invite_id, invite.inviter_username
+                    )));
+                }
+                msgs.push(DisplayMessage::system(
+                    "Use /accept <id> or /decline <id> to respond.",
+                ));
+            }
+        }
+
+        Command::Accept { invite_id } => {
+            let user_id = require_user_id(state)?;
+
+            let invites = if let Some(id) = invite_id {
+                vec![id]
+            } else {
+                let pending = {
+                    let api_guard = api.lock().await;
+                    operations::list_pending_invites(&api_guard).await?
+                };
+                pending.iter().map(|i| i.invite_id).collect()
+            };
+
+            if invites.is_empty() {
+                msgs.push(DisplayMessage::system("No pending invitations to accept."));
+                return Ok((msgs, start_sse));
+            }
+
+            for id in &invites {
+                let results = {
+                    let api_guard = api.lock().await;
+                    operations::accept_invite(&api_guard, *id, &config.data_dir, user_id).await?
+                };
+
+                for result in &results {
+                    state
+                        .group_mapping
+                        .insert(result.group_id, result.mls_group_id.clone());
+                    let id_string = result.group_id.to_string();
+                    let display = result.group_alias.as_deref().unwrap_or(&id_string);
+                    msgs.push(DisplayMessage::system(&format!(
+                        "Joined #{display} ({})",
+                        result.group_id
+                    )));
+                }
+            }
+
+            load_rooms(api, state).await?;
+
+            // Advance last_seen_seq for newly joined groups.
+            for group_id in state.group_mapping.keys() {
+                if let Some(room) = state.rooms.get_mut(group_id)
+                    && room.last_seen_seq == 0
+                {
+                    let max_seq = match api.lock().await.get_messages(*group_id, 0).await {
+                        Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                        Err(_) => 0,
+                    };
+                    room.last_seen_seq = max_seq;
+                }
+            }
+        }
+
+        Command::Decline { invite_id } => {
+            {
+                let api_guard = api.lock().await;
+                operations::decline_invite(&api_guard, invite_id).await?;
+            }
+            msgs.push(DisplayMessage::system("Invitation declined."));
         }
 
         Command::Part => {
@@ -822,31 +901,45 @@ pub async fn execute(
 
         Command::Help => {
             let help = [
-                "/register <server> <user> <pass>  Register a new account",
-                "/login <server> <user> <pass>     Login to the server",
-                "/create <name> <user1,user2>  Create a room with members",
-                "/join                         Accept pending invitations",
-                "/join <room>                  Switch to a room",
-                "/invite <user1,user2>         Invite to the active room",
-                "/kick <username>              Remove a member from the room",
-                "/promote <username>           Promote a member to admin",
-                "/demote <username>            Demote an admin to member",
-                "/admins                       List admins of active room",
-                "/nick <alias>                 Set your display name",
-                "/topic <text>                 Set active room's display alias",
-                "/part                         Leave the room (MLS removal)",
-                "/close                        Switch away without leaving",
-                "/rotate                       Rotate keys (forward secrecy)",
-                "/reset                        Reset account and rejoin groups",
-                "/info                         Show MLS group details",
-                "/list                         List your rooms",
-                "/unread                       Check rooms for new messages",
-                "/logout                       Logout and revoke session",
-                "/who                          List members of active room",
-                "/msg <room> <text>            Send to a room without switching",
-                "/whois                        Show current user info",
-                "/help                         Show this help",
-                "/quit                         Exit",
+                "ACCOUNT:",
+                "  /register <server> <user> <pass>  Register a new account",
+                "  /login <server> <user> <pass>     Login to the server",
+                "  /logout                           Logout and revoke session",
+                "  /reset                            Reset account and rejoin groups",
+                "  /nick <alias>                     Set your display name",
+                "  /whois                            Show current user info",
+                "",
+                "ROOMS:",
+                "  /create <name>                    Create a new room",
+                "  /list                             List your rooms",
+                "  /join                             Accept pending invitations",
+                "  /join <room>                      Switch to a room",
+                "  /close                            Switch away without leaving",
+                "  /part                             Leave the room (MLS removal)",
+                "  /info                             Show MLS group details",
+                "  /topic <text>                     Set active room's display name",
+                "  /unread                           Check rooms for new messages",
+                "",
+                "MEMBERS:",
+                "  /who                              List members of active room",
+                "  /invite <user1,user2>             Invite to the active room",
+                "  /kick <username>                  Remove a member from the room",
+                "  /promote <username>               Promote a member to admin",
+                "  /demote <username>                Demote an admin to member",
+                "  /admins                           List admins of active room",
+                "",
+                "INVITES:",
+                "  /invites                          List pending invitations",
+                "  /accept [id]                      Accept a pending invite (or all)",
+                "  /decline <id>                     Decline a pending invite",
+                "",
+                "MESSAGING:",
+                "  /msg <room> <text>                Send to a room without switching",
+                "  /rotate                           Rotate keys (forward secrecy)",
+                "",
+                "GENERAL:",
+                "  /help                             Show this help",
+                "  /quit                             Exit",
                 "",
                 "Type text without / to send a message to the active room.",
             ];

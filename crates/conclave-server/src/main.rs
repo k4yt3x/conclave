@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = api::router().with_state(app_state.clone());
 
-    // Periodically clean up expired sessions.
+    // Periodically clean up expired sessions and stale invites.
     {
         let state = app_state.clone();
         tokio::spawn(async move {
@@ -56,6 +56,15 @@ async fn main() -> anyhow::Result<()> {
                 match state.db.cleanup_expired_sessions() {
                     Ok(count) if count > 0 => {
                         info!("cleaned up {count} expired session(s)");
+                    }
+                    _ => {}
+                }
+                match state
+                    .db
+                    .cleanup_expired_invites(state.config.invite_ttl_seconds)
+                {
+                    Ok(count) if count > 0 => {
+                        info!("cleaned up {count} expired invite(s)");
                     }
                     _ => {}
                 }

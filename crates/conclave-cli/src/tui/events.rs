@@ -57,6 +57,53 @@ pub async fn handle_sse_message(
                 )),
             )])
         }
+        SseEvent::InviteReceived {
+            invite_id,
+            group_id,
+            group_name,
+            group_alias,
+            inviter_username,
+        } => {
+            let display = if group_alias.is_empty() {
+                &group_name
+            } else {
+                &group_alias
+            };
+            Ok(vec![(
+                group_id,
+                DisplayMessage::system(&format!(
+                    "Invitation from {inviter_username} to join #{display}. \
+                     Use /accept {invite_id} or /decline {invite_id}."
+                )),
+            )])
+        }
+        SseEvent::InviteDeclined {
+            group_id,
+            declined_username,
+        } => {
+            // Auto-rotate keys to clean up the phantom MLS leaf.
+            if let (Some(mls_group_id), Some(user_id)) =
+                (state.group_mapping.get(&group_id).cloned(), state.user_id)
+            {
+                let api_guard = api.lock().await;
+                if let Err(error) = operations::handle_invite_declined(
+                    &api_guard,
+                    group_id,
+                    &mls_group_id,
+                    data_dir,
+                    user_id,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "failed to rotate keys after invite decline");
+                }
+            }
+
+            Ok(vec![(
+                group_id,
+                DisplayMessage::system(&format!("{declined_username} declined the invitation.")),
+            )])
+        }
     }
 }
 

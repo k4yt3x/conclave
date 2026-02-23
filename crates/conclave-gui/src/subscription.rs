@@ -13,11 +13,30 @@ pub enum SseUpdate {
     Connected,
     Connecting,
     Disconnected,
-    NewMessage { group_id: i64 },
+    NewMessage {
+        group_id: i64,
+    },
     Welcome,
     GroupUpdate,
-    MemberRemoved { group_id: i64, username: String },
-    IdentityReset { group_id: i64, username: String },
+    MemberRemoved {
+        group_id: i64,
+        username: String,
+    },
+    IdentityReset {
+        group_id: i64,
+        username: String,
+    },
+    InviteReceived {
+        invite_id: i64,
+        group_id: i64,
+        group_name: String,
+        group_alias: String,
+        inviter_username: String,
+    },
+    InviteDeclined {
+        group_id: i64,
+        declined_username: String,
+    },
 }
 
 /// State key for the SSE subscription. Keyed by token so the subscription
@@ -128,5 +147,25 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
         conclave_lib::operations::SseEvent::IdentityReset { group_id, username } => {
             Some(SseUpdate::IdentityReset { group_id, username })
         }
+        conclave_lib::operations::SseEvent::InviteReceived {
+            invite_id,
+            group_id,
+            group_name,
+            group_alias,
+            inviter_username,
+        } => Some(SseUpdate::InviteReceived {
+            invite_id,
+            group_id,
+            group_name,
+            group_alias,
+            inviter_username,
+        }),
+        conclave_lib::operations::SseEvent::InviteDeclined {
+            group_id,
+            declined_username,
+        } => Some(SseUpdate::InviteDeclined {
+            group_id,
+            declined_username,
+        }),
     }
 }

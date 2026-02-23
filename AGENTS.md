@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~462 tests across 9 suites)
+cargo test --workspace                   # Run all tests (~491 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-lib               # Client library tests only
 cargo clippy --workspace                 # Lint
@@ -76,13 +76,13 @@ Five crates in `crates/`:
 
 **Group ID mapping**: Server uses auto-increment integer IDs (`i64`); MLS uses opaque byte IDs. The server stores `mls_group_id` in the `groups` table and returns it in `ListGroupsResponse`. TUI/GUI clients build the in-memory mapping (`HashMap<i64, String>`) from the server response on login/reconnect via `build_group_mapping()`. One-shot CLI commands still read/write `group_mapping.toml` per user as a local fallback.
 
-**SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent, IdentityResetEvent.
+**SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent, IdentityResetEvent, InviteReceivedEvent, InviteDeclinedEvent.
 
 **Protobuf over HTTP**: Requests use `Content-Type: application/x-protobuf` with raw protobuf bytes. Server helpers: `proto_response()` encodes, `decode_proto()` decodes.
 
 ## Testing Patterns
 
-- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 134 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, profile/group updates, admin roles, validation edge cases.
+- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 151 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, profile/group updates, admin roles, validation edge cases.
 - **End-to-end protocol flow tests** (`crates/conclave-server/tests/protocol_flow_tests.rs`): Combine real MLS cryptographic operations (via `conclave-lib::MlsManager`) with server API calls through tower::oneshot. Tests full protocol flows: group creation, welcome processing, encrypted messaging, member removal, key rotation, external rejoin.
 - **Client MLS tests** (`crates/conclave-lib/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking. 74 tests covering key package generation, group lifecycle, message encryption/decryption, epoch management, member operations.
 - **All tests use real protobuf encoding/decoding** — match production wire format.

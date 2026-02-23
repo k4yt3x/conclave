@@ -137,6 +137,17 @@ pub enum SseEvent {
         group_id: i64,
         username: String,
     },
+    InviteReceived {
+        invite_id: i64,
+        group_id: i64,
+        group_name: String,
+        group_alias: String,
+        inviter_username: String,
+    },
+    InviteDeclined {
+        group_id: i64,
+        declined_username: String,
+    },
 }
 
 // ── SSE event decoding ───────────────────────────────────────────
@@ -171,6 +182,21 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
             Ok(SseEvent::IdentityReset {
                 group_id: reset.group_id,
                 username: reset.username,
+            })
+        }
+        Some(conclave_proto::server_event::Event::InviteReceived(invite)) => {
+            Ok(SseEvent::InviteReceived {
+                invite_id: invite.invite_id,
+                group_id: invite.group_id,
+                group_name: invite.group_name,
+                group_alias: invite.group_alias,
+                inviter_username: invite.inviter_username,
+            })
+        }
+        Some(conclave_proto::server_event::Event::InviteDeclined(declined)) => {
+            Ok(SseEvent::InviteDeclined {
+                group_id: declined.group_id,
+                declined_username: declined.declined_username,
             })
         }
         None => Err(Error::Other("empty SSE event".into())),
@@ -407,25 +433,23 @@ pub async fn send_message(
 
 // ── Group management operations ──────────────────────────────────
 
-/// Create a new MLS group: request key packages from the server, perform the
-/// MLS group creation, and upload the commit + welcome messages.
+/// Create a new MLS group with only the creator, then upload the commit.
+/// Members are added later via `/invite` through the escrow system.
 pub async fn create_group(
     api: &ApiClient,
     alias: Option<&str>,
     group_name: &str,
-    members: Vec<String>,
     data_dir: &Path,
     user_id: i64,
 ) -> Result<GroupCreatedResult> {
-    let response = api.create_group(alias, group_name, members).await?;
+    let response = api.create_group(alias, group_name).await?;
     let server_group_id = response.group_id;
-    let member_key_packages = response.member_key_packages;
 
     let data_dir = data_dir.to_path_buf();
 
     let result = tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
-        mls.create_group(&member_key_packages)
+        mls.create_group(&HashMap::new())
     })
     .await
     .map_err(|e| Error::Other(format!("task join error: {e}")))??;
@@ -433,7 +457,6 @@ pub async fn create_group(
     api.upload_commit(
         server_group_id,
         result.commit,
-        result.welcomes,
         result.group_info,
         Some(&result.mls_group_id),
     )
@@ -445,11 +468,15 @@ pub async fn create_group(
     })
 }
 
-/// Invite members to an existing group: fetch their key packages, perform the
-/// MLS invite, and upload the commit + welcome messages.
+/// Invite members to an existing group using the two-phase escrow system.
+///
+/// Each member is invited individually (one MLS commit per invite) so the
+/// target can independently accept or decline. The admin's MLS state advances
+/// one epoch per invite. The commit + welcome are held in escrow on the server
+/// until the invitee accepts.
 ///
 /// Returns the list of usernames that were actually invited (empty if all were
-/// already members).
+/// already members or had no key packages).
 pub async fn invite_members(
     api: &ApiClient,
     server_group_id: i64,
@@ -458,35 +485,97 @@ pub async fn invite_members(
     data_dir: &Path,
     user_id: i64,
 ) -> Result<Vec<String>> {
-    let response = api.invite_to_group(server_group_id, members).await?;
+    let mut invited = Vec::new();
 
-    if response.member_key_packages.is_empty() {
-        return Ok(vec![]);
+    for username in &members {
+        let response = api
+            .invite_to_group(server_group_id, vec![username.clone()])
+            .await;
+
+        let response = match response {
+            Ok(r) => r,
+            Err(error) => {
+                tracing::warn!(%error, username = username, "failed to get key package for invite");
+                continue;
+            }
+        };
+
+        if response.member_key_packages.is_empty() {
+            continue;
+        }
+
+        let member_key_packages = response.member_key_packages;
+        let data_dir_clone = data_dir.to_path_buf();
+        let mls_group_id_clone = mls_group_id.to_string();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let mls = MlsManager::new(&data_dir_clone, user_id)?;
+            mls.invite_to_group(&mls_group_id_clone, &member_key_packages)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("task join error: {e}")))?;
+
+        let result = match result {
+            Ok(r) => r,
+            Err(error) => {
+                tracing::warn!(%error, username = username, "MLS invite failed");
+                continue;
+            }
+        };
+
+        // Extract the welcome for this specific user.
+        let welcome_data = result.welcomes.get(username).cloned().unwrap_or_default();
+
+        api.escrow_invite(
+            server_group_id,
+            username,
+            result.commit,
+            welcome_data,
+            result.group_info,
+        )
+        .await?;
+
+        invited.push(username.clone());
     }
 
-    let invited: Vec<String> = response.member_key_packages.keys().cloned().collect();
-    let member_key_packages = response.member_key_packages;
-
-    let data_dir = data_dir.to_path_buf();
-    let mls_group_id = mls_group_id.to_string();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let mls = MlsManager::new(&data_dir, user_id)?;
-        mls.invite_to_group(&mls_group_id, &member_key_packages)
-    })
-    .await
-    .map_err(|e| Error::Other(format!("task join error: {e}")))??;
-
-    api.upload_commit(
-        server_group_id,
-        result.commit,
-        result.welcomes,
-        result.group_info,
-        None,
-    )
-    .await?;
-
     Ok(invited)
+}
+
+/// Fetch pending invites for the current user.
+pub async fn list_pending_invites(api: &ApiClient) -> Result<Vec<conclave_proto::PendingInvite>> {
+    let response = api.list_pending_invites().await?;
+    Ok(response.invites)
+}
+
+/// Accept a pending invite: tells the server to finalize the invite, then
+/// processes the resulting welcome to join the MLS group.
+pub async fn accept_invite(
+    api: &ApiClient,
+    invite_id: i64,
+    data_dir: &Path,
+    user_id: i64,
+) -> Result<Vec<WelcomeJoinResult>> {
+    api.accept_pending_invite(invite_id).await?;
+
+    // The server moves the welcome to pending_welcomes on accept.
+    // Process welcomes to join the MLS group.
+    accept_welcomes(api, data_dir, user_id).await
+}
+
+/// Decline a pending invite.
+pub async fn decline_invite(api: &ApiClient, invite_id: i64) -> Result<()> {
+    api.decline_pending_invite(invite_id).await
+}
+
+/// Handle an invite decline by rotating keys to clean up the phantom MLS leaf.
+pub async fn handle_invite_declined(
+    api: &ApiClient,
+    server_group_id: i64,
+    mls_group_id: &str,
+    data_dir: &Path,
+    user_id: i64,
+) -> Result<()> {
+    rotate_keys(api, server_group_id, mls_group_id, data_dir, user_id).await
 }
 
 /// Remove a member from the group: find their MLS leaf index, produce a
@@ -547,14 +636,8 @@ pub async fn rotate_keys(
     .await
     .map_err(|e| Error::Other(format!("task join error: {e}")))??;
 
-    api.upload_commit(
-        server_group_id,
-        commit_bytes,
-        HashMap::new(),
-        group_info_bytes,
-        None,
-    )
-    .await?;
+    api.upload_commit(server_group_id, commit_bytes, group_info_bytes, None)
+        .await?;
 
     Ok(())
 }

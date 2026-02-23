@@ -53,9 +53,6 @@ enum Commands {
     CreateGroup {
         #[arg(short, long)]
         name: String,
-        /// Comma-separated list of member usernames to invite.
-        #[arg(short, long)]
-        members: String,
     },
     /// Invite a user to an existing group.
     Invite {
@@ -234,21 +231,12 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             );
         }
 
-        Commands::CreateGroup { name, members } => {
+        Commands::CreateGroup { name } => {
             let api = api_from_session(&session, config)?;
             let user_id = require_user_id(&session)?;
-            let member_names: Vec<String> =
-                members.split(',').map(|s| s.trim().to_string()).collect();
 
-            let result = operations::create_group(
-                &api,
-                None,
-                &name,
-                member_names,
-                &config.data_dir,
-                user_id,
-            )
-            .await?;
+            let result =
+                operations::create_group(&api, None, &name, &config.data_dir, user_id).await?;
 
             let mut mapping = load_group_mapping(&config.data_dir);
             mapping.insert(result.server_group_id, result.mls_group_id);

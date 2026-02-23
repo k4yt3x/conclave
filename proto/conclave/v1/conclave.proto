@@ -53,14 +53,13 @@ message GetKeyPackageResponse {
 
 message CreateGroupRequest {
   string alias = 1;
-  repeated string member_usernames = 2;
+  // Field 2 removed (was member_usernames).
   string group_name = 3;
 }
 
 message CreateGroupResponse {
   int64 group_id = 1;
-  // Key packages for each requested member, keyed by username
-  map<string, bytes> member_key_packages = 2;
+  // Field 2 removed (was member_key_packages).
 }
 
 message GroupInfo {
@@ -90,8 +89,7 @@ message ListGroupsResponse {
 
 message UploadCommitRequest {
   bytes commit_message = 1;
-  // Welcome messages keyed by recipient username
-  map<string, bytes> welcome_messages = 2;
+  // Field 2 removed (was welcome_messages).
   // Group info for server-side ExternalClient observation
   bytes group_info = 3;
   // Hex-encoded MLS group ID (set on group creation commit)
@@ -124,6 +122,32 @@ message InviteToGroupResponse {
   // Key packages for each invited user, keyed by username
   map<string, bytes> member_key_packages = 1;
 }
+
+message EscrowInviteRequest {
+  string invitee_username = 1;
+  bytes commit_message = 2;
+  bytes welcome_message = 3;
+  bytes group_info = 4;
+}
+
+message EscrowInviteResponse {}
+
+message PendingInvite {
+  int64 invite_id = 1;
+  int64 group_id = 2;
+  string group_name = 3;
+  string group_alias = 4;
+  string inviter_username = 5;
+  uint64 created_at = 6;
+}
+
+message ListPendingInvitesResponse {
+  repeated PendingInvite invites = 1;
+}
+
+message AcceptInviteResponse {}
+
+message DeclineInviteResponse {}
 
 // ============================================================
 // Admin Management
@@ -235,6 +259,8 @@ message ServerEvent {
     WelcomeEvent welcome = 3;
     MemberRemovedEvent member_removed = 4;
     IdentityResetEvent identity_reset = 5;
+    InviteReceivedEvent invite_received = 6;
+    InviteDeclinedEvent invite_declined = 7;
   }
 }
 
@@ -262,6 +288,19 @@ message MemberRemovedEvent {
 message IdentityResetEvent {
   int64 group_id = 1;
   string username = 2;
+}
+
+message InviteReceivedEvent {
+  int64 invite_id = 1;
+  int64 group_id = 2;
+  string group_name = 3;
+  string group_alias = 4;
+  string inviter_username = 5;
+}
+
+message InviteDeclinedEvent {
+  int64 group_id = 1;
+  string declined_username = 2;
 }
 
 // ============================================================

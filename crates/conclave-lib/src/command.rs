@@ -14,7 +14,6 @@ pub enum Command {
     },
     Create {
         name: String,
-        members: Vec<String>,
     },
     /// No args: accept pending welcomes. With arg: switch to room.
     Join {
@@ -60,6 +59,16 @@ pub enum Command {
     },
     /// Show current user info. IRC: /whois
     Whois,
+    /// List pending invites. /invites
+    Invites,
+    /// Accept a pending invite. /accept or /accept <id>
+    Accept {
+        invite_id: Option<i64>,
+    },
+    /// Decline a pending invite. /decline <id>
+    Decline {
+        invite_id: i64,
+    },
     Help,
     Quit,
     Message {
@@ -108,15 +117,11 @@ pub fn parse(input: &str) -> Result<Command> {
             })
         }
         "/create" => {
-            if parts.len() < 3 {
-                return Err(Error::Other(
-                    "Usage: /create <name> <member1,member2,...>".into(),
-                ));
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /create <name>".into()));
             }
-            let members = parts[2].split(',').map(|s| s.trim().to_string()).collect();
             Ok(Command::Create {
                 name: parts[1].to_string(),
-                members,
             })
         }
         "/join" => {
@@ -155,6 +160,29 @@ pub fn parse(input: &str) -> Result<Command> {
             })
         }
         "/admins" => Ok(Command::Admins),
+        "/invites" => Ok(Command::Invites),
+        "/accept" => {
+            let invite_id = parts.get(1).map(|s| {
+                s.parse::<i64>()
+                    .map_err(|_| Error::Other("Usage: /accept [invite_id]".into()))
+            });
+            match invite_id {
+                Some(Ok(id)) => Ok(Command::Accept {
+                    invite_id: Some(id),
+                }),
+                Some(Err(e)) => Err(e),
+                None => Ok(Command::Accept { invite_id: None }),
+            }
+        }
+        "/decline" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /decline <invite_id>".into()));
+            }
+            let invite_id = parts[1]
+                .parse::<i64>()
+                .map_err(|_| Error::Other("Usage: /decline <invite_id>".into()))?;
+            Ok(Command::Decline { invite_id })
+        }
         "/part" => Ok(Command::Part),
         "/close" => Ok(Command::Close),
         "/rotate" => Ok(Command::Rotate),
@@ -250,10 +278,9 @@ mod tests {
 
     #[test]
     fn test_parse_create() {
-        let cmd = parse("/create room alice,bob").unwrap();
-        if let Command::Create { name, members } = cmd {
+        let cmd = parse("/create room").unwrap();
+        if let Command::Create { name } = cmd {
             assert_eq!(name, "room");
-            assert_eq!(members, vec!["alice", "bob"]);
         } else {
             panic!("wrong variant");
         }
@@ -261,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_parse_create_missing_args() {
-        assert!(parse("/create room").is_err());
+        assert!(parse("/create").is_err());
     }
 
     #[test]
@@ -513,5 +540,56 @@ mod tests {
     #[test]
     fn test_parse_demote_missing_username() {
         assert!(parse("/demote").is_err());
+    }
+
+    #[test]
+    fn test_parse_invites() {
+        let cmd = parse("/invites").unwrap();
+        assert!(matches!(cmd, Command::Invites));
+    }
+
+    #[test]
+    fn test_parse_accept_no_arg() {
+        let cmd = parse("/accept").unwrap();
+        if let Command::Accept { invite_id } = cmd {
+            assert!(invite_id.is_none());
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_accept_with_id() {
+        let cmd = parse("/accept 42").unwrap();
+        if let Command::Accept { invite_id } = cmd {
+            assert_eq!(invite_id, Some(42));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_accept_invalid_id() {
+        assert!(parse("/accept abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_decline() {
+        let cmd = parse("/decline 7").unwrap();
+        if let Command::Decline { invite_id } = cmd {
+            assert_eq!(invite_id, 7);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_decline_missing_id() {
+        assert!(parse("/decline").is_err());
+    }
+
+    #[test]
+    fn test_parse_decline_invalid_id() {
+        assert!(parse("/decline xyz").is_err());
     }
 }

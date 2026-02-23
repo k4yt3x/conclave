@@ -1,5 +1,75 @@
 # Conclave Work Log
 
+## 2026-02-23: Simplify Group Creation to Creator-Only
+
+Removed multi-member group creation. `/create <name>` now creates a group with only the creator as a member. All members must be added via `/invite`, which goes through the two-phase escrow system requiring acceptance. This eliminates the consent bypass where initial members were added without their approval.
+
+### Changes
+
+- **Proto**: Removed `member_usernames` from `CreateGroupRequest`, `member_key_packages` from `CreateGroupResponse`, `welcome_messages` from `UploadCommitRequest`. Field numbers reserved with comments to prevent reuse.
+- **Server API**: Simplified `create_group` (removed key-package consumption loop). Simplified `upload_commit` (removed welcome handling entirely — welcomes are now only delivered through escrow invites). Simplified commit notification to exclude only the sender.
+- **Server DB**: Removed `welcome_messages` parameter and loop from `process_commit`. Removed `NewMember` struct and `new_members` field from `CommitResult`.
+- **Server main**: Fixed invite cleanup to use `config.invite_ttl_seconds` instead of hardcoded `7 * 24 * 3600`.
+- **Client API**: Removed `member_usernames` from `create_group()`, removed `welcome_messages` from `upload_commit()`.
+- **Client operations**: Removed `members` parameter from `create_group()`. Updated `rotate_keys()` to match new `upload_commit` signature.
+- **Commands**: Changed `Command::Create` from `{ name, members }` to `{ name }`. Updated parser to accept exactly one argument. Updated help text to `/create <name>`.
+- **CLI**: Updated TUI handler and one-shot `CreateGroup` subcommand (removed `--members`).
+- **GUI**: Updated `create_group()` method and `Command::Create` match arm.
+- **Tests**: Replaced `add_member_to_group` (commit+welcome) with `add_member_via_escrow` (escrow invite flow) in api_tests. Removed 4 obsolete tests. Rewrote all 7 protocol flow tests to use escrow invite pattern. Updated all `create_group_for` callers. Total: ~491 tests.
+- **Docs**: Updated SPEC.md endpoint descriptions, command syntax, group creation flow diagram, security section, and protobuf schema description.
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto`
+- `crates/conclave-server/src/api.rs`
+- `crates/conclave-server/src/db.rs`
+- `crates/conclave-server/src/main.rs`
+- `crates/conclave-server/tests/api_tests.rs`
+- `crates/conclave-server/tests/protocol_flow_tests.rs`
+- `crates/conclave-lib/src/api.rs`
+- `crates/conclave-lib/src/operations.rs`
+- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-cli/src/tui/commands.rs`
+- `crates/conclave-cli/src/main.rs`
+- `crates/conclave-gui/src/app.rs`
+- `docs/SPEC.md`
+- `docs/WORKLOG.md`
+- `AGENTS.md`
+
+## 2026-02-22: Two-Phase Invite System with Escrow
+
+Introduced a consent-based invite system for post-creation member additions. Previously, inviting a user immediately added them to the group with no option to decline — creating a DDoS vector where a malicious admin could spam-invite users into hundreds of groups. Now, the admin pre-builds the MLS commit+welcome and uploads it to escrow. The target receives an `InviteReceivedEvent` and can accept or decline. Group creation remains immediate (initial members are added directly).
+
+### Changes
+
+- **Proto**: Added `EscrowInviteRequest/Response`, `PendingInvite`, `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `InviteReceivedEvent`, `InviteDeclinedEvent` messages. Extended `ServerEvent` oneof with `invite_received` and `invite_declined`.
+- **Database**: Added `pending_invites` table with `UNIQUE(group_id, invitee_id)` constraint and invitee index. Added 7 DB methods: `create_pending_invite`, `get_pending_invite`, `list_pending_invites_for_user`, `accept_pending_invite` (atomic savepoint transaction with membership pre-check), `delete_pending_invite`, `cleanup_expired_invites`, `get_group_name`. Constraint violations on duplicate invites now return proper `Conflict` errors instead of raw DB errors.
+- **API**: Added 4 new endpoints: `POST /groups/{id}/escrow-invite` (admin-only), `GET /invites`, `POST /invites/{id}/accept` (invitee-only, atomic), `POST /invites/{id}/decline` (invitee-only). The `upload_commit` endpoint now rejects welcome messages for initialized groups (mls_group_id set), preventing escrow bypass. Added periodic cleanup of expired invites (7-day TTL, hourly check).
+- **Client API**: Added `escrow_invite`, `list_pending_invites`, `accept_pending_invite`, `decline_pending_invite` methods.
+- **Operations**: Rewrote `invite_members()` from batch mode to per-user escrow (one MLS commit per invite). Added `list_pending_invites`, `accept_invite`, `decline_invite`, `handle_invite_declined` (auto-rotates keys to evict phantom MLS leaf).
+- **Commands**: Added `/invites`, `/accept [id]`, `/decline <id>` commands with parser and tests.
+- **TUI**: Added handlers for `Invites`, `Accept`, `Decline` commands. Added SSE handlers for `InviteReceived` and `InviteDeclined` events (with auto key rotation on decline).
+- **GUI**: Added handlers for `Invites`, `Accept`, `Decline` commands. Added SSE handlers for both new event types.
+- **Security**: Added upload_commit escrow bypass prevention. Added membership pre-check in accept_pending_invite. Proper UNIQUE constraint error mapping. All endpoints authenticate and authorize correctly.
+- **Tests**: Added 34 new tests (7 DB, 21 API, 7 command parser). Total: ~496 tests across workspace.
+
+### Files Modified
+
+- `proto/conclave/v1/conclave.proto`
+- `crates/conclave-server/src/db.rs`
+- `crates/conclave-server/src/api.rs`
+- `crates/conclave-server/src/main.rs`
+- `crates/conclave-server/tests/api_tests.rs`
+- `crates/conclave-lib/src/api.rs`
+- `crates/conclave-lib/src/operations.rs`
+- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-cli/src/tui/commands.rs`
+- `crates/conclave-cli/src/tui/events.rs`
+- `crates/conclave-gui/src/app.rs`
+- `crates/conclave-gui/src/subscription.rs`
+- `docs/SPEC.md`
+- `CLAUDE.md`
+
 ## 2026-02-22: Introduce Group Admin Role System
 
 Replaced the single `creator_id` ownership model with a proper admin role system. The `creator_id` column was removed from the `groups` table. A `role TEXT NOT NULL DEFAULT 'member'` column was added to `group_members`. The group creator starts as admin. Admins can promote/demote other members. The last admin cannot be demoted (deadlock prevention).

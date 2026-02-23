@@ -91,15 +91,9 @@ async fn upload_real_key_packages(app: &Router, token: &str, mls: &MlsManager) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-async fn create_server_group(
-    app: &Router,
-    token: &str,
-    name: &str,
-    members: Vec<String>,
-) -> (i64, HashMap<String, Vec<u8>>) {
+async fn create_server_group(app: &Router, token: &str, name: &str) -> i64 {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: name.to_string(),
-        member_usernames: members,
         group_name: name.to_string(),
     };
     let mut body = Vec::new();
@@ -115,7 +109,31 @@ async fn create_server_group(
     assert_eq!(response.status(), StatusCode::CREATED);
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::CreateGroupResponse::decode(body_bytes).unwrap();
-    (resp.group_id, resp.member_key_packages)
+    resp.group_id
+}
+
+/// Fetch key packages for the given usernames via the /invite endpoint.
+async fn invite_members(
+    app: &Router,
+    token: &str,
+    group_id: i64,
+    usernames: Vec<String>,
+) -> HashMap<String, Vec<u8>> {
+    let req_body = conclave_proto::InviteToGroupRequest { usernames };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/invite"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::InviteToGroupResponse::decode(body_bytes).unwrap();
+    resp.member_key_packages
 }
 
 async fn upload_commit(
@@ -123,14 +141,13 @@ async fn upload_commit(
     token: &str,
     group_id: i64,
     commit_message: Vec<u8>,
-    welcome_messages: HashMap<String, Vec<u8>>,
     group_info: Vec<u8>,
+    mls_group_id: String,
 ) {
     let req_body = conclave_proto::UploadCommitRequest {
         commit_message,
-        welcome_messages,
         group_info,
-        mls_group_id: String::new(),
+        mls_group_id,
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -209,11 +226,68 @@ async fn accept_welcome(app: &Router, token: &str, welcome_id: i64) {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
-/// Get group info from the server.
+/// Escrow an invite: admin sends commit+welcome+group_info for one invitee,
+/// then the invitee lists pending invites and accepts.
+async fn escrow_and_accept_invite(
+    app: &Router,
+    admin_token: &str,
+    member_token: &str,
+    group_id: i64,
+    member_username: &str,
+    commit_message: Vec<u8>,
+    welcome_message: Vec<u8>,
+    group_info: Vec<u8>,
+) {
+    let req_body = conclave_proto::EscrowInviteRequest {
+        invitee_username: member_username.to_string(),
+        commit_message,
+        welcome_message,
+        group_info,
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/escrow-invite"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // List pending invites for the member.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/invites")
+        .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListPendingInvitesResponse::decode(body_bytes).unwrap();
+    let invite = resp
+        .invites
+        .iter()
+        .find(|i| i.group_id == group_id)
+        .expect("expected pending invite for group");
+
+    // Member accepts the invite.
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/invites/{}/accept", invite.invite_id))
+        .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 // ── End-to-End Protocol Flow Tests ────────────────────────────────
 
-/// Full flow: register, upload real MLS key packages, create group with member,
-/// upload commit/welcome, have invited member join via welcome, and verify both
+/// Full flow: register, upload real MLS key packages, create group, invite
+/// member via escrow, have invited member join via welcome, and verify both
 /// can encrypt/decrypt messages through the server.
 #[tokio::test]
 async fn test_e2e_group_creation_and_messaging() {
@@ -231,26 +305,47 @@ async fn test_e2e_group_creation_and_messaging() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "test_room", vec!["bob".into()]).await;
+    // Create server group (no members), then invite bob via the invite endpoint.
+    let server_group_id = create_server_group(&app, &alice_token, "test_room").await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
+    let mls_group_id = create_result.mls_group_id.clone();
 
+    // Upload the initial commit with mls_group_id to initialize the group.
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes.clone(),
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob with the MLS welcome message.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome.clone(),
         create_result.group_info,
     )
     .await;
 
+    // Bob processes the welcome from the pending welcomes.
     let welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(welcomes.len(), 1);
     assert_eq!(welcomes[0].group_id, server_group_id);
 
-    let mls_group_id = create_result.mls_group_id;
     let bob_mls_group_id = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_group_id, mls_group_id);
 
@@ -299,8 +394,8 @@ async fn test_e2e_group_creation_and_messaging() {
     }
 }
 
-/// Three-party group: alice creates a group with bob and charlie. All three
-/// exchange encrypted messages through the server.
+/// Three-party group: alice creates a group, then invites bob and charlie via
+/// escrow. All three exchange encrypted messages through the server.
 #[tokio::test]
 async fn test_e2e_three_party_messaging() {
     let app = setup();
@@ -320,27 +415,66 @@ async fn test_e2e_three_party_messaging() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
     upload_real_key_packages(&app, &charlie_token, &charlie_mls).await;
 
-    let (server_group_id, member_kps) = create_server_group(
+    let server_group_id = create_server_group(&app, &alice_token, "trio_room").await;
+    let member_kps = invite_members(
         &app,
         &alice_token,
-        "trio_room",
+        server_group_id,
         vec!["bob".into(), "charlie".into()],
     )
     .await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
 
+    // Upload initial commit with mls_group_id.
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
+        create_result.group_info.clone(),
+    )
+    .await;
+
+    // Escrow invite for charlie.
+    let charlie_welcome = create_result
+        .welcomes
+        .get("charlie")
+        .expect("welcome for charlie")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &charlie_token,
+        server_group_id,
+        "charlie",
+        b"escrow_commit".to_vec(),
+        charlie_welcome,
         create_result.group_info,
     )
     .await;
 
+    // Bob processes welcome.
     let bob_welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(bob_welcomes.len(), 1);
     let bob_mls_gid = bob_mls
@@ -348,6 +482,7 @@ async fn test_e2e_three_party_messaging() {
         .unwrap();
     accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
 
+    // Charlie processes welcome.
     let charlie_welcomes = get_pending_welcomes(&app, &charlie_token).await;
     assert_eq!(charlie_welcomes.len(), 1);
     let charlie_mls_gid = charlie_mls
@@ -389,8 +524,8 @@ async fn test_e2e_three_party_messaging() {
     }
 }
 
-/// Test the invite flow: alice creates a group solo, then invites bob after
-/// the fact. Bob processes the welcome and can communicate.
+/// Test the invite flow: alice creates a group solo, then invites bob via
+/// escrow after the fact. Bob processes the welcome and can communicate.
 #[tokio::test]
 async fn test_e2e_post_creation_invite_flow() {
     let app = setup();
@@ -406,50 +541,55 @@ async fn test_e2e_post_creation_invite_flow() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, _) = create_server_group(&app, &alice_token, "solo_room", vec![]).await;
+    let server_group_id = create_server_group(&app, &alice_token, "solo_room").await;
 
+    // Create a solo MLS group and upload the initial commit.
     let create_result = alice_mls.create_group(&HashMap::new()).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
 
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         vec![],
-        HashMap::new(),
         create_result.group_info,
+        create_result.mls_group_id,
     )
     .await;
 
-    let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["bob".into()],
-    };
-    let mut body = Vec::new();
-    req_body.encode(&mut body).unwrap();
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("/api/v1/groups/{server_group_id}/invite"))
-        .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-        .body(Body::from(body))
-        .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let invite_resp = conclave_proto::InviteToGroupResponse::decode(body_bytes).unwrap();
+    // Invite bob via the invite endpoint to get his key package.
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
 
     // Alice performs the MLS invite using bob's key package from the server.
     let invite_result = alice_mls
-        .invite_to_group(&mls_group_id, &invite_resp.member_key_packages)
+        .invite_to_group(&mls_group_id, &member_kps)
         .unwrap();
 
-    // Upload the invite commit with welcome.
+    // Upload the invite commit (no welcomes in commit; use escrow instead).
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         invite_result.commit,
-        invite_result.welcomes,
+        invite_result.group_info.clone(),
+        String::new(),
+    )
+    .await;
+
+    // Escrow invite for bob with the MLS welcome.
+    let bob_welcome = invite_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
         invite_result.group_info,
     )
     .await;
@@ -499,22 +639,59 @@ async fn test_e2e_member_removal_flow() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
     upload_real_key_packages(&app, &charlie_token, &charlie_mls).await;
 
-    let (server_group_id, member_kps) = create_server_group(
+    let server_group_id = create_server_group(&app, &alice_token, "removal_test").await;
+    let member_kps = invite_members(
         &app,
         &alice_token,
-        "removal_test",
+        server_group_id,
         vec!["bob".into(), "charlie".into()],
     )
     .await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
+        create_result.group_info.clone(),
+    )
+    .await;
+
+    // Escrow invite for charlie.
+    let charlie_welcome = create_result
+        .welcomes
+        .get("charlie")
+        .expect("welcome for charlie")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &charlie_token,
+        server_group_id,
+        "charlie",
+        b"escrow_commit".to_vec(),
+        charlie_welcome,
         create_result.group_info,
     )
     .await;
@@ -619,17 +796,35 @@ async fn test_e2e_key_rotation_continuity() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "rotation_test", vec!["bob".into()]).await;
+    let server_group_id = create_server_group(&app, &alice_token, "rotation_test").await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
         create_result.group_info,
     )
     .await;
@@ -653,8 +848,8 @@ async fn test_e2e_key_rotation_continuity() {
         &alice_token,
         server_group_id,
         rotation_commit.clone(),
-        HashMap::new(),
         rotation_group_info,
+        String::new(),
     )
     .await;
 
@@ -702,17 +897,35 @@ async fn test_e2e_external_rejoin_after_removal() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "rejoin_test", vec!["bob".into()]).await;
+    let server_group_id = create_server_group(&app, &alice_token, "rejoin_test").await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
         create_result.group_info,
     )
     .await;
@@ -864,17 +1077,35 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     upload_real_key_packages(&app, &alice_token, &alice_mls).await;
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
-    let (server_group_id, member_kps) =
-        create_server_group(&app, &alice_token, "ordering_test", vec!["bob".into()]).await;
+    let server_group_id = create_server_group(&app, &alice_token, "ordering_test").await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
-    let mls_group_id = create_result.mls_group_id;
+    let mls_group_id = create_result.mls_group_id.clone();
     upload_commit(
         &app,
         &alice_token,
         server_group_id,
         create_result.commit,
-        create_result.welcomes,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Escrow invite for bob.
+    let bob_welcome = create_result
+        .welcomes
+        .get("bob")
+        .expect("welcome for bob")
+        .clone();
+    escrow_and_accept_invite(
+        &app,
+        &alice_token,
+        &bob_token,
+        server_group_id,
+        "bob",
+        b"escrow_commit".to_vec(),
+        bob_welcome,
         create_result.group_info,
     )
     .await;

@@ -229,11 +229,9 @@ impl ApiClient {
         &self,
         alias: Option<&str>,
         group_name: &str,
-        member_usernames: Vec<String>,
     ) -> Result<conclave_proto::CreateGroupResponse> {
         let request = conclave_proto::CreateGroupRequest {
             alias: alias.unwrap_or_default().to_string(),
-            member_usernames,
             group_name: group_name.to_string(),
         };
         let bytes = self.post("/api/v1/groups", &request).await?;
@@ -267,13 +265,11 @@ impl ApiClient {
         &self,
         group_id: i64,
         commit_message: Vec<u8>,
-        welcome_messages: std::collections::HashMap<String, Vec<u8>>,
         group_info: Vec<u8>,
         mls_group_id: Option<&str>,
     ) -> Result<()> {
         let request = conclave_proto::UploadCommitRequest {
             commit_message,
-            welcome_messages,
             group_info,
             mls_group_id: mls_group_id.unwrap_or_default().to_string(),
         };
@@ -348,6 +344,51 @@ impl ApiClient {
                 message: error_msg,
             });
         }
+        Ok(())
+    }
+
+    // ── Invite Escrow ──────────────────────────────────────────────
+
+    pub async fn escrow_invite(
+        &self,
+        group_id: i64,
+        invitee_username: &str,
+        commit_message: Vec<u8>,
+        welcome_message: Vec<u8>,
+        group_info: Vec<u8>,
+    ) -> Result<()> {
+        let request = conclave_proto::EscrowInviteRequest {
+            invitee_username: invitee_username.to_string(),
+            commit_message,
+            welcome_message,
+            group_info,
+        };
+        self.post(
+            &format!("/api/v1/groups/{group_id}/escrow-invite"),
+            &request,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_pending_invites(&self) -> Result<conclave_proto::ListPendingInvitesResponse> {
+        let bytes = self.get("/api/v1/invites").await?;
+        Ok(conclave_proto::ListPendingInvitesResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
+    pub async fn accept_pending_invite(&self, invite_id: i64) -> Result<()> {
+        let empty = conclave_proto::AcceptInviteResponse {};
+        self.post(&format!("/api/v1/invites/{invite_id}/accept"), &empty)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn decline_pending_invite(&self, invite_id: i64) -> Result<()> {
+        let empty = conclave_proto::DeclineInviteResponse {};
+        self.post(&format!("/api/v1/invites/{invite_id}/decline"), &empty)
+            .await?;
         Ok(())
     }
 

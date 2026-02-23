@@ -234,6 +234,19 @@ CREATE TABLE group_infos (
     group_info_data BLOB NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE pending_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    inviter_id INTEGER NOT NULL REFERENCES users(id),
+    invitee_id INTEGER NOT NULL REFERENCES users(id),
+    commit_message BLOB NOT NULL,
+    welcome_data BLOB NOT NULL,
+    group_info BLOB NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(group_id, invitee_id)
+);
+CREATE INDEX idx_pending_invites_invitee ON pending_invites(invitee_id);
 ```
 
 ### 3.3 Authentication
@@ -265,11 +278,11 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | GET    | `/api/v1/users/{username}`          | —                     | UserInfoResponse            | Look up user by username                 |
 | POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
-| POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group, get member key packages    |
+| POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group (creator only)              |
 | PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (admin only)     |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
 | POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members (admin only)              |
-| POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + welcome messages     |
+| POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + group info           |
 | POST   | `/api/v1/groups/{id}/messages`      | SendMessageRequest    | SendMessageResponse         | Send encrypted message                   |
 | GET    | `/api/v1/groups/{id}/messages`      | —  (`?after=&limit=`) | GetMessagesResponse         | Fetch messages (paginated by seq num)    |
 | POST   | `/api/v1/groups/{id}/remove`        | RemoveMemberRequest   | RemoveMemberResponse        | Remove a member (admin only)             |
@@ -282,6 +295,10 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/reset-account`             | —                     | ResetAccountResponse        | Clear key packages for account reset     |
 | GET    | `/api/v1/welcomes`                  | —                     | ListPendingWelcomesResponse | List pending group invitations           |
 | POST   | `/api/v1/welcomes/{id}/accept`      | —                     | 204 No Content              | Accept and delete a pending welcome      |
+| POST   | `/api/v1/groups/{id}/escrow-invite` | EscrowInviteRequest   | EscrowInviteResponse        | Escrow an invite for consent (admin only)|
+| GET    | `/api/v1/invites`                   | —                     | ListPendingInvitesResponse  | List pending invites for current user    |
+| POST   | `/api/v1/invites/{id}/accept`       | —                     | AcceptInviteResponse        | Accept a pending invite                  |
+| POST   | `/api/v1/invites/{id}/decline`      | —                     | DeclineInviteResponse       | Decline a pending invite                 |
 | GET    | `/api/v1/events`                    | —                     | SSE stream                  | Real-time event notifications            |
 
 #### Endpoint Behavior Notes
@@ -294,6 +311,10 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 - **`GET /api/v1/groups/{id}/admins`**: Requires group membership. Returns the list of group members who have the `admin` role.
 - **`POST /api/v1/groups/{id}/leave`**: Accepts an optional `commit_message` and `group_info` in the request body. If a commit message is provided, it is stored as a group message so remaining members can process the MLS removal and advance their epoch. If group info is provided, it is stored for potential external rejoin. The user is then removed from the server's group membership, and remaining members are notified via `MemberRemovedEvent`.
 - **`POST /api/v1/groups/{id}/external-join`**: Requires the group to exist and have a stored `GroupInfo` (set by prior `upload_commit` or `remove` operations). This prevents arbitrary users from joining groups they were never associated with — only groups whose authorized members have published a GroupInfo can be externally joined. The external commit is stored as a group message and existing members receive an `IdentityResetEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, preserving the original).
+- **`POST /api/v1/groups/{id}/escrow-invite`**: Admin-only. The admin pre-builds the MLS commit+welcome client-side and uploads them for escrow. The server validates the invitee exists, is not already a group member, and has no existing pending invite for this group (UNIQUE constraint on `group_id, invitee_id`). The commit, welcome, and group info are stored in `pending_invites`. An `InviteReceivedEvent` SSE is sent to the invitee. The invitee is **not** added to the group until they accept.
+- **`GET /api/v1/invites`**: Returns all pending invites for the authenticated user, including `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, and `created_at`.
+- **`POST /api/v1/invites/{id}/accept`**: Invitee-only (the server verifies the authenticated user matches the invite's `invitee_id`). Atomically within a savepoint transaction: deletes the pending invite, adds the invitee to `group_members` (with `member` role), inserts the escrowed welcome into `pending_welcomes`, and stores the escrowed commit as a group message (next sequence number). Sends `WelcomeEvent` to the invitee and `GroupUpdateEvent` to existing members.
+- **`POST /api/v1/invites/{id}/decline`**: Invitee-only. Deletes the pending invite and sends `InviteDeclinedEvent` to the inviter. The inviter's client auto-rotates keys (empty MLS commit) to evict the phantom leaf from the MLS tree.
 
 ### 3.5 SSE Events
 
@@ -305,6 +326,8 @@ Event types:
 - **WelcomeEvent**: User was invited to a group (group_id, group_alias).
 - **MemberRemovedEvent**: A member was removed or left a group (group_id, removed_user_id, removed_username). Sent to both remaining members and the removed user.
 - **IdentityResetEvent**: A member reset their encryption identity via external rejoin (group_id, username). Sent to other group members when a user performs an account reset. Clients display a warning that the user's encryption keys have changed.
+- **InviteReceivedEvent**: A pending invite was created for this user (invite_id, group_id, group_name, group_alias, inviter_username). Sent to the invitee when an admin escrows an invite. Clients display the invite with accept/decline options.
+- **InviteDeclinedEvent**: An invitee declined a pending invite (group_id, declined_username). Sent to the inviter so their client can auto-rotate keys to clean up the phantom MLS leaf.
 - **lagged** (transport-level): Sent when the client's SSE stream falls behind the broadcast channel buffer. The `event` field is `"lagged"` and the `data` field contains the number of dropped events as a string. Clients should treat this as a signal to re-fetch group state. This is not a protobuf `ServerEvent` — it is a raw SSE event emitted by the transport layer.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
@@ -407,30 +430,45 @@ Commands:
 Running `conclave-cli` with no subcommand enters the IRC-style interactive TUI. Commands are prefixed with `/`; plain text sends to the active room.
 
 ```
-/register <server> <user> <pass>  Register a new account
-/login <server> <user> <pass>    Login to the server
-/keygen                       Generate and upload a key package
-/create <name> <user1,user2>  Create a room with members
-/join                         Accept pending invitations
-/join <room>                  Switch to a room
-/invite <user1,user2>         Invite to the active room (admin only)
-/kick <username>              Remove a member from the room (admin only)
-/leave                        Leave the room (MLS removal)
-/admins                       List admins of the active room
-/promote <username>           Promote a member to admin
-/demote <username>            Demote an admin to regular member
-/part                         Switch away without leaving
-/rotate                       Rotate keys (forward secrecy)
-/reset                        Reset account and rejoin groups
-/info                         Show MLS group details
-/rooms                        List your rooms
-/unread                       Check rooms for new messages
-/logout                       Logout and revoke session
-/who                          List members of active room
-/msg <room> <text>            Send to a room without switching
-/me                           Show current user info
-/help                         Show help
-/quit                         Exit
+ACCOUNT:
+  /register <server> <user> <pass>  Register a new account
+  /login <server> <user> <pass>     Login to the server
+  /logout                           Logout and revoke session
+  /reset                            Reset account and rejoin groups
+  /nick <alias>                     Set your display name
+  /whois                            Show current user info
+
+ROOMS:
+  /create <name>                    Create a new room
+  /list                             List your rooms
+  /join                             Accept pending invitations
+  /join <room>                      Switch to a room
+  /close                            Switch away without leaving
+  /part                             Leave the room (MLS removal)
+  /info                             Show MLS group details
+  /topic <text>                     Set active room's display name
+  /unread                           Check rooms for new messages
+
+MEMBERS:
+  /who                              List members of active room
+  /invite <user1,user2>             Invite to the active room
+  /kick <username>                  Remove a member from the room
+  /promote <username>               Promote a member to admin
+  /demote <username>                Demote an admin to member
+  /admins                           List admins of active room
+
+INVITES:
+  /invites                          List pending invitations
+  /accept [id]                      Accept a pending invite (or all)
+  /decline <id>                     Decline a pending invite
+
+MESSAGING:
+  /msg <room> <text>                Send to a room without switching
+  /rotate                           Rotate keys (forward secrecy)
+
+GENERAL:
+  /help                             Show this help
+  /quit                             Exit
 ```
 
 ### 4.5 GUI Client
@@ -467,30 +505,21 @@ Client                              Server
 
 ### 5.2 Group Creation
 
+Groups are created with only the creator as a member. Additional members are added later via the escrow invite flow (see Section 5.4).
+
 ```
-Alice                               Server                              Bob
-  |                                   |                                   |
-  |--- POST /groups (name, [bob]) --->|  Consume Bob's key package        |
-  |<-- CreateGroupResponse            |                                   |
-  |    (group_id, {bob: kp_bytes})    |                                   |
-  |                                   |                                   |
-  |  [MLS: create_group()]            |                                   |
-  |  [MLS: commit_builder()           |                                   |
-  |        .add_member(bob_kp)        |                                   |
-  |        .build()]                  |                                   |
-  |  [MLS: apply_pending_commit()]    |                                   |
-  |                                   |                                   |
-  |--- POST /groups/{id}/commit ----->|  Store commit as message seq 1    |
-  |    (commit, welcomes, group_info) |  Store welcome for Bob            |
-  |<-- OK                             |  Alice gets role='admin'          |
-  |                                   |  Bob added with role='member'     |
-  |                                   |  Notify Bob via SSE               |
-  |                                   |                                   |
-  |                                   |<--- GET /welcomes --------------- |
-  |                                   |---- PendingWelcome (welcome) ---->|
-  |                                   |                                   |
-  |                                   |                [MLS: join_group() |
-  |                                   |                 via welcome_msg]  |
+Alice                               Server
+  |                                   |
+  |--- POST /groups (name) ---------->|  Create group in DB
+  |<-- CreateGroupResponse (group_id) |  Alice gets role='admin'
+  |                                   |
+  |  [MLS: create_group()]            |
+  |  [MLS: apply_pending_commit()]    |
+  |                                   |
+  |--- POST /groups/{id}/commit ----->|  Store commit as message seq 1
+  |    (commit, group_info,           |  Store group info
+  |     mls_group_id)                 |  Set mls_group_id
+  |<-- OK                             |
 ```
 
 ### 5.3 Messaging
@@ -513,6 +542,53 @@ Alice                               Server                              Bob
   |                                   |                → plaintext        |
 ```
 
+### 5.4 Invite with Escrow (Post-Creation)
+
+Post-creation member additions use a two-phase escrow system where the target must explicitly accept or decline the invitation. This prevents invite spam and gives users control over which groups they join. Group creation remains immediate — initial members receive their welcomes directly via `upload_commit`.
+
+```
+Admin                               Server                              Target
+  |                                   |                                   |
+  |--- POST /groups/{id}/invite ----->|  Consume target's key package     |
+  |    (username)                     |                                   |
+  |<-- InviteToGroupResponse (kp) ----|                                   |
+  |                                   |                                   |
+  |  [MLS: commit_builder()           |                                   |
+  |        .add_member(target_kp)     |                                   |
+  |        .build()]                  |                                   |
+  |  [MLS: apply_pending_commit()]    |                                   |
+  |                                   |                                   |
+  |--- POST /{id}/escrow-invite ----->|  Store in pending_invites         |
+  |    (commit, welcome, group_info,  |  SSE: InviteReceivedEvent         |
+  |     invitee_username)             |  to target                        |
+  |<-- OK                             |                                   |
+  |                                   |                                   |
+  |                                   |<--- (User sees invite) ---------- |
+  |                                   |                                   |
+  |           ACCEPT PATH:            |                                   |
+  |                                   |<--- POST /invites/{id}/accept --- |
+  |                                   |  Atomic: delete pending_invite,   |
+  |                                   |  add to group_members,            |
+  |                                   |  store welcome + commit           |
+  |                                   |  SSE: WelcomeEvent to target      |
+  |                                   |  SSE: GroupUpdateEvent to members |
+  |                                   |                                   |
+  |                                   |<--- GET /welcomes --------------- |
+  |                                   |---- welcome ------------------->  |
+  |                                   |                [MLS: join_group() |
+  |                                   |                 via welcome_msg]  |
+  |                                   |                                   |
+  |           DECLINE PATH:           |                                   |
+  |                                   |<--- POST /invites/{id}/decline -- |
+  |                                   |  Delete pending_invite            |
+  |  SSE: InviteDeclinedEvent <-------|  Notify admin                     |
+  |                                   |                                   |
+  |  [Auto-rotate keys to evict      |                                   |
+  |   phantom MLS leaf]              |                                   |
+  |--- POST /{id}/commit ------------>|  Empty commit (key rotation)      |
+  |<-- OK                             |                                   |
+```
+
 ## 6. Security Considerations
 
 - **E2EE**: The server never sees plaintext. All application messages are MLS `PrivateMessage` ciphertexts. The server stores and forwards opaque blobs.
@@ -529,11 +605,12 @@ Alice                               Server                              Bob
 - **Key package exhaustion protection**: The `GET /api/v1/key-packages/{user_id}` endpoint is rate-limited to prevent an attacker from draining a user's regular key packages, which would force fallback to the reusable last-resort package (with associated reuse risks per RFC 9420 Section 16.8).
 - **Admin role authorization**: Group management operations (invite, remove, update group, promote, demote) require the `admin` role. The group creator is automatically assigned the `admin` role; new members receive the `member` role. The last admin of a group cannot be demoted, ensuring every group always has at least one admin. This replaces the previous creator-based authorization model with a more flexible role-based system.
 - **External join authorization**: The external join endpoint requires a stored `GroupInfo` to exist for the target group. Since `GroupInfo` is only stored by authorized members via `upload_commit` or `remove` operations, this prevents arbitrary users from joining groups they have no association with.
-- **Transactional integrity**: The `upload_commit` endpoint performs all database mutations (member additions, welcome storage, group info updates, message storage) within a single SQLite savepoint transaction. This ensures atomicity — a crash mid-operation cannot leave the database in an inconsistent state.
+- **Transactional integrity**: The `upload_commit` endpoint performs all database mutations (group info updates, message storage) within a single SQLite savepoint transaction. This ensures atomicity — a crash mid-operation cannot leave the database in an inconsistent state.
+- **Invite consent**: All member additions require the target's explicit acceptance via a two-phase escrow system. Group creation adds only the creator; there is no way to add members at creation time. The admin pre-builds the MLS commit+welcome and uploads it to `pending_invites`. The target can accept (joining the group) or decline (triggering key rotation to evict the phantom MLS leaf). Pending invites expire after a configurable TTL (default 7 days, server-side cleanup). A UNIQUE constraint on `(group_id, invitee_id)` prevents duplicate invites.
 - **Trust model**: Currently uses `BasicCredential` with `BasicIdentityProvider`, which does not validate identities. This is suitable for closed communities. X.509 credentials can be added for stronger identity assurance.
 
 ## 7. Protobuf Schema
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest/Response`, `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest/Response` (with `mls_group_id` set on group creation), `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage`, `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_username`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.
