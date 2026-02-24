@@ -105,23 +105,11 @@ impl Conclave {
                                     ApiClient::new(&server_url, accept_invalid_certs);
                                 auth_api.set_token(token.clone());
 
-                                std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-                                let entries = tokio::task::spawn_blocking({
-                                    let data_dir = data_dir.clone();
-                                    move || {
-                                        let mls = MlsManager::new(&data_dir, user_id)
-                                            .map_err(|e| e.to_string())?;
-                                        generate_initial_key_packages(&mls)
-                                            .map_err(|e| e.to_string())
-                                    }
-                                })
+                                conclave_lib::operations::initialize_mls_and_upload_key_packages(
+                                    &auth_api, &data_dir, user_id,
+                                )
                                 .await
-                                .map_err(|e| e.to_string())??;
-
-                                auth_api
-                                    .upload_key_packages(entries)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
+                                .map_err(|e| e.to_string())?;
 
                                 Ok(LoginInfo {
                                     server_url,

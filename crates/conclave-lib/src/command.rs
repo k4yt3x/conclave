@@ -531,18 +531,17 @@ mod tests {
     #[test]
     fn test_parse_register() {
         let cmd = parse("/register example.com alice pass1234").unwrap();
-        if let Command::Register {
+        let Command::Register {
             server,
             username,
             password,
         } = cmd
-        {
-            assert_eq!(server, "example.com");
-            assert_eq!(username, "alice");
-            assert_eq!(password, "pass1234");
-        } else {
-            panic!("wrong variant");
-        }
+        else {
+            panic!("expected Register variant");
+        };
+        assert_eq!(server, "example.com");
+        assert_eq!(username, "alice");
+        assert_eq!(password, "pass1234");
     }
 
     #[test]
@@ -555,18 +554,17 @@ mod tests {
     #[test]
     fn test_parse_login() {
         let cmd = parse("/login example.com alice pass1234").unwrap();
-        if let Command::Login {
+        let Command::Login {
             server,
             username,
             password,
         } = cmd
-        {
-            assert_eq!(server, "example.com");
-            assert_eq!(username, "alice");
-            assert_eq!(password, "pass1234");
-        } else {
-            panic!("wrong variant");
-        }
+        else {
+            panic!("expected Login variant");
+        };
+        assert_eq!(server, "example.com");
+        assert_eq!(username, "alice");
+        assert_eq!(password, "pass1234");
     }
 
     #[test]
@@ -579,11 +577,10 @@ mod tests {
     #[test]
     fn test_parse_create() {
         let cmd = parse("/create room").unwrap();
-        if let Command::Create { name } = cmd {
-            assert_eq!(name, "room");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Create { name } = cmd else {
+            panic!("expected Create variant");
+        };
+        assert_eq!(name, "room");
     }
 
     #[test]
@@ -594,31 +591,28 @@ mod tests {
     #[test]
     fn test_parse_join_no_arg() {
         let cmd = parse("/join").unwrap();
-        if let Command::Join { target } = cmd {
-            assert!(target.is_none());
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Join { target } = cmd else {
+            panic!("expected Join variant");
+        };
+        assert!(target.is_none());
     }
 
     #[test]
     fn test_parse_join_with_target() {
         let cmd = parse("/join myroom").unwrap();
-        if let Command::Join { target } = cmd {
-            assert_eq!(target, Some("myroom".to_string()));
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Join { target } = cmd else {
+            panic!("expected Join variant");
+        };
+        assert_eq!(target, Some("myroom".to_string()));
     }
 
     #[test]
     fn test_parse_invite() {
         let cmd = parse("/invite alice,bob").unwrap();
-        if let Command::Invite { members } = cmd {
-            assert_eq!(members, vec!["alice", "bob"]);
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Invite { members } = cmd else {
+            panic!("expected Invite variant");
+        };
+        assert_eq!(members, vec!["alice", "bob"]);
     }
 
     #[test]
@@ -629,11 +623,10 @@ mod tests {
     #[test]
     fn test_parse_kick() {
         let cmd = parse("/kick alice").unwrap();
-        if let Command::Kick { username } = cmd {
-            assert_eq!(username, "alice");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Kick { username } = cmd else {
+            panic!("expected Kick variant");
+        };
+        assert_eq!(username, "alice");
     }
 
     #[test]
@@ -686,12 +679,11 @@ mod tests {
     #[test]
     fn test_parse_msg() {
         let cmd = parse("/msg room hello world").unwrap();
-        if let Command::Msg { room, text } = cmd {
-            assert_eq!(room, "room");
-            assert_eq!(text, "hello world");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Msg { room, text } = cmd else {
+            panic!("expected Msg variant");
+        };
+        assert_eq!(room, "room");
+        assert_eq!(text, "hello world");
     }
 
     #[test]
@@ -747,21 +739,19 @@ mod tests {
     #[test]
     fn test_parse_plain_message() {
         let cmd = parse("hello").unwrap();
-        if let Command::Message { text } = cmd {
-            assert_eq!(text, "hello");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Message { text } = cmd else {
+            panic!("expected Message variant");
+        };
+        assert_eq!(text, "hello");
     }
 
     #[test]
     fn test_parse_nick() {
         let cmd = parse("/nick Alice Smith").unwrap();
-        if let Command::Nick { alias } = cmd {
-            assert_eq!(alias, "Alice Smith");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Nick { alias } = cmd else {
+            panic!("expected Nick variant");
+        };
+        assert_eq!(alias, "Alice Smith");
     }
 
     #[test]
@@ -772,11 +762,10 @@ mod tests {
     #[test]
     fn test_parse_topic() {
         let cmd = parse("/topic Dev Team Chat").unwrap();
-        if let Command::Topic { topic } = cmd {
-            assert_eq!(topic, "Dev Team Chat");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Topic { topic } = cmd else {
+            panic!("expected Topic variant");
+        };
+        assert_eq!(topic, "Dev Team Chat");
     }
 
     #[test]
@@ -792,18 +781,17 @@ mod tests {
     #[test]
     fn test_parse_password_with_spaces() {
         let cmd = parse("/login example.com user pass word here").unwrap();
-        if let Command::Login {
+        let Command::Login {
             server,
             username,
             password,
         } = cmd
-        {
-            assert_eq!(server, "example.com");
-            assert_eq!(username, "user");
-            assert_eq!(password, "pass word here");
-        } else {
-            panic!("wrong variant");
-        }
+        else {
+            panic!("expected Login variant");
+        };
+        assert_eq!(server, "example.com");
+        assert_eq!(username, "user");
+        assert_eq!(password, "pass word here");
     }
 
     #[test]
@@ -815,11 +803,10 @@ mod tests {
     #[test]
     fn test_parse_promote() {
         let cmd = parse("/promote alice").unwrap();
-        if let Command::Promote { username } = cmd {
-            assert_eq!(username, "alice");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Promote { username } = cmd else {
+            panic!("expected Promote variant");
+        };
+        assert_eq!(username, "alice");
     }
 
     #[test]
@@ -830,11 +817,10 @@ mod tests {
     #[test]
     fn test_parse_demote() {
         let cmd = parse("/demote bob").unwrap();
-        if let Command::Demote { username } = cmd {
-            assert_eq!(username, "bob");
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Demote { username } = cmd else {
+            panic!("expected Demote variant");
+        };
+        assert_eq!(username, "bob");
     }
 
     #[test]
@@ -851,21 +837,19 @@ mod tests {
     #[test]
     fn test_parse_accept_no_arg() {
         let cmd = parse("/accept").unwrap();
-        if let Command::Accept { invite_id } = cmd {
-            assert!(invite_id.is_none());
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Accept { invite_id } = cmd else {
+            panic!("expected Accept variant");
+        };
+        assert!(invite_id.is_none());
     }
 
     #[test]
     fn test_parse_accept_with_id() {
         let cmd = parse("/accept 42").unwrap();
-        if let Command::Accept { invite_id } = cmd {
-            assert_eq!(invite_id, Some(42));
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Accept { invite_id } = cmd else {
+            panic!("expected Accept variant");
+        };
+        assert_eq!(invite_id, Some(42));
     }
 
     #[test]
@@ -876,11 +860,10 @@ mod tests {
     #[test]
     fn test_parse_decline() {
         let cmd = parse("/decline 7").unwrap();
-        if let Command::Decline { invite_id } = cmd {
-            assert_eq!(invite_id, 7);
-        } else {
-            panic!("wrong variant");
-        }
+        let Command::Decline { invite_id } = cmd else {
+            panic!("expected Decline variant");
+        };
+        assert_eq!(invite_id, 7);
     }
 
     #[test]

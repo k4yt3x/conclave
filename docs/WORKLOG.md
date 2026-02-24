@@ -1,5 +1,123 @@
 # Conclave Work Log
 
+## 2026-02-24: Code Style Review — Refinements
+
+Applied 8 code style improvements across the workspace. No behavioral changes — all 497 tests pass.
+
+### Error handling improvements
+- **`store.rs`**: Replaced `let _ = std::fs::set_permissions(...)` with `if let Err` + `tracing::warn!`
+- **`tui.rs`**: Added `tracing::warn!` logging for terminal cleanup errors during shutdown (previously `let _ =`)
+- **`subscription.rs`**: Replaced `.unwrap_or_default()` on fallible `reqwest::Client::builder().build()` with `.unwrap_or_else()` that logs the error
+- **`main.rs`**: Added empty-string filtering on CLI `/invite` member input to reject `alice,,bob` cleanly
+
+### Test quality improvements
+- Replaced ~35 `panic!("wrong variant")` / `panic!("expected ...")` patterns across `command.rs`, `mls.rs`, and `operations.rs` with `let ... else { panic!("expected X variant") }` pattern for clearer test failures
+
+### Code structure improvements
+- **`operations.rs`**: Extracted `map_join_error()` helper for `tokio::task::spawn_blocking` join error mapping, replacing 9 identical `.map_err(|e| Error::Other(format!("task join error: {e}")))` closures across `messaging.rs`, `groups.rs`, and `account.rs`
+- **`db/groups.rs`**: Replaced `(i64, String, Option<String>, String)` tuple return from `get_group_members()` with named `GroupMemberRow` struct, removing `#[allow(clippy::type_complexity)]`. Updated all call sites in `api.rs`, `api/groups.rs`, `api/members.rs`, `api/external.rs`, and test code
+- **`render.rs`**: Removed unused `_msg` parameter from `render_new_message()` and updated its call site
+
+### Deferred items
+- Added 3 architectural cleanup items to `TODO.md`: dashboard `view()` parameter count, room display duplication, GUI startup task ordering
+
+## 2026-02-24: Codebase Organization — Module Splits and Deduplication
+
+Comprehensive refactoring to split large files into domain modules, extract duplicated code, and consolidate cross-crate patterns. No behavioral changes — all 497 tests pass.
+
+### Server: Split `db.rs` (2,254 lines) into domain modules
+
+Split into `db.rs` (module root with schema/init) + 6 sub-modules, each adding methods via `impl Database` blocks:
+
+- `db/users.rs` — user CRUD (create, get by id/username, update alias)
+- `db/sessions.rs` — session management (create, validate, delete, cleanup)
+- `db/key_packages.rs` — key package operations (store, consume, count, delete)
+- `db/groups.rs` — group CRUD, member/admin management (create, list, update, member add/remove, admin promote/demote)
+- `db/messages.rs` — message storage and retrieval, commit processing, group info
+- `db/invites.rs` — invite lifecycle (create escrow, list, accept, decline, cleanup) and welcome operations
+
+### Server: Split `api.rs` (1,369 lines) into handler modules
+
+Split into `api.rs` (router + helpers) + 8 sub-modules:
+
+- `api/auth.rs` — register, login, logout, me, update_profile, get_user_by_username, reset_account
+- `api/key_packages.rs` — upload_key_package, get_key_package
+- `api/groups.rs` — create_group, list_groups, update_group, get_group_info
+- `api/messages.rs` — send_message, get_messages, upload_commit
+- `api/members.rs` — invite_to_group, escrow_invite, remove_group_member, leave_group, promote/demote_member, list_admins
+- `api/invites.rs` — list_pending_invites, accept_invite, decline_invite
+- `api/welcomes.rs` — list_pending_welcomes, accept_welcome
+- `api/external.rs` — external_join
+
+### Server: Extract SSE broadcast helper
+
+Extracted `notify_group_members(state, group_id, exclude_user_id, event)` helper in `api.rs`, replacing ~11 instances of the duplicated broadcast pattern.
+
+### Server: Extract validation module
+
+Moved `validate_username()`, `validate_group_name()`, `validate_alias()` and their constants from `db.rs` to a new `validation.rs` module.
+
+### Client lib: Split `operations.rs` (1,180 lines) into sub-modules
+
+Split into `operations.rs` (types, SSE decoding, load_rooms, tests) + 3 sub-modules:
+
+- `operations/messaging.rs` — fetch_and_decrypt, send_message, rotate_keys, process_commit_info (extracted helper)
+- `operations/groups.rs` — create_group, invite_members, accept/decline invites, kick_member, leave_group, accept_welcomes
+- `operations/account.rs` — reset_account, rejoin_groups_via_external_commit (extracted helper), initialize_mls_and_upload_key_packages (new consolidated function)
+
+### Client lib: Extract MLS commit-building helper
+
+Extracted `build_commit_with_welcomes()` in `mls.rs` to deduplicate the commit+welcome construction logic shared between `create_group()` and `invite_to_group()`.
+
+### Client lib: Add `ProcessedMessage::system()` constructor
+
+Reduced 6 instances of boilerplate system message construction to use a shared constructor.
+
+### Client lib: Consolidate key package init/upload
+
+Created `initialize_mls_and_upload_key_packages(api, data_dir, user_id)` in `operations/account.rs`, consolidating the duplicated flow from CLI one-shot (register + login), TUI (register + login), and GUI (register).
+
+### CLI: Refactor `handle_key_event()`
+
+Split 287-line function into: special keys (Ctrl+C, Enter, PageUp/Down) + input-editing keys with a single shared render call. Extracted `handle_enter()` async function for Enter key command dispatch.
+
+### CLI: Merge Msg/Message command duplication
+
+Extracted `send_to_group()` helper in `commands.rs`, eliminating ~40 lines of duplicated code between the `Msg` and `Message` command handlers.
+
+### Files Created
+
+- `crates/conclave-server/src/validation.rs`
+- `crates/conclave-server/src/db/users.rs`
+- `crates/conclave-server/src/db/sessions.rs`
+- `crates/conclave-server/src/db/key_packages.rs`
+- `crates/conclave-server/src/db/groups.rs`
+- `crates/conclave-server/src/db/messages.rs`
+- `crates/conclave-server/src/db/invites.rs`
+- `crates/conclave-server/src/api/auth.rs`
+- `crates/conclave-server/src/api/key_packages.rs`
+- `crates/conclave-server/src/api/groups.rs`
+- `crates/conclave-server/src/api/messages.rs`
+- `crates/conclave-server/src/api/members.rs`
+- `crates/conclave-server/src/api/invites.rs`
+- `crates/conclave-server/src/api/welcomes.rs`
+- `crates/conclave-server/src/api/external.rs`
+- `crates/conclave-lib/src/operations/messaging.rs`
+- `crates/conclave-lib/src/operations/groups.rs`
+- `crates/conclave-lib/src/operations/account.rs`
+
+### Files Modified
+
+- `crates/conclave-server/src/lib.rs` — added `pub mod validation`
+- `crates/conclave-server/src/db.rs` — module root with schema/init only
+- `crates/conclave-server/src/api.rs` — module root with router + helpers only
+- `crates/conclave-lib/src/operations.rs` — module root with types + SSE decoding
+- `crates/conclave-lib/src/mls.rs` — extracted `build_commit_with_welcomes()`
+- `crates/conclave-cli/src/main.rs` — use consolidated key package init
+- `crates/conclave-cli/src/tui.rs` — refactored handle_key_event, extracted handle_enter
+- `crates/conclave-cli/src/tui/commands.rs` — extracted send_to_group, use consolidated key package init
+- `crates/conclave-gui/src/app/login.rs` — use consolidated key package init
+
 ## 2026-02-23: Codebase Decluttering — Split Large Files
 
 Split the two largest files in the codebase for better navigability without changing any behavior.

@@ -119,7 +119,6 @@ pub fn render_new_message(
     stdout: &mut impl Write,
     state: &AppState,
     input: &InputLine,
-    _msg: &DisplayMessage,
 ) -> std::io::Result<()> {
     render_full(stdout, state, input)
 }

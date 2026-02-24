@@ -88,7 +88,10 @@ fn sse_stream(
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "SSE HTTP client build failed, using default");
+                reqwest::Client::new()
+            });
 
         loop {
             yield SseUpdate::Connecting;

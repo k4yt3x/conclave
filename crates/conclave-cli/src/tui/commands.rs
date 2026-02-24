@@ -4,9 +4,7 @@ use tokio::sync::Mutex;
 
 use conclave_lib::api::ApiClient;
 pub use conclave_lib::command::Command;
-use conclave_lib::config::{
-    ClientConfig, SessionState, build_group_mapping, generate_initial_key_packages,
-};
+use conclave_lib::config::{ClientConfig, SessionState, build_group_mapping};
 use conclave_lib::mls::MlsManager;
 use conclave_lib::operations;
 
@@ -90,19 +88,12 @@ async fn execute_auth(
             let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
             auth_api.set_token(login_resp.token.clone());
 
-            std::fs::create_dir_all(&config.data_dir)?;
-            let data_dir = config.data_dir.clone();
-            let entries = tokio::task::spawn_blocking({
-                let data_dir = data_dir.clone();
-                move || {
-                    let mls_mgr = MlsManager::new(&data_dir, user_id)?;
-                    generate_initial_key_packages(&mls_mgr)
-                }
-            })
-            .await
-            .map_err(|e| Error::Other(format!("task join error: {e}")))??;
-            let count = entries.len();
-            auth_api.upload_key_packages(entries).await?;
+            let count = operations::initialize_mls_and_upload_key_packages(
+                &auth_api,
+                &config.data_dir,
+                user_id,
+            )
+            .await?;
             msgs.push(DisplayMessage::system(&format!(
                 "{count} key packages uploaded."
             )));
@@ -154,30 +145,26 @@ async fn execute_auth(
             };
             session.save(&config.data_dir)?;
 
-            std::fs::create_dir_all(&config.data_dir)?;
-            *mls = Some(MlsManager::new(&config.data_dir, resp.user_id)?);
-
-            if let Some(mls_mgr) = &*mls {
-                match generate_initial_key_packages(mls_mgr) {
-                    Ok(entries) => {
-                        let count = entries.len();
-                        if let Err(e) = api.lock().await.upload_key_packages(entries).await {
-                            msgs.push(DisplayMessage::system(&format!(
-                                "Warning: failed to upload key packages: {e}"
-                            )));
-                        } else {
-                            msgs.push(DisplayMessage::system(&format!(
-                                "{count} key packages uploaded."
-                            )));
-                        }
-                    }
-                    Err(e) => {
-                        msgs.push(DisplayMessage::system(&format!(
-                            "Warning: failed to generate key packages: {e}"
-                        )));
-                    }
+            match operations::initialize_mls_and_upload_key_packages(
+                &*api.lock().await,
+                &config.data_dir,
+                resp.user_id,
+            )
+            .await
+            {
+                Ok(count) => {
+                    msgs.push(DisplayMessage::system(&format!(
+                        "{count} key packages uploaded."
+                    )));
+                }
+                Err(e) => {
+                    msgs.push(DisplayMessage::system(&format!(
+                        "Warning: failed to initialize key packages: {e}"
+                    )));
                 }
             }
+
+            *mls = Some(MlsManager::new(&config.data_dir, resp.user_id)?);
 
             let room_infos = load_rooms(api, state).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
@@ -817,90 +804,19 @@ async fn execute_messaging(
 
     match cmd {
         Command::Msg { room, text } => {
-            let user_id = require_user_id(state)?;
             let group_id = state
                 .resolve_room(&room)
                 .map(|r| r.server_group_id)
                 .ok_or_else(|| Error::Other(format!("Unknown room '{room}'")))?;
-            let mls_group_id = state
-                .group_mapping
-                .get(&group_id)
-                .ok_or_else(|| Error::Other("group mapping not found".into()))?
-                .clone();
-
-            let result = {
-                let api_guard = api.lock().await;
-                operations::send_message(
-                    &api_guard,
-                    group_id,
-                    &mls_group_id,
-                    &text,
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?
-            };
-
-            let sender = state.username.clone().unwrap_or_default();
-            let mut msg =
-                DisplayMessage::user(user_id, &sender, &text, chrono::Local::now().timestamp());
-            msg.sequence_num = Some(result.sequence_num);
-            msg.epoch = Some(result.epoch);
-            if let Some(store) = msg_store {
-                store.push_message(group_id, &msg);
-            }
-            state.push_room_message(group_id, msg);
-
-            if let Some(room_state) = state.rooms.get_mut(&group_id) {
-                room_state.last_seen_seq = room_state.last_seen_seq.max(result.sequence_num);
-                if let Some(store) = msg_store {
-                    store.set_last_seen_seq(group_id, room_state.last_seen_seq);
-                }
-            }
-
+            send_to_group(api, state, config, msg_store, group_id, &text).await?;
             msgs.push(DisplayMessage::system(&format!("Message sent to #{room}")));
         }
 
         Command::Message { text } => {
-            let user_id = require_user_id(state)?;
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-            let mls_group_id = state
-                .group_mapping
-                .get(&group_id)
-                .ok_or_else(|| Error::Other("group mapping not found".into()))?
-                .clone();
-
-            let result = {
-                let api_guard = api.lock().await;
-                operations::send_message(
-                    &api_guard,
-                    group_id,
-                    &mls_group_id,
-                    &text,
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?
-            };
-
-            let sender = state.username.clone().unwrap_or_default();
-            let mut msg =
-                DisplayMessage::user(user_id, &sender, &text, chrono::Local::now().timestamp());
-            msg.sequence_num = Some(result.sequence_num);
-            msg.epoch = Some(result.epoch);
-            if let Some(store) = msg_store {
-                store.push_message(group_id, &msg);
-            }
-            state.push_room_message(group_id, msg);
-
-            if let Some(room) = state.rooms.get_mut(&group_id) {
-                room.last_seen_seq = room.last_seen_seq.max(result.sequence_num);
-                if let Some(store) = msg_store {
-                    store.set_last_seen_seq(group_id, room.last_seen_seq);
-                }
-            }
+            send_to_group(api, state, config, msg_store, group_id, &text).await?;
         }
 
         Command::Rotate => {
@@ -1104,4 +1020,51 @@ pub async fn load_rooms(
     }
 
     Ok(rooms)
+}
+
+async fn send_to_group(
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
+    group_id: i64,
+    text: &str,
+) -> Result<()> {
+    let user_id = require_user_id(state)?;
+    let mls_group_id = state
+        .group_mapping
+        .get(&group_id)
+        .ok_or_else(|| Error::Other("group mapping not found".into()))?
+        .clone();
+
+    let result = {
+        let api_guard = api.lock().await;
+        operations::send_message(
+            &api_guard,
+            group_id,
+            &mls_group_id,
+            text,
+            &config.data_dir,
+            user_id,
+        )
+        .await?
+    };
+
+    let sender = state.username.clone().unwrap_or_default();
+    let mut msg = DisplayMessage::user(user_id, &sender, text, chrono::Local::now().timestamp());
+    msg.sequence_num = Some(result.sequence_num);
+    msg.epoch = Some(result.epoch);
+    if let Some(store) = msg_store {
+        store.push_message(group_id, &msg);
+    }
+    state.push_room_message(group_id, msg);
+
+    if let Some(room) = state.rooms.get_mut(&group_id) {
+        room.last_seen_seq = room.last_seen_seq.max(result.sequence_num);
+        if let Some(store) = msg_store {
+            store.set_last_seen_seq(group_id, room.last_seen_seq);
+        }
+    }
+
+    Ok(())
 }

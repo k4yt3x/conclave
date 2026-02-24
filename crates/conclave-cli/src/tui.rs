@@ -180,9 +180,14 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
     )
     .await;
 
-    // Restore terminal.
-    let _ = terminal::disable_raw_mode();
-    let _ = execute!(stdout, LeaveAlternateScreen);
+    // Restore terminal — errors are ignored because we are shutting down
+    // and there is no meaningful recovery action if these fail.
+    if let Err(error) = terminal::disable_raw_mode() {
+        tracing::warn!(%error, "failed to disable raw mode during shutdown");
+    }
+    if let Err(error) = execute!(stdout, LeaveAlternateScreen) {
+        tracing::warn!(%error, "failed to leave alternate screen during shutdown");
+    }
 
     result
 }
@@ -341,169 +346,184 @@ async fn handle_key_event(
     sse_source: &mut Option<EventSource>,
     msg_store: &mut Option<MessageStore>,
 ) -> crate::error::Result<LoopAction> {
+    // Handle keys that have special control flow (quit, command dispatch,
+    // scrolling) before falling through to the common input-editing path.
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            return Ok(LoopAction::Quit);
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(LoopAction::Quit),
+
+        (KeyCode::Enter, _) => {
+            return handle_enter(
+                stdout, state, input, api, mls, config, sse_source, msg_store,
+            )
+            .await;
         }
+
+        (KeyCode::PageUp, _) => {
+            let msg_rows = state.terminal_rows.saturating_sub(2) as usize;
+            let total = state.active_messages().len();
+            let max_scroll = total.saturating_sub(msg_rows);
+            state.scroll_offset = state.scroll_offset.saturating_add(10).min(max_scroll);
+            let _ = render::render_full(stdout, state, input);
+            return Ok(LoopAction::Continue);
+        }
+        (KeyCode::PageDown, _) => {
+            state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            let _ = render::render_full(stdout, state, input);
+            return Ok(LoopAction::Continue);
+        }
+
+        _ => {}
+    }
+
+    // All remaining keys edit the input line, then re-render it.
+    let edited = match (key.code, key.modifiers) {
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
             if !input.is_empty() {
                 input.delete();
-                let _ = render::render_input_line(
-                    stdout,
-                    state,
-                    input,
-                    state.terminal_rows.saturating_sub(1),
-                );
+                true
+            } else {
+                false
             }
         }
         (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
             input.home();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
             input.end();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
             input.move_left();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
             input.move_right();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
             input.kill_to_end();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
             input.kill_to_start();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
             input.kill_word_backward();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('b'), KeyModifiers::ALT) => {
             input.move_word_left();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('f'), KeyModifiers::ALT) => {
             input.move_word_right();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
         (KeyCode::Char('d'), KeyModifiers::ALT) => {
             input.delete_word_forward();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
+            true
         }
+        (KeyCode::Backspace, _) => {
+            input.backspace();
+            true
+        }
+        (KeyCode::Delete, _) => {
+            input.delete();
+            true
+        }
+        (KeyCode::Left, _) => {
+            input.move_left();
+            true
+        }
+        (KeyCode::Right, _) => {
+            input.move_right();
+            true
+        }
+        (KeyCode::Home, _) => {
+            input.home();
+            true
+        }
+        (KeyCode::End, _) => {
+            input.end();
+            true
+        }
+        (KeyCode::Up, _) => {
+            input.history_up();
+            true
+        }
+        (KeyCode::Down, _) => {
+            input.history_down();
+            true
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            input.insert(c);
+            true
+        }
+        _ => false,
+    };
 
-        (KeyCode::Enter, _) => {
-            if input.is_empty() {
-                return Ok(LoopAction::Continue);
-            }
-            let text = input.submit();
+    if edited {
+        let _ =
+            render::render_input_line(stdout, state, input, state.terminal_rows.saturating_sub(1));
+    }
 
-            match commands::parse(&text) {
-                Ok(Command::Quit) => {
-                    return Ok(LoopAction::Quit);
-                }
-                Ok(cmd) => {
-                    match commands::execute(cmd, api, state, mls, config, msg_store).await {
-                        Ok((msgs, should_start_sse)) => {
-                            for msg in msgs {
-                                add_and_render_message(
-                                    stdout,
-                                    state,
-                                    input,
-                                    None,
-                                    msg,
-                                    msg_store,
-                                    &config.notifications,
-                                );
-                            }
-                            if should_start_sse {
-                                // Open the message store after a fresh /login
-                                // so messages and seq values are persisted.
-                                if msg_store.is_none()
-                                    && let Ok(store) = MessageStore::open(&config.data_dir)
-                                {
-                                    *msg_store = Some(store);
-                                }
-                                if sse_source.is_none()
-                                    && let Ok(es) = api.lock().await.connect_sse()
-                                {
-                                    *sse_source = Some(es);
-                                    state.connection_status = ConnectionStatus::Connecting;
-                                }
-                            }
+    Ok(LoopAction::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_enter(
+    stdout: &mut impl Write,
+    state: &mut AppState,
+    input: &mut InputLine,
+    api: &Arc<Mutex<ApiClient>>,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+    sse_source: &mut Option<EventSource>,
+    msg_store: &mut Option<MessageStore>,
+) -> crate::error::Result<LoopAction> {
+    if input.is_empty() {
+        return Ok(LoopAction::Continue);
+    }
+    let text = input.submit();
+
+    match commands::parse(&text) {
+        Ok(Command::Quit) => {
+            return Ok(LoopAction::Quit);
+        }
+        Ok(cmd) => {
+            match commands::execute(cmd, api, state, mls, config, msg_store).await {
+                Ok((msgs, should_start_sse)) => {
+                    for msg in msgs {
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            &config.notifications,
+                        );
+                    }
+                    if should_start_sse {
+                        // Open the message store after a fresh /login
+                        // so messages and seq values are persisted.
+                        if msg_store.is_none()
+                            && let Ok(store) = MessageStore::open(&config.data_dir)
+                        {
+                            *msg_store = Some(store);
                         }
-                        Err(e) => {
-                            let msg = DisplayMessage::system(&format!("Error: {e}"));
-                            add_and_render_message(
-                                stdout,
-                                state,
-                                input,
-                                None,
-                                msg,
-                                msg_store,
-                                &config.notifications,
-                            );
+                        if sse_source.is_none()
+                            && let Ok(es) = api.lock().await.connect_sse()
+                        {
+                            *sse_source = Some(es);
+                            state.connection_status = ConnectionStatus::Connecting;
                         }
                     }
-                    let _ = render::render_full(stdout, state, input);
                 }
                 Err(e) => {
-                    let msg = DisplayMessage::system(&format!("{e}"));
+                    let msg = DisplayMessage::system(&format!("Error: {e}"));
                     add_and_render_message(
                         stdout,
                         state,
@@ -513,106 +533,23 @@ async fn handle_key_event(
                         msg_store,
                         &config.notifications,
                     );
-                    let _ = render::render_full(stdout, state, input);
                 }
             }
-        }
-
-        (KeyCode::Backspace, _) => {
-            input.backspace();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Delete, _) => {
-            input.delete();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Left, _) => {
-            input.move_left();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Right, _) => {
-            input.move_right();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Home, _) => {
-            input.home();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::End, _) => {
-            input.end();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Up, _) => {
-            input.history_up();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::Down, _) => {
-            input.history_down();
-            let _ = render::render_input_line(
-                stdout,
-                state,
-                input,
-                state.terminal_rows.saturating_sub(1),
-            );
-        }
-        (KeyCode::PageUp, _) => {
-            let msg_rows = state.terminal_rows.saturating_sub(2) as usize;
-            let total = state.active_messages().len();
-            let max_scroll = total.saturating_sub(msg_rows);
-            state.scroll_offset = state.scroll_offset.saturating_add(10).min(max_scroll);
             let _ = render::render_full(stdout, state, input);
         }
-        (KeyCode::PageDown, _) => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(10);
-            let _ = render::render_full(stdout, state, input);
-        }
-
-        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            input.insert(c);
-            let _ = render::render_input_line(
+        Err(e) => {
+            let msg = DisplayMessage::system(&format!("{e}"));
+            add_and_render_message(
                 stdout,
                 state,
                 input,
-                state.terminal_rows.saturating_sub(1),
+                None,
+                msg,
+                msg_store,
+                &config.notifications,
             );
+            let _ = render::render_full(stdout, state, input);
         }
-
-        _ => {}
     }
 
     Ok(LoopAction::Continue)
@@ -665,7 +602,7 @@ fn add_and_render_message(
         }
         // Reset scroll to bottom when new messages arrive.
         state.scroll_offset = 0;
-        let _ = render::render_new_message(stdout, state, input, &msg);
+        let _ = render::render_new_message(stdout, state, input);
     } else if !msg.is_system && group_id.is_some() {
         let room_name = group_id
             .and_then(|gid| state.rooms.get(&gid))

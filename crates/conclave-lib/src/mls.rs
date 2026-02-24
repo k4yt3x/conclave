@@ -231,18 +231,13 @@ impl MlsManager {
         Ok(packages)
     }
 
-    /// Create a new MLS group, add members from their key packages.
-    pub fn create_group(
-        &self,
+    /// Add members to a group via key packages, build + apply the commit,
+    /// match welcome messages to recipients, serialize outputs, and persist
+    /// group state. Returns (commit_bytes, welcome_map, group_info_bytes).
+    fn build_commit_with_members(
+        group: &mut mls_rs::Group<impl MlsConfig>,
         member_key_packages: &HashMap<String, Vec<u8>>,
-    ) -> Result<GroupCreationResult> {
-        let client = self.build_client()?;
-        let mut group = client
-            .create_group(ExtensionList::default(), Default::default(), None)
-            .map_err(|e| Error::Mls(format!("create group failed: {e}")))?;
-
-        // Add all members, tracking each key package reference for
-        // welcome matching (RFC 9420 §12.4.3).
+    ) -> Result<(Vec<u8>, HashMap<String, Vec<u8>>, Vec<u8>)> {
         let cipher_suite = OpensslCryptoProvider::default()
             .cipher_suite_provider(CIPHERSUITE)
             .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
@@ -273,7 +268,8 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
 
         // Match each welcome message to its recipient by KeyPackage
-        // reference rather than relying on array index ordering.
+        // reference rather than relying on array index ordering
+        // (RFC 9420 §12.4.3).
         let mut welcome_map = HashMap::new();
         for welcome_msg in &commit_output.welcome_messages {
             let welcome_bytes = welcome_msg
@@ -298,18 +294,33 @@ impl MlsManager {
             .to_bytes()
             .map_err(|e| Error::Mls(format!("group info serialization failed: {e}")))?;
 
-        // Persist group state.
         group
             .write_to_storage()
             .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
 
-        let group_id = hex::encode(group.group_id());
+        Ok((commit_bytes, welcome_map, group_info_bytes))
+    }
+
+    /// Create a new MLS group, add members from their key packages.
+    pub fn create_group(
+        &self,
+        member_key_packages: &HashMap<String, Vec<u8>>,
+    ) -> Result<GroupCreationResult> {
+        let client = self.build_client()?;
+        let mut group = client
+            .create_group(ExtensionList::default(), Default::default(), None)
+            .map_err(|e| Error::Mls(format!("create group failed: {e}")))?;
+
+        let (commit, welcomes, group_info) =
+            Self::build_commit_with_members(&mut group, member_key_packages)?;
+
+        let mls_group_id = hex::encode(group.group_id());
 
         Ok(GroupCreationResult {
-            mls_group_id: group_id,
-            commit: commit_bytes,
-            welcomes: welcome_map,
-            group_info: group_info_bytes,
+            mls_group_id,
+            commit,
+            welcomes,
+            group_info,
         })
     }
 
@@ -327,67 +338,13 @@ impl MlsManager {
             .load_group(&group_id_bytes)
             .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
 
-        let cipher_suite = OpensslCryptoProvider::default()
-            .cipher_suite_provider(CIPHERSUITE)
-            .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
-
-        let mut builder = group.commit_builder();
-        let mut kp_ref_to_username: HashMap<KeyPackageRef, String> = HashMap::new();
-
-        for (username, kp_bytes) in member_key_packages {
-            let kp_msg = MlsMessage::from_bytes(kp_bytes)
-                .map_err(|e| Error::Mls(format!("invalid key package from '{username}': {e}")))?;
-            if let Some(kp_ref) = kp_msg
-                .key_package_reference(&cipher_suite)
-                .map_err(|e| Error::Mls(format!("key package ref for '{username}': {e}")))?
-            {
-                kp_ref_to_username.insert(kp_ref, username.clone());
-            }
-            builder = builder
-                .add_member(kp_msg)
-                .map_err(|e| Error::Mls(format!("add member '{username}' failed: {e}")))?;
-        }
-
-        let commit_output = builder
-            .build()
-            .map_err(|e| Error::Mls(format!("commit build failed: {e}")))?;
-
-        group
-            .apply_pending_commit()
-            .map_err(|e| Error::Mls(format!("apply pending commit failed: {e}")))?;
-
-        let mut welcome_map = HashMap::new();
-        for welcome_msg in &commit_output.welcome_messages {
-            let welcome_bytes = welcome_msg
-                .to_bytes()
-                .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
-            for kp_ref in welcome_msg.welcome_key_package_references() {
-                if let Some(username) = kp_ref_to_username.get(kp_ref) {
-                    welcome_map.insert(username.clone(), welcome_bytes.clone());
-                }
-            }
-        }
-
-        let commit_bytes = commit_output
-            .commit_message
-            .to_bytes()
-            .map_err(|e| Error::Mls(format!("commit serialization failed: {e}")))?;
-
-        let group_info_msg = group
-            .group_info_message_allowing_ext_commit(true)
-            .map_err(|e| Error::Mls(format!("group info generation failed: {e}")))?;
-        let group_info_bytes = group_info_msg
-            .to_bytes()
-            .map_err(|e| Error::Mls(format!("group info serialization failed: {e}")))?;
-
-        group
-            .write_to_storage()
-            .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
+        let (commit, welcomes, group_info) =
+            Self::build_commit_with_members(&mut group, member_key_packages)?;
 
         Ok(InviteResult {
-            commit: commit_bytes,
-            welcomes: welcome_map,
-            group_info: group_info_bytes,
+            commit,
+            welcomes,
+            group_info,
         })
     }
 
@@ -969,12 +926,10 @@ mod tests {
         assert!(!ciphertext.is_empty());
 
         let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
-        match decrypted {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            _ => panic!("expected Application message, got something else"),
-        }
+        let DecryptedMessage::Application(data) = decrypted else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     #[test]
@@ -987,15 +942,14 @@ mod tests {
         let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
 
         let result = bob.decrypt_message(&group_id, &ciphertext).unwrap();
-        if let DecryptedMessage::Application(data) = result {
-            assert_eq!(
-                data,
-                plaintext.to_vec(),
-                "decrypted data must match original plaintext"
-            );
-        } else {
-            panic!("expected DecryptedMessage::Application variant");
-        }
+        let DecryptedMessage::Application(data) = result else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(
+            data,
+            plaintext.to_vec(),
+            "decrypted data must match original plaintext"
+        );
     }
 
     #[test]
@@ -1014,17 +968,15 @@ mod tests {
         let result = bob
             .decrypt_message(&group_id, &invite_result.commit)
             .unwrap();
-        match result {
-            DecryptedMessage::Commit(info) => {
-                assert!(
-                    info.members_added.contains(&Some(3)),
-                    "commit info must list carol (user_id=3) as added, got: {:?}",
-                    info.members_added
-                );
-                assert!(!info.self_removed, "bob must not be self_removed");
-            }
-            _ => panic!("expected DecryptedMessage::Commit variant"),
-        }
+        let DecryptedMessage::Commit(info) = result else {
+            panic!("expected Commit variant");
+        };
+        assert!(
+            info.members_added.contains(&Some(3)),
+            "commit info must list carol (user_id=3) as added, got: {:?}",
+            info.members_added
+        );
+        assert!(!info.self_removed, "bob must not be self_removed");
     }
 
     #[test]
@@ -1321,21 +1273,18 @@ mod tests {
         let (rotation_commit, _gi2) = alice.rotate_keys(&group_id).unwrap();
 
         let rotation_result = bob.decrypt_message(&group_id, &rotation_commit).unwrap();
-        match &rotation_result {
-            DecryptedMessage::Commit(_) => {}
-            _ => panic!("rotation must produce a Commit message for bob"),
-        }
+        let DecryptedMessage::Commit(_) = &rotation_result else {
+            panic!("expected Commit variant");
+        };
 
         let plaintext = b"post-rotation secret";
         let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
 
         let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
-        match decrypted {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            _ => panic!("expected Application message after rotation"),
-        }
+        let DecryptedMessage::Application(data) = decrypted else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     #[test]
@@ -1373,26 +1322,22 @@ mod tests {
         let (removal_commit, _gi3) = alice.remove_member(&group_id, carol_index).unwrap();
 
         let removal_result = bob.decrypt_message(&group_id, &removal_commit).unwrap();
-        match &removal_result {
-            DecryptedMessage::Commit(info) => {
-                assert!(
-                    !info.members_removed.is_empty(),
-                    "removal commit must list removed members"
-                );
-            }
-            _ => panic!("removal must produce a Commit message for bob"),
-        }
+        let DecryptedMessage::Commit(info) = &removal_result else {
+            panic!("expected Commit variant");
+        };
+        assert!(
+            !info.members_removed.is_empty(),
+            "removal commit must list removed members"
+        );
 
         let plaintext = b"carol cannot see this";
         let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
 
         let decrypted = bob.decrypt_message(&group_id, &ciphertext).unwrap();
-        match decrypted {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            _ => panic!("expected Application message from bob after carol removal"),
-        }
+        let DecryptedMessage::Application(data) = decrypted else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
 
         let carol_result = carol.decrypt_message(&group_id, &ciphertext).unwrap();
         match carol_result {
@@ -1421,12 +1366,10 @@ mod tests {
         bob.decrypt_message(&bob_group_id, &rotate_commit).unwrap();
 
         let decrypted = bob.decrypt_message(&bob_group_id, &ciphertext).unwrap();
-        match decrypted {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = decrypted else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     #[test]
@@ -1442,12 +1385,10 @@ mod tests {
         let plaintext = b"after rotations";
         let ciphertext = alice.encrypt_message(&group_id, plaintext).unwrap();
         let decrypted = bob.decrypt_message(&bob_group_id, &ciphertext).unwrap();
-        match decrypted {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = decrypted else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     // ── Bidirectional Messaging ───────────────────────────────────
@@ -1459,17 +1400,17 @@ mod tests {
 
         let ct1 = alice.encrypt_message(&group_id, b"hello bob").unwrap();
         let dec1 = bob.decrypt_message(&bob_group_id, &ct1).unwrap();
-        match dec1 {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"hello bob"),
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec1 else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"hello bob");
 
         let ct2 = bob.encrypt_message(&bob_group_id, b"hello alice").unwrap();
         let dec2 = alice.decrypt_message(&group_id, &ct2).unwrap();
-        match dec2 {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"hello alice"),
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec2 else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"hello alice");
     }
 
     #[test]
@@ -1481,12 +1422,10 @@ mod tests {
             let msg = format!("message {i}");
             let ct = alice.encrypt_message(&group_id, msg.as_bytes()).unwrap();
             let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
-            match dec {
-                DecryptedMessage::Application(data) => {
-                    assert_eq!(data, msg.as_bytes().to_vec());
-                }
-                other => panic!("expected Application for message {i}, got {other:?}"),
-            }
+            let DecryptedMessage::Application(data) = dec else {
+                panic!("expected Application variant");
+            };
+            assert_eq!(data, msg.as_bytes().to_vec());
         }
     }
 
@@ -1499,10 +1438,10 @@ mod tests {
 
         let ct = alice.encrypt_message(&group_id, b"").unwrap();
         let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
-        match dec {
-            DecryptedMessage::Application(data) => assert!(data.is_empty()),
-            other => panic!("expected empty Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec else {
+            panic!("expected Application variant");
+        };
+        assert!(data.is_empty());
     }
 
     #[test]
@@ -1513,10 +1452,10 @@ mod tests {
         let large_msg = vec![0x42u8; 64 * 1024];
         let ct = alice.encrypt_message(&group_id, &large_msg).unwrap();
         let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
-        match dec {
-            DecryptedMessage::Application(data) => assert_eq!(data, large_msg),
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, large_msg);
     }
 
     #[test]
@@ -1529,12 +1468,10 @@ mod tests {
             .encrypt_message(&group_id, unicode_msg.as_bytes())
             .unwrap();
         let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
-        match dec {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(String::from_utf8(data).unwrap(), unicode_msg);
-            }
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(String::from_utf8(data).unwrap(), unicode_msg);
     }
 
     // ── Forward Secrecy (RFC 9420 §16.1) ──────────────────────────
@@ -1548,10 +1485,10 @@ mod tests {
         let (remove_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
 
         let result = bob.decrypt_message(&bob_group_id, &remove_commit).unwrap();
-        match result {
-            DecryptedMessage::Commit(info) => assert!(info.self_removed),
-            other => panic!("expected Commit with self_removed, got {other:?}"),
-        }
+        let DecryptedMessage::Commit(info) = result else {
+            panic!("expected Commit variant");
+        };
+        assert!(info.self_removed);
 
         let ct = alice
             .encrypt_message(&group_id, b"secret post-removal")
@@ -1581,12 +1518,10 @@ mod tests {
             .encrypt_message(&group_id, b"after key rotation")
             .unwrap();
         let dec = bob.decrypt_message(&bob_group_id, &ct).unwrap();
-        match dec {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, b"after key rotation");
-            }
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = dec else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"after key rotation");
     }
 
     // ── Three-Member Group ────────────────────────────────────────
@@ -1614,14 +1549,16 @@ mod tests {
         assert_eq!(carol_gid, group_id);
 
         let ct = alice.encrypt_message(&group_id, b"hello all").unwrap();
-        match bob.decrypt_message(&bob_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"hello all"),
-            other => panic!("bob: expected Application, got {other:?}"),
-        }
-        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"hello all"),
-            other => panic!("carol: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"hello all");
+        let DecryptedMessage::Application(data) = carol.decrypt_message(&carol_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"hello all");
     }
 
     // ── Sequential Member Addition ────────────────────────────────
@@ -1657,14 +1594,16 @@ mod tests {
         assert_eq!(carol_gid, group_id);
 
         let ct = alice.encrypt_message(&group_id, b"trio message").unwrap();
-        match bob.decrypt_message(&bob_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"trio message"),
-            other => panic!("bob: expected Application, got {other:?}"),
-        }
-        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"trio message"),
-            other => panic!("carol: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"trio message");
+        let DecryptedMessage::Application(data) = carol.decrypt_message(&carol_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"trio message");
     }
 
     // ── External Rejoin ───────────────────────────────────────────
@@ -1680,10 +1619,9 @@ mod tests {
         assert!(!rejoin_commit.is_empty());
 
         let result = alice.decrypt_message(&group_id, &rejoin_commit).unwrap();
-        match result {
-            DecryptedMessage::Commit(_) => {}
-            other => panic!("expected Commit, got {other:?}"),
-        }
+        let DecryptedMessage::Commit(_) = result else {
+            panic!("expected Commit variant");
+        };
     }
 
     // ── Group Info Details ─────────────────────────────────────────
@@ -1863,16 +1801,18 @@ mod tests {
         alice.decrypt_message(&group_id, &rotate_commit).unwrap();
 
         let ct1 = alice.encrypt_message(&group_id, b"from alice").unwrap();
-        match bob.decrypt_message(&bob_group_id, &ct1).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"from alice"),
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_group_id, &ct1).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"from alice");
 
         let ct2 = bob.encrypt_message(&bob_group_id, b"from bob").unwrap();
-        match alice.decrypt_message(&group_id, &ct2).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, b"from bob"),
-            other => panic!("expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = alice.decrypt_message(&group_id, &ct2).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"from bob");
     }
 
     // ── Leave Group ───────────────────────────────────────────────
@@ -1972,30 +1912,27 @@ mod tests {
             ("dave", &dave, &dave_gid),
             ("eve", &eve, &eve_gid),
         ] {
-            match mgr.decrypt_message(gid, &ct).unwrap() {
-                DecryptedMessage::Application(data) => {
-                    assert_eq!(data, plaintext.to_vec(), "{name} must decrypt correctly");
-                }
-                other => panic!("{name}: expected Application, got {other:?}"),
-            }
+            let DecryptedMessage::Application(data) = mgr.decrypt_message(gid, &ct).unwrap() else {
+                panic!("expected Application variant");
+            };
+            assert_eq!(data, plaintext.to_vec(), "{name} must decrypt correctly");
         }
 
         // Eve sends a message, alice and bob can decrypt.
         let eve_msg = b"message from eve";
         let eve_ct = eve.encrypt_message(&eve_gid, eve_msg).unwrap();
 
-        match alice.decrypt_message(&group_id, &eve_ct).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, eve_msg.to_vec(), "alice must decrypt eve's message");
-            }
-            other => panic!("alice: expected Application from eve, got {other:?}"),
-        }
-        match bob.decrypt_message(&bob_gid, &eve_ct).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, eve_msg.to_vec(), "bob must decrypt eve's message");
-            }
-            other => panic!("bob: expected Application from eve, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) =
+            alice.decrypt_message(&group_id, &eve_ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, eve_msg.to_vec(), "alice must decrypt eve's message");
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_gid, &eve_ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, eve_msg.to_vec(), "bob must decrypt eve's message");
     }
 
     // ── Invite After Multiple Rotations ─────────────────────────
@@ -2037,14 +1974,16 @@ mod tests {
         let plaintext = b"post-rotation invite test";
         let ct = alice.encrypt_message(&group_id, plaintext).unwrap();
 
-        match bob.decrypt_message(&bob_group_id, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, plaintext.to_vec()),
-            other => panic!("bob: expected Application, got {other:?}"),
-        }
-        match carol.decrypt_message(&carol_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, plaintext.to_vec()),
-            other => panic!("carol: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_group_id, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
+        let DecryptedMessage::Application(data) = carol.decrypt_message(&carol_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     // ── Removed Member Cannot Rejoin via Welcome ────────────────
@@ -2123,25 +2062,23 @@ mod tests {
 
         // Alice processes the external commit.
         let result = alice.decrypt_message(&group_id, &rejoin_commit).unwrap();
-        match result {
-            DecryptedMessage::Commit(info) => {
-                assert!(
-                    !info.self_removed,
-                    "alice must not be self_removed by bob's rejoin"
-                );
-            }
-            other => panic!("expected Commit from external rejoin, got {other:?}"),
-        }
+        let DecryptedMessage::Commit(info) = result else {
+            panic!("expected Commit variant");
+        };
+        assert!(
+            !info.self_removed,
+            "alice must not be self_removed by bob's rejoin"
+        );
 
         // Verify alice and the new bob can still communicate.
         let plaintext = b"after external rejoin";
         let ct = alice.encrypt_message(&group_id, plaintext).unwrap();
-        match bob_new.decrypt_message(&rejoin_gid, &ct).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, plaintext.to_vec());
-            }
-            other => panic!("bob_new: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) =
+            bob_new.decrypt_message(&rejoin_gid, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, plaintext.to_vec());
     }
 
     // ── Multiple Groups Isolation ───────────────────────────────
@@ -2178,10 +2115,11 @@ mod tests {
         let ct1 = alice.encrypt_message(&group1_id, msg1).unwrap();
 
         // Bob can decrypt it in group 1.
-        match bob.decrypt_message(&bob_gid1, &ct1).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, msg1.to_vec()),
-            other => panic!("bob group1: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_gid1, &ct1).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, msg1.to_vec());
 
         // Bob cannot decrypt group 1's message in group 2.
         let cross_result = bob.decrypt_message(&bob_gid2, &ct1).unwrap();
@@ -2196,10 +2134,11 @@ mod tests {
         // Send a message in group 2 and verify it works there.
         let msg2 = b"group 2 only";
         let ct2 = alice.encrypt_message(&group2_id, msg2).unwrap();
-        match bob.decrypt_message(&bob_gid2, &ct2).unwrap() {
-            DecryptedMessage::Application(data) => assert_eq!(data, msg2.to_vec()),
-            other => panic!("bob group2: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_gid2, &ct2).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, msg2.to_vec());
     }
 
     // ── Rapid Sequential Messages ───────────────────────────────
@@ -2221,16 +2160,16 @@ mod tests {
 
         // Decrypt all of them in order.
         for (expected_msg, ct) in &ciphertexts {
-            match bob.decrypt_message(&bob_group_id, ct).unwrap() {
-                DecryptedMessage::Application(data) => {
-                    assert_eq!(
-                        data,
-                        expected_msg.as_bytes().to_vec(),
-                        "mismatch for '{expected_msg}'"
-                    );
-                }
-                other => panic!("expected Application for '{expected_msg}', got {other:?}"),
-            }
+            let DecryptedMessage::Application(data) =
+                bob.decrypt_message(&bob_group_id, ct).unwrap()
+            else {
+                panic!("expected Application variant");
+            };
+            assert_eq!(
+                data,
+                expected_msg.as_bytes().to_vec(),
+                "mismatch for '{expected_msg}'"
+            );
         }
     }
 
@@ -2249,15 +2188,14 @@ mod tests {
         );
 
         let ct = alice.encrypt_message(&group_id, &binary_payload).unwrap();
-        match bob.decrypt_message(&bob_group_id, &ct).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(
-                    data, binary_payload,
-                    "binary payload must survive encrypt/decrypt roundtrip"
-                );
-            }
-            other => panic!("expected Application for binary payload, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_group_id, &ct).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(
+            data, binary_payload,
+            "binary payload must survive encrypt/decrypt roundtrip"
+        );
     }
 
     // ── Leave Group Self-Removal Detection ──────────────────────
@@ -2276,15 +2214,13 @@ mod tests {
         let (removal_commit, _gi) = alice.remove_member(&group_id, bob_index).unwrap();
 
         let result = bob.decrypt_message(&bob_group_id, &removal_commit).unwrap();
-        match result {
-            DecryptedMessage::Commit(info) => {
-                assert!(
-                    info.self_removed,
-                    "bob must see self_removed = true when he is removed"
-                );
-            }
-            other => panic!("expected Commit with self_removed for bob, got {other:?}"),
-        }
+        let DecryptedMessage::Commit(info) = result else {
+            panic!("expected Commit variant");
+        };
+        assert!(
+            info.self_removed,
+            "bob must see self_removed = true when he is removed"
+        );
 
         // Also test the leave_group path: bob tries to leave on his own.
         // mls-rs may or may not support self-removal commits; if it does,
@@ -2306,19 +2242,17 @@ mod tests {
             assert!(!leave_commit.is_empty(), "leave commit must not be empty");
 
             let alice_result = alice2.decrypt_message(&group2_id, &leave_commit).unwrap();
-            match alice_result {
-                DecryptedMessage::Commit(info) => {
-                    assert!(
-                        !info.self_removed,
-                        "alice must not be self_removed when bob leaves"
-                    );
-                    assert!(
-                        !info.members_removed.is_empty(),
-                        "the commit must report a member removal"
-                    );
-                }
-                other => panic!("expected Commit for bob's leave, got {other:?}"),
-            }
+            let DecryptedMessage::Commit(info) = alice_result else {
+                panic!("expected Commit variant");
+            };
+            assert!(
+                !info.self_removed,
+                "alice must not be self_removed when bob leaves"
+            );
+            assert!(
+                !info.members_removed.is_empty(),
+                "the commit must report a member removal"
+            );
         }
     }
 
@@ -2409,21 +2343,19 @@ mod tests {
         let ct1 = alice
             .encrypt_message(&group_id, b"alice after rotations")
             .unwrap();
-        match bob.decrypt_message(&bob_group_id, &ct1).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, b"alice after rotations");
-            }
-            other => panic!("bob: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = bob.decrypt_message(&bob_group_id, &ct1).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"alice after rotations");
 
         let ct2 = bob
             .encrypt_message(&bob_group_id, b"bob after rotations")
             .unwrap();
-        match alice.decrypt_message(&group_id, &ct2).unwrap() {
-            DecryptedMessage::Application(data) => {
-                assert_eq!(data, b"bob after rotations");
-            }
-            other => panic!("alice: expected Application, got {other:?}"),
-        }
+        let DecryptedMessage::Application(data) = alice.decrypt_message(&group_id, &ct2).unwrap()
+        else {
+            panic!("expected Application variant");
+        };
+        assert_eq!(data, b"bob after rotations");
     }
 }

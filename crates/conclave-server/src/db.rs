@@ -1,10 +1,18 @@
+mod groups;
+mod invites;
+mod key_packages;
+mod messages;
+mod sessions;
+mod users;
+mod welcomes;
+
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// A user record from the `users` table.
 #[derive(Debug)]
@@ -71,6 +79,14 @@ pub struct UserGroupRow {
     pub mls_group_id: Option<String>,
 }
 
+/// A group member row from the `group_members` table joined with user info.
+pub struct GroupMemberRow {
+    pub user_id: i64,
+    pub username: String,
+    pub alias: Option<String>,
+    pub role: String,
+}
+
 /// A row from the `messages` table joined with sender info.
 pub struct StoredMessageRow {
     pub sequence_num: i64,
@@ -81,74 +97,10 @@ pub struct StoredMessageRow {
     pub created_at: i64,
 }
 
-/// Maximum alias length for users and groups.
-const MAX_ALIAS_LENGTH: usize = 64;
-
-/// Maximum username length.
-const MAX_USERNAME_LENGTH: usize = 64;
-
-/// Maximum group name length.
-const MAX_GROUP_NAME_LENGTH: usize = 64;
-
 /// Hash a token with SHA-256 for safe storage.
 fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(digest)
-}
-
-/// Check whether a username is valid.
-pub fn validate_username(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::Validation("username is required".to_string()));
-    }
-    if name.len() > MAX_USERNAME_LENGTH {
-        return Err(Error::Validation(format!(
-            "username exceeds maximum length of {MAX_USERNAME_LENGTH} characters"
-        )));
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        || !name.starts_with(|c: char| c.is_ascii_alphanumeric())
-    {
-        return Err(Error::Validation(
-            "username must start with a letter or digit and contain only ASCII letters, digits, and underscores".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Check whether a group name is valid (same rules as username).
-pub fn validate_group_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::Validation("group name is required".to_string()));
-    }
-    if name.len() > MAX_GROUP_NAME_LENGTH {
-        return Err(Error::Validation(format!(
-            "group name exceeds maximum length of {MAX_GROUP_NAME_LENGTH} characters"
-        )));
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        || !name.starts_with(|c: char| c.is_ascii_alphanumeric())
-    {
-        return Err(Error::Validation(
-            "group name must start with a letter or digit and contain only ASCII letters, digits, and underscores".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Check whether an alias string is valid (no ASCII control characters, max 64 chars).
-pub fn validate_alias(alias: &str) -> Result<()> {
-    if alias.len() > MAX_ALIAS_LENGTH {
-        return Err(Error::Validation(format!(
-            "alias exceeds maximum length of {MAX_ALIAS_LENGTH} characters"
-        )));
-    }
-    if alias.bytes().any(|b| b < 0x20 || b == 0x7F) {
-        return Err(Error::Validation(
-            "alias must not contain ASCII control characters".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// Server-side SQLite database for users, sessions, groups, and messages.
@@ -274,855 +226,14 @@ impl Database {
 
         Ok(())
     }
-
-    // ── Users ──────────────────────────────────────────────────────
-
-    pub fn create_user(&self, username: &str, password_hash: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
-            params![username, password_hash],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                Error::Conflict(format!("username '{username}' already exists"))
-            }
-            other => Error::Database(other),
-        })?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn
-            .prepare("SELECT id, username, password_hash, alias FROM users WHERE username = ?1")?;
-        let result = stmt
-            .query_row(params![username], |row| {
-                Ok(UserRow {
-                    user_id: row.get(0)?,
-                    username: row.get(1)?,
-                    password_hash: row.get(2)?,
-                    alias: row.get(3)?,
-                })
-            })
-            .optional()?;
-        Ok(result)
-    }
-
-    pub fn get_user_by_id(&self, user_id: i64) -> Result<Option<(i64, String, Option<String>)>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id, username, alias FROM users WHERE id = ?1")?;
-        let result = stmt
-            .query_row(params![user_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .optional()?;
-        Ok(result)
-    }
-
-    pub fn get_user_id_by_username(&self, username: &str) -> Result<Option<i64>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id FROM users WHERE username = ?1")?;
-        let result = stmt
-            .query_row(params![username], |row| row.get(0))
-            .optional()?;
-        Ok(result)
-    }
-
-    pub fn update_user_alias(&self, user_id: i64, alias: Option<&str>) -> Result<()> {
-        if let Some(alias) = alias {
-            validate_alias(alias)?;
-        }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE users SET alias = ?1 WHERE id = ?2",
-            params![alias, user_id],
-        )?;
-        Ok(())
-    }
-
-    // ── Sessions ───────────────────────────────────────────────────
-
-    pub fn create_session(&self, token: &str, user_id: i64, expires_at: i64) -> Result<()> {
-        let token_hash = hash_token(token);
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)",
-            params![token_hash, user_id, expires_at],
-        )?;
-        Ok(())
-    }
-
-    /// Returns the user_id if the session is valid (not expired).
-    pub fn validate_session(&self, token: &str) -> Result<Option<i64>> {
-        let token_hash = hash_token(token);
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT user_id FROM sessions WHERE token = ?1 AND expires_at > unixepoch()",
-        )?;
-        let result = stmt
-            .query_row(params![token_hash], |row| row.get(0))
-            .optional()?;
-        Ok(result)
-    }
-
-    /// Delete a session by its raw token.
-    pub fn delete_session(&self, token: &str) -> Result<()> {
-        let token_hash = hash_token(token);
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM sessions WHERE token = ?1", params![token_hash])?;
-        Ok(())
-    }
-
-    /// Delete all expired sessions.
-    pub fn cleanup_expired_sessions(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let count = conn.execute("DELETE FROM sessions WHERE expires_at <= unixepoch()", [])?;
-        Ok(count as u64)
-    }
-
-    // ── Key Packages ───────────────────────────────────────────────
-
-    /// Maximum number of regular (non-last-resort) key packages per user.
-    const MAX_KEY_PACKAGES_PER_USER: i64 = 10;
-
-    /// Store a key package for a user.
-    ///
-    /// If `is_last_resort` is true, any existing last-resort package for this
-    /// user is replaced (at most one last-resort package per user).  Regular
-    /// packages accumulate up to [`MAX_KEY_PACKAGES_PER_USER`](Self::MAX_KEY_PACKAGES_PER_USER).
-    pub fn store_key_package(&self, user_id: i64, data: &[u8], is_last_resort: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-
-        if is_last_resort {
-            // At most one last-resort key package per user — replace the old one.
-            conn.execute(
-                "DELETE FROM key_packages WHERE user_id = ?1 AND is_last_resort = 1",
-                params![user_id],
-            )?;
-        } else {
-            // Enforce cap on regular key packages — silently skip if at capacity.
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 0",
-                params![user_id],
-                |row| row.get(0),
-            )?;
-            if count >= Self::MAX_KEY_PACKAGES_PER_USER {
-                return Ok(());
-            }
-        }
-
-        conn.execute(
-            "INSERT INTO key_packages (user_id, key_package_data, is_last_resort) \
-             VALUES (?1, ?2, ?3)",
-            params![user_id, data, is_last_resort as i32],
-        )?;
-        Ok(())
-    }
-
-    /// Consume a key package for the given user.
-    ///
-    /// Prefers regular (non-last-resort) packages and deletes them on consumption.
-    /// Falls back to the last-resort package if no regular ones remain — the
-    /// last-resort package is returned but **not** deleted.
-    pub fn consume_key_package(&self, user_id: i64) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Try a regular key package first (FIFO by created_at).
-        let mut stmt = conn.prepare(
-            "SELECT id, key_package_data FROM key_packages \
-             WHERE user_id = ?1 AND is_last_resort = 0 \
-             ORDER BY created_at ASC LIMIT 1",
-        )?;
-        let regular: Option<(i64, Vec<u8>)> = stmt
-            .query_row(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
-            .optional()?;
-
-        if let Some((id, data)) = regular {
-            conn.execute("DELETE FROM key_packages WHERE id = ?1", params![id])?;
-            return Ok(Some(data));
-        }
-
-        // Fall back to the last-resort package (do NOT delete it).
-        let mut stmt = conn.prepare(
-            "SELECT key_package_data FROM key_packages \
-             WHERE user_id = ?1 AND is_last_resort = 1 LIMIT 1",
-        )?;
-        let last_resort: Option<Vec<u8>> = stmt
-            .query_row(params![user_id], |row| row.get(0))
-            .optional()?;
-
-        Ok(last_resort)
-    }
-
-    /// Count key packages for a user: (regular, last_resort).
-    pub fn count_key_packages(&self, user_id: i64) -> Result<(i64, i64)> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let regular: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 0",
-            params![user_id],
-            |row| row.get(0),
-        )?;
-        let last_resort: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 1",
-            params![user_id],
-            |row| row.get(0),
-        )?;
-        Ok((regular, last_resort))
-    }
-
-    // ── Groups ─────────────────────────────────────────────────────
-
-    pub fn group_exists(&self, group_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT 1 FROM groups WHERE id = ?1")?;
-        let exists: Option<i64> = stmt
-            .query_row(params![group_id], |row| row.get(0))
-            .optional()?;
-        Ok(exists.is_some())
-    }
-
-    pub fn create_group(
-        &self,
-        group_name: &str,
-        alias: Option<&str>,
-        creator_id: i64,
-    ) -> Result<i64> {
-        validate_group_name(group_name)?;
-        if let Some(alias) = alias {
-            validate_alias(alias)?;
-        }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO groups (group_name, alias) VALUES (?1, ?2)",
-            params![group_name, alias],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                Error::Conflict(format!("group_name '{group_name}' already exists"))
-            }
-            other => Error::Database(other),
-        })?;
-        let group_id = conn.last_insert_rowid();
-        // Creator is automatically a member with admin role.
-        conn.execute(
-            "INSERT INTO group_members (group_id, user_id, role) VALUES (?1, ?2, 'admin')",
-            params![group_id, creator_id],
-        )?;
-        Ok(group_id)
-    }
-
-    pub fn add_group_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?1, ?2)",
-            params![group_id, user_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn is_group_member(&self, group_id: i64, user_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare("SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2")?;
-        let exists: Option<i64> = stmt
-            .query_row(params![group_id, user_id], |row| row.get(0))
-            .optional()?;
-        Ok(exists.is_some())
-    }
-
-    pub fn list_user_groups(&self, user_id: i64) -> Result<Vec<UserGroupRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id
-             FROM groups g
-             JOIN group_members gm ON g.id = gm.group_id
-             WHERE gm.user_id = ?1
-             ORDER BY g.created_at DESC",
-        )?;
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                Ok(UserGroupRow {
-                    group_id: row.get(0)?,
-                    group_name: row.get(1)?,
-                    alias: row.get(2)?,
-                    created_at: row.get(3)?,
-                    mls_group_id: row.get(4)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    pub fn set_mls_group_id(&self, group_id: i64, mls_group_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE groups SET mls_group_id = ?2 WHERE id = ?1 AND mls_group_id IS NULL",
-            params![group_id, mls_group_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn remove_group_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user_id],
-        )?;
-        Ok(())
-    }
-
-    /// Returns (user_id, username, alias, role) for each group member.
-    #[allow(clippy::type_complexity)]
-    pub fn get_group_members(
-        &self,
-        group_id: i64,
-    ) -> Result<Vec<(i64, String, Option<String>, String)>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.alias, gm.role
-             FROM users u
-             JOIN group_members gm ON u.id = gm.user_id
-             WHERE gm.group_id = ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![group_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// Get the alias for a group.
-    pub fn get_group_name(&self, group_id: i64) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let result: Option<String> = conn
-            .prepare("SELECT group_name FROM groups WHERE id = ?1")?
-            .query_row(params![group_id], |row| row.get(0))
-            .optional()?;
-        Ok(result)
-    }
-
-    pub fn get_group_alias(&self, group_id: i64) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT alias FROM groups WHERE id = ?1")?;
-        let result: Option<Option<String>> = stmt
-            .query_row(params![group_id], |row| row.get(0))
-            .optional()?;
-        Ok(result.flatten())
-    }
-
-    pub fn update_group_alias(&self, group_id: i64, alias: Option<&str>) -> Result<()> {
-        if let Some(alias) = alias {
-            validate_alias(alias)?;
-        }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE groups SET alias = ?1 WHERE id = ?2",
-            params![alias, group_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn update_group_name(&self, group_id: i64, group_name: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE groups SET group_name = ?1 WHERE id = ?2",
-            params![group_name, group_id],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                Error::Conflict(format!(
-                    "group_name '{}' already exists",
-                    group_name.unwrap_or_default()
-                ))
-            }
-            other => Error::Database(other),
-        })?;
-        Ok(())
-    }
-
-    /// Check whether a user is an admin of a group.
-    pub fn is_group_admin(&self, group_id: i64, user_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2 AND role = 'admin'",
-        )?;
-        let exists: Option<i64> = stmt
-            .query_row(params![group_id, user_id], |row| row.get(0))
-            .optional()?;
-        Ok(exists.is_some())
-    }
-
-    /// Promote a member to admin.
-    pub fn promote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user_id],
-        )?;
-        Ok(())
-    }
-
-    /// Demote an admin to regular member.
-    pub fn demote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE group_members SET role = 'member' WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user_id],
-        )?;
-        Ok(())
-    }
-
-    /// Count the number of admins in a group.
-    pub fn count_group_admins(&self, group_id: i64) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND role = 'admin'",
-            params![group_id],
-            |row| row.get(0),
-        )?;
-        Ok(count)
-    }
-
-    /// List admin members of a group: (user_id, username, alias).
-    pub fn get_group_admins(&self, group_id: i64) -> Result<Vec<(i64, String, Option<String>)>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.alias
-             FROM users u
-             JOIN group_members gm ON u.id = gm.user_id
-             WHERE gm.group_id = ?1 AND gm.role = 'admin'",
-        )?;
-        let rows = stmt
-            .query_map(params![group_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    // ── Messages ───────────────────────────────────────────────────
-
-    pub fn store_message(&self, group_id: i64, sender_id: i64, mls_message: &[u8]) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let next_seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM messages WHERE group_id = ?1",
-            params![group_id],
-            |row| row.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![group_id, sender_id, mls_message, next_seq],
-        )?;
-        Ok(next_seq)
-    }
-
-    pub fn get_messages(
-        &self,
-        group_id: i64,
-        after_seq: i64,
-        limit: i64,
-    ) -> Result<Vec<StoredMessageRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT m.sequence_num, m.sender_id, u.username, u.alias, m.mls_message, m.created_at
-             FROM messages m
-             JOIN users u ON m.sender_id = u.id
-             WHERE m.group_id = ?1 AND m.sequence_num > ?2
-             ORDER BY m.sequence_num ASC
-             LIMIT ?3",
-        )?;
-        let rows = stmt
-            .query_map(params![group_id, after_seq, limit], |row| {
-                Ok(StoredMessageRow {
-                    sequence_num: row.get(0)?,
-                    sender_id: row.get(1)?,
-                    sender_username: row.get(2)?,
-                    sender_alias: row.get(3)?,
-                    mls_message: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    // ── Pending Welcomes ───────────────────────────────────────────
-
-    pub fn store_pending_welcome(
-        &self,
-        group_id: i64,
-        group_alias: Option<&str>,
-        user_id: i64,
-        welcome_data: &[u8],
-    ) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![group_id, group_alias, user_id, welcome_data],
-        )?;
-        Ok(())
-    }
-
-    /// Returns (welcome_id, group_id, group_alias, welcome_data).
-    pub fn get_pending_welcomes(&self, user_id: i64) -> Result<Vec<PendingWelcomeRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT id, group_id, group_alias, welcome_data
-             FROM pending_welcomes
-             WHERE user_id = ?1
-             ORDER BY created_at ASC",
-        )?;
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                Ok(PendingWelcomeRow {
-                    welcome_id: row.get(0)?,
-                    group_id: row.get(1)?,
-                    group_alias: row.get(2)?,
-                    welcome_data: row.get(3)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    pub fn delete_pending_welcome(&self, welcome_id: i64, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM pending_welcomes WHERE id = ?1 AND user_id = ?2",
-            params![welcome_id, user_id],
-        )?;
-        Ok(())
-    }
-
-    // ── Group Info (for External Commits) ──────────────────────────
-
-    pub fn store_group_info(&self, group_id: i64, group_info_data: &[u8]) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO group_infos (group_id, group_info_data, updated_at)
-             VALUES (?1, ?2, unixepoch())
-             ON CONFLICT(group_id) DO UPDATE SET
-                 group_info_data = excluded.group_info_data,
-                 updated_at = excluded.updated_at",
-            params![group_id, group_info_data],
-        )?;
-        Ok(())
-    }
-
-    /// Process a commit upload atomically: add new members, store welcomes,
-    /// store group info, and store the commit message. Returns a list of
-    /// (user_id, username) pairs for newly added members and the stored
-    /// message sequence number (if any), for SSE notification after commit.
-    pub fn process_commit(
-        &self,
-        group_id: i64,
-        group_alias: Option<&str>,
-        sender_id: i64,
-        welcome_messages: &std::collections::HashMap<String, Vec<u8>>,
-        group_info: &[u8],
-        commit_message: &[u8],
-    ) -> Result<CommitResult> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let transaction = conn.savepoint()?;
-
-        let mut new_members = Vec::new();
-
-        for (username, welcome_data) in welcome_messages {
-            let user_id: Option<i64> = transaction
-                .prepare("SELECT id FROM users WHERE username = ?1")?
-                .query_row(params![username], |row| row.get(0))
-                .optional()?;
-            let user_id =
-                user_id.ok_or_else(|| Error::NotFound(format!("user '{username}' not found")))?;
-
-            transaction.execute(
-                "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
-                params![group_id, user_id],
-            )?;
-
-            transaction.execute(
-                "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data, created_at)
-                 VALUES (?1, ?2, ?3, ?4, unixepoch())",
-                params![group_id, group_alias, user_id, welcome_data],
-            )?;
-
-            new_members.push(NewMember {
-                user_id,
-                username: username.clone(),
-            });
-        }
-
-        if !group_info.is_empty() {
-            transaction.execute(
-                "INSERT INTO group_infos (group_id, group_info_data, updated_at)
-                 VALUES (?1, ?2, unixepoch())
-                 ON CONFLICT(group_id) DO UPDATE SET
-                     group_info_data = excluded.group_info_data,
-                     updated_at = excluded.updated_at",
-                params![group_id, group_info],
-            )?;
-        }
-
-        let sequence_number = if !commit_message.is_empty() {
-            let max_seq: Option<i64> = transaction
-                .prepare("SELECT MAX(sequence_num) FROM messages WHERE group_id = ?1")?
-                .query_row(params![group_id], |row| row.get(0))
-                .optional()?
-                .flatten();
-            let next_seq = max_seq.unwrap_or(0) + 1;
-
-            transaction.execute(
-                "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num, created_at)
-                 VALUES (?1, ?2, ?3, ?4, unixepoch())",
-                params![group_id, sender_id, commit_message, next_seq],
-            )?;
-            Some(next_seq)
-        } else {
-            None
-        };
-
-        transaction.commit()?;
-        Ok(CommitResult {
-            new_members,
-            sequence_number,
-        })
-    }
-
-    pub fn get_group_info(&self, group_id: i64) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare("SELECT group_info_data FROM group_infos WHERE group_id = ?1")?;
-        let result = stmt
-            .query_row(params![group_id], |row| row.get(0))
-            .optional()?;
-        Ok(result)
-    }
-
-    // ── Pending Invites (Escrow) ─────────────────────────────────
-
-    pub fn create_pending_invite(
-        &self,
-        group_id: i64,
-        inviter_id: i64,
-        invitee_id: i64,
-        commit_message: &[u8],
-        welcome_data: &[u8],
-        group_info: &[u8],
-    ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO pending_invites (group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                Error::Conflict(
-                    "a pending invite already exists for this user and group".into(),
-                )
-            }
-            other => Error::Database(other),
-        })?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn get_pending_invite(&self, invite_id: i64) -> Result<Option<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
-             FROM pending_invites WHERE id = ?1",
-        )?;
-        let row = stmt
-            .query_row(params![invite_id], |row| {
-                Ok(PendingInviteRow {
-                    invite_id: row.get(0)?,
-                    group_id: row.get(1)?,
-                    inviter_id: row.get(2)?,
-                    invitee_id: row.get(3)?,
-                    commit_message: row.get(4)?,
-                    welcome_data: row.get(5)?,
-                    group_info: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            })
-            .optional()?;
-        Ok(row)
-    }
-
-    pub fn list_pending_invites_for_user(&self, user_id: i64) -> Result<Vec<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
-             FROM pending_invites WHERE invitee_id = ?1
-             ORDER BY created_at ASC",
-        )?;
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                Ok(PendingInviteRow {
-                    invite_id: row.get(0)?,
-                    group_id: row.get(1)?,
-                    inviter_id: row.get(2)?,
-                    invitee_id: row.get(3)?,
-                    commit_message: row.get(4)?,
-                    welcome_data: row.get(5)?,
-                    group_info: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// Atomically accept a pending invite: remove from pending_invites, add to
-    /// group_members, store the welcome in pending_welcomes, and store the commit
-    /// as a group message.
-    pub fn accept_pending_invite(&self, invite_id: i64) -> Result<AcceptedInvite> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let transaction = conn.savepoint()?;
-
-        let invite = transaction
-            .prepare(
-                "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info
-                 FROM pending_invites WHERE id = ?1",
-            )?
-            .query_row(params![invite_id], |row| {
-                Ok((
-                    row.get::<_, i64>(1)?,       // group_id
-                    row.get::<_, i64>(2)?,       // inviter_id
-                    row.get::<_, i64>(3)?,       // invitee_id
-                    row.get::<_, Vec<u8>>(4)?,   // commit_message
-                    row.get::<_, Vec<u8>>(5)?,   // welcome_data
-                    row.get::<_, Vec<u8>>(6)?,   // group_info
-                ))
-            })
-            .optional()?
-            .ok_or_else(|| Error::NotFound("pending invite not found".into()))?;
-
-        let (group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info) = invite;
-
-        let invitee_username: String = transaction
-            .prepare("SELECT username FROM users WHERE id = ?1")?
-            .query_row(params![invitee_id], |row| row.get(0))?;
-
-        let group_alias: Option<String> = transaction
-            .prepare("SELECT alias FROM groups WHERE id = ?1")?
-            .query_row(params![group_id], |row| row.get(0))?;
-
-        // Verify the invitee is not already a member (could happen if they
-        // joined via another path between invite creation and acceptance).
-        let already_member: bool = transaction
-            .prepare(
-                "SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2)",
-            )?
-            .query_row(params![group_id, invitee_id], |row| row.get(0))?;
-        if already_member {
-            return Err(Error::Conflict(
-                "user is already a member of this group".into(),
-            ));
-        }
-
-        // Add the invitee to group members.
-        transaction.execute(
-            "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",
-            params![group_id, invitee_id],
-        )?;
-
-        // Store the welcome for the invitee.
-        transaction.execute(
-            "INSERT INTO pending_welcomes (group_id, group_alias, user_id, welcome_data, created_at)
-             VALUES (?1, ?2, ?3, ?4, unixepoch())",
-            params![group_id, group_alias, invitee_id, welcome_data],
-        )?;
-
-        // Store the commit as a group message.
-        let max_seq: Option<i64> = transaction
-            .prepare("SELECT MAX(sequence_num) FROM messages WHERE group_id = ?1")?
-            .query_row(params![group_id], |row| row.get(0))
-            .optional()?
-            .flatten();
-        let next_seq = max_seq.unwrap_or(0) + 1;
-
-        transaction.execute(
-            "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num, created_at)
-             VALUES (?1, ?2, ?3, ?4, unixepoch())",
-            params![group_id, inviter_id, commit_message, next_seq],
-        )?;
-
-        // Update group info.
-        if !group_info.is_empty() {
-            transaction.execute(
-                "INSERT INTO group_infos (group_id, group_info_data, updated_at)
-                 VALUES (?1, ?2, unixepoch())
-                 ON CONFLICT(group_id) DO UPDATE SET
-                     group_info_data = excluded.group_info_data,
-                     updated_at = excluded.updated_at",
-                params![group_id, group_info],
-            )?;
-        }
-
-        // Delete the pending invite.
-        transaction.execute(
-            "DELETE FROM pending_invites WHERE id = ?1",
-            params![invite_id],
-        )?;
-
-        transaction.commit()?;
-
-        Ok(AcceptedInvite {
-            group_id,
-            inviter_id,
-            invitee_id,
-            invitee_username,
-            group_alias,
-            sequence_number: next_seq,
-        })
-    }
-
-    pub fn delete_pending_invite(&self, invite_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM pending_invites WHERE id = ?1",
-            params![invite_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn cleanup_expired_invites(&self, max_age_secs: i64) -> Result<u64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let deleted = conn.execute(
-            "DELETE FROM pending_invites WHERE created_at < (unixepoch() - ?1)",
-            params![max_age_secs],
-        )?;
-        Ok(deleted as u64)
-    }
-
-    // ── Account Reset ──────────────────────────────────────────────
-
-    pub fn delete_key_packages(&self, user_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM key_packages WHERE user_id = ?1",
-            params![user_id],
-        )?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::{OptionalExtension, params};
+
     use super::*;
+    use crate::validation::validate_alias;
 
     #[test]
     fn test_user_crud() {
@@ -1448,8 +559,8 @@ mod tests {
 
         let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].0, alice);
-        assert_eq!(members[0].1, "alice");
+        assert_eq!(members[0].user_id, alice);
+        assert_eq!(members[0].username, "alice");
     }
 
     #[test]
@@ -1998,7 +1109,7 @@ mod tests {
 
         let members = db.get_group_members(group_id).unwrap();
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].3, "admin");
+        assert_eq!(members[0].role, "admin");
     }
 
     #[test]
@@ -2015,8 +1126,8 @@ mod tests {
         assert!(!db.is_group_admin(group_id, bob).unwrap());
 
         let members = db.get_group_members(group_id).unwrap();
-        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
-        assert_eq!(bob_member.3, "member");
+        let bob_member = members.iter().find(|m| m.user_id == bob).unwrap();
+        assert_eq!(bob_member.role, "member");
     }
 
     #[test]
@@ -2035,8 +1146,8 @@ mod tests {
         assert!(db.is_group_admin(group_id, bob).unwrap());
 
         let members = db.get_group_members(group_id).unwrap();
-        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
-        assert_eq!(bob_member.3, "admin");
+        let bob_member = members.iter().find(|m| m.user_id == bob).unwrap();
+        assert_eq!(bob_member.role, "admin");
     }
 
     #[test]
@@ -2056,8 +1167,8 @@ mod tests {
         assert!(!db.is_group_admin(group_id, bob).unwrap());
 
         let members = db.get_group_members(group_id).unwrap();
-        let bob_member = members.iter().find(|m| m.0 == bob).unwrap();
-        assert_eq!(bob_member.3, "member");
+        let bob_member = members.iter().find(|m| m.user_id == bob).unwrap();
+        assert_eq!(bob_member.role, "member");
     }
 
     #[test]

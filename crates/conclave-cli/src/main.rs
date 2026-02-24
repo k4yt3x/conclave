@@ -6,12 +6,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 
 use conclave_lib::api::ApiClient;
-use conclave_lib::config::{
-    ClientConfig, SessionState, generate_initial_key_packages, load_group_mapping,
-    save_group_mapping,
-};
+use conclave_lib::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
 use conclave_lib::error::Error;
-use conclave_lib::mls::MlsManager;
 use conclave_lib::operations;
 
 #[derive(Parser)]
@@ -178,11 +174,12 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
             auth_api.set_token(login_resp.token.clone());
 
-            std::fs::create_dir_all(&config.data_dir)?;
-            let mls = MlsManager::new(&config.data_dir, resp.user_id)?;
-            let entries = generate_initial_key_packages(&mls)?;
-            let count = entries.len();
-            auth_api.upload_key_packages(entries).await?;
+            let count = operations::initialize_mls_and_upload_key_packages(
+                &auth_api,
+                &config.data_dir,
+                resp.user_id,
+            )
+            .await?;
 
             session.server_url = Some(server);
             session.token = Some(login_resp.token);
@@ -217,12 +214,12 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             session.username = Some(resp.username.clone());
             session.save(&config.data_dir)?;
 
-            std::fs::create_dir_all(&config.data_dir)?;
-            let mls = MlsManager::new(&config.data_dir, resp.user_id)?;
-
-            let entries = generate_initial_key_packages(&mls)?;
-            let count = entries.len();
-            login_api.upload_key_packages(entries).await?;
+            let count = operations::initialize_mls_and_upload_key_packages(
+                &login_api,
+                &config.data_dir,
+                resp.user_id,
+            )
+            .await?;
 
             println!("Logged in as {} (user ID {})", resp.username, resp.user_id);
             println!(
@@ -248,8 +245,14 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
         Commands::Invite { group, members } => {
             let api = api_from_session(&session, config)?;
             let user_id = require_user_id(&session)?;
-            let member_names: Vec<String> =
-                members.split(',').map(|s| s.trim().to_string()).collect();
+            let member_names: Vec<String> = members
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if member_names.is_empty() {
+                return Err(Error::Other("no valid member names provided".into()));
+            }
 
             let mls_group_id = resolve_mls_group_id(&config.data_dir, group)?;
 
