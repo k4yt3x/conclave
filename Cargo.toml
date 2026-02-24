@@ -1,31 +1,31 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/conclave-proto",
-    "crates/conclave-server",
-    "crates/conclave-lib",
     "crates/conclave-cli",
     "crates/conclave-gui",
+    "crates/conclave-lib",
+    "crates/conclave-proto",
+    "crates/conclave-server",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-
-[profile.release]
-strip = "symbols"
 #lto = "fat"
 #codegen-units = 1
 
 [workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
 conclave-proto = { path = "crates/conclave-proto" }
+hex = "0.4"
 prost = "0.14"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
-toml = "1.0"
-serde = { version = "1", features = ["derive"] }
-hex = "0.4"
-thiserror = "2"
+
+[profile.release]
+strip = "symbols"

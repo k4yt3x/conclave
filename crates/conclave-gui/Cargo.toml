@@ -9,21 +9,21 @@ name = "conclave-gui"
 path = "src/main.rs"
 
 [dependencies]
+async-stream = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 conclave-lib = { path = "../conclave-lib" }
 conclave-proto = { workspace = true }
-prost = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+futures-util = "0.3"
 hex = { workspace = true }
-toml = { workspace = true }
-serde = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "advanced", "image"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+prost = { workspace = true }
 reqwest = { version = "0.12", features = ["http2"] }
 reqwest-eventsource = "0.6"
-async-stream = "0.3"
-futures-util = "0.3"
+serde = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 winres = "0.1"
