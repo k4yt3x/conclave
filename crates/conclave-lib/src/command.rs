@@ -1,5 +1,295 @@
 use crate::error::{Error, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCategory {
+    Account,
+    Rooms,
+    Members,
+    Invites,
+    Messaging,
+    General,
+}
+
+impl CommandCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            CommandCategory::Account => "ACCOUNT",
+            CommandCategory::Rooms => "ROOMS",
+            CommandCategory::Members => "MEMBERS",
+            CommandCategory::Invites => "INVITES",
+            CommandCategory::Messaging => "MESSAGING",
+            CommandCategory::General => "GENERAL",
+        }
+    }
+
+    const ALL: &[CommandCategory] = &[
+        CommandCategory::Account,
+        CommandCategory::Rooms,
+        CommandCategory::Members,
+        CommandCategory::Invites,
+        CommandCategory::Messaging,
+        CommandCategory::General,
+    ];
+}
+
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub category: CommandCategory,
+    pub usage: &'static str,
+    pub description: &'static str,
+}
+
+pub struct HelpCategory {
+    pub label: &'static str,
+    pub commands: Vec<&'static CommandSpec>,
+}
+
+pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "register",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/register <server> <user> <pass>",
+        description: "Register a new account",
+    },
+    CommandSpec {
+        name: "login",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/login <server> <user> <pass>",
+        description: "Login to the server",
+    },
+    CommandSpec {
+        name: "logout",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/logout",
+        description: "Logout and revoke session",
+    },
+    CommandSpec {
+        name: "reset",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/reset",
+        description: "Reset account and rejoin groups",
+    },
+    CommandSpec {
+        name: "nick",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/nick <alias>",
+        description: "Set your display name",
+    },
+    CommandSpec {
+        name: "whois",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/whois",
+        description: "Show current user info",
+    },
+    CommandSpec {
+        name: "create",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/create <name>",
+        description: "Create a new room",
+    },
+    CommandSpec {
+        name: "list",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/list",
+        description: "List your rooms",
+    },
+    CommandSpec {
+        name: "join",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/join [room]",
+        description: "Accept pending invitations or switch to a room",
+    },
+    CommandSpec {
+        name: "close",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/close",
+        description: "Switch away without leaving",
+    },
+    CommandSpec {
+        name: "part",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/part",
+        description: "Leave the room (MLS removal)",
+    },
+    CommandSpec {
+        name: "info",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/info",
+        description: "Show MLS group details",
+    },
+    CommandSpec {
+        name: "topic",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/topic <text>",
+        description: "Set active room's display name",
+    },
+    CommandSpec {
+        name: "unread",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/unread",
+        description: "Check rooms for new messages",
+    },
+    CommandSpec {
+        name: "who",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/who",
+        description: "List members of active room",
+    },
+    CommandSpec {
+        name: "invite",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/invite <user1,user2>",
+        description: "Invite to the active room",
+    },
+    CommandSpec {
+        name: "kick",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/kick <username>",
+        description: "Remove a member from the room",
+    },
+    CommandSpec {
+        name: "promote",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/promote <username>",
+        description: "Promote a member to admin",
+    },
+    CommandSpec {
+        name: "demote",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/demote <username>",
+        description: "Demote an admin to member",
+    },
+    CommandSpec {
+        name: "admins",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/admins",
+        description: "List admins of active room",
+    },
+    CommandSpec {
+        name: "invites",
+        aliases: &[],
+        category: CommandCategory::Invites,
+        usage: "/invites",
+        description: "List pending invitations",
+    },
+    CommandSpec {
+        name: "accept",
+        aliases: &[],
+        category: CommandCategory::Invites,
+        usage: "/accept [id]",
+        description: "Accept a pending invite (or all)",
+    },
+    CommandSpec {
+        name: "decline",
+        aliases: &[],
+        category: CommandCategory::Invites,
+        usage: "/decline <id>",
+        description: "Decline a pending invite",
+    },
+    CommandSpec {
+        name: "msg",
+        aliases: &[],
+        category: CommandCategory::Messaging,
+        usage: "/msg <room> <text>",
+        description: "Send to a room without switching",
+    },
+    CommandSpec {
+        name: "rotate",
+        aliases: &[],
+        category: CommandCategory::Messaging,
+        usage: "/rotate",
+        description: "Rotate keys (forward secrecy)",
+    },
+    CommandSpec {
+        name: "help",
+        aliases: &["h"],
+        category: CommandCategory::General,
+        usage: "/help",
+        description: "Show this help",
+    },
+    CommandSpec {
+        name: "quit",
+        aliases: &["exit", "q"],
+        category: CommandCategory::General,
+        usage: "/quit",
+        description: "Exit",
+    },
+];
+
+pub fn help_categories() -> Vec<HelpCategory> {
+    CommandCategory::ALL
+        .iter()
+        .map(|category| {
+            let commands = COMMANDS
+                .iter()
+                .filter(|spec| spec.category == *category)
+                .collect();
+            HelpCategory {
+                label: category.label(),
+                commands,
+            }
+        })
+        .filter(|help_category| !help_category.commands.is_empty())
+        .collect()
+}
+
+pub fn format_help_lines() -> Vec<String> {
+    let categories = help_categories();
+
+    let max_usage_width = COMMANDS
+        .iter()
+        .map(|spec| spec.usage.len())
+        .max()
+        .unwrap_or(0);
+
+    let mut lines = Vec::new();
+    for (index, category) in categories.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.push(format!("{}:", category.label));
+        for spec in &category.commands {
+            lines.push(format!(
+                "  {:<width$}  {}",
+                spec.usage,
+                spec.description,
+                width = max_usage_width,
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Type text without / to send a message to the active room.".to_string());
+    lines
+}
+
+fn lookup_command(name: &str) -> Option<&'static CommandSpec> {
+    COMMANDS
+        .iter()
+        .find(|spec| spec.name == name || spec.aliases.contains(&name))
+}
+
 /// Parsed command from user input.
 pub enum Command {
     Register {
@@ -85,12 +375,21 @@ pub fn parse(input: &str) -> Result<Command> {
     }
 
     let parts: Vec<&str> = input.splitn(3, ' ').collect();
-    let cmd = parts[0];
+    let cmd_name = parts[0].strip_prefix('/').unwrap_or(parts[0]);
 
-    match cmd {
-        "/register" => {
-            // /register needs 4 parts: cmd server username password
-            let parts: Vec<&str> = input.splitn(4, ' ').collect();
+    let Some(spec) = lookup_command(cmd_name) else {
+        return Err(Error::Other(format!(
+            "Unknown command: /{cmd_name}. Type /help for available commands."
+        )));
+    };
+
+    parse_command_args(spec.name, &parts, input)
+}
+
+fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Command> {
+    match name {
+        "register" => {
+            let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
             if parts.len() < 4 {
                 return Err(Error::Other(
                     "Usage: /register <server> <username> <password>".into(),
@@ -102,9 +401,8 @@ pub fn parse(input: &str) -> Result<Command> {
                 password: parts[3].to_string(),
             })
         }
-        "/login" => {
-            // /login needs 4 parts: cmd server username password
-            let parts: Vec<&str> = input.splitn(4, ' ').collect();
+        "login" => {
+            let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
             if parts.len() < 4 {
                 return Err(Error::Other(
                     "Usage: /login <server> <username> <password>".into(),
@@ -116,7 +414,7 @@ pub fn parse(input: &str) -> Result<Command> {
                 password: parts[3].to_string(),
             })
         }
-        "/create" => {
+        "create" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /create <name>".into()));
             }
@@ -124,18 +422,18 @@ pub fn parse(input: &str) -> Result<Command> {
                 name: parts[1].to_string(),
             })
         }
-        "/join" => {
+        "join" => {
             let target = parts.get(1).map(|s| s.to_string());
             Ok(Command::Join { target })
         }
-        "/invite" => {
+        "invite" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /invite <member1,member2,...>".into()));
             }
             let members = parts[1].split(',').map(|s| s.trim().to_string()).collect();
             Ok(Command::Invite { members })
         }
-        "/kick" => {
+        "kick" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /kick <username>".into()));
             }
@@ -143,7 +441,7 @@ pub fn parse(input: &str) -> Result<Command> {
                 username: parts[1].to_string(),
             })
         }
-        "/promote" => {
+        "promote" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /promote <username>".into()));
             }
@@ -151,7 +449,7 @@ pub fn parse(input: &str) -> Result<Command> {
                 username: parts[1].to_string(),
             })
         }
-        "/demote" => {
+        "demote" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /demote <username>".into()));
             }
@@ -159,9 +457,9 @@ pub fn parse(input: &str) -> Result<Command> {
                 username: parts[1].to_string(),
             })
         }
-        "/admins" => Ok(Command::Admins),
-        "/invites" => Ok(Command::Invites),
-        "/accept" => {
+        "admins" => Ok(Command::Admins),
+        "invites" => Ok(Command::Invites),
+        "accept" => {
             let invite_id = parts.get(1).map(|s| {
                 s.parse::<i64>()
                     .map_err(|_| Error::Other("Usage: /accept [invite_id]".into()))
@@ -174,7 +472,7 @@ pub fn parse(input: &str) -> Result<Command> {
                 None => Ok(Command::Accept { invite_id: None }),
             }
         }
-        "/decline" => {
+        "decline" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /decline <invite_id>".into()));
             }
@@ -183,14 +481,14 @@ pub fn parse(input: &str) -> Result<Command> {
                 .map_err(|_| Error::Other("Usage: /decline <invite_id>".into()))?;
             Ok(Command::Decline { invite_id })
         }
-        "/part" => Ok(Command::Part),
-        "/close" => Ok(Command::Close),
-        "/rotate" => Ok(Command::Rotate),
-        "/reset" => Ok(Command::Reset),
-        "/info" => Ok(Command::Info),
-        "/list" => Ok(Command::List),
-        "/who" => Ok(Command::Who),
-        "/msg" => {
+        "part" => Ok(Command::Part),
+        "close" => Ok(Command::Close),
+        "rotate" => Ok(Command::Rotate),
+        "reset" => Ok(Command::Reset),
+        "info" => Ok(Command::Info),
+        "list" => Ok(Command::List),
+        "who" => Ok(Command::Who),
+        "msg" => {
             if parts.len() < 3 {
                 return Err(Error::Other("Usage: /msg <room> <message>".into()));
             }
@@ -199,27 +497,29 @@ pub fn parse(input: &str) -> Result<Command> {
                 text: parts[2].to_string(),
             })
         }
-        "/nick" => {
+        "nick" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /nick <alias>".into()));
             }
-            let alias = input["/nick ".len()..].to_string();
+            let prefix = format!("/{name} ");
+            let alias = full_input[prefix.len()..].to_string();
             Ok(Command::Nick { alias })
         }
-        "/topic" => {
+        "topic" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /topic <text>".into()));
             }
-            let topic = input["/topic ".len()..].to_string();
+            let prefix = format!("/{name} ");
+            let topic = full_input[prefix.len()..].to_string();
             Ok(Command::Topic { topic })
         }
-        "/unread" => Ok(Command::Unread),
-        "/logout" => Ok(Command::Logout),
-        "/whois" => Ok(Command::Whois),
-        "/help" | "/h" => Ok(Command::Help),
-        "/quit" | "/exit" | "/q" => Ok(Command::Quit),
+        "unread" => Ok(Command::Unread),
+        "logout" => Ok(Command::Logout),
+        "whois" => Ok(Command::Whois),
+        "help" => Ok(Command::Help),
+        "quit" => Ok(Command::Quit),
         _ => Err(Error::Other(format!(
-            "Unknown command: {cmd}. Type /help for available commands."
+            "Unknown command: /{name}. Type /help for available commands."
         ))),
     }
 }
@@ -591,5 +891,78 @@ mod tests {
     #[test]
     fn test_parse_decline_invalid_id() {
         assert!(parse("/decline xyz").is_err());
+    }
+
+    #[test]
+    fn test_registry_names_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for spec in COMMANDS {
+            assert!(
+                seen.insert(spec.name),
+                "duplicate command name: {}",
+                spec.name
+            );
+            for alias in spec.aliases {
+                assert!(seen.insert(alias), "duplicate alias: {alias}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_registry_commands_parseable() {
+        for spec in COMMANDS {
+            let input = format!("/{}", spec.name);
+            if let Err(ref error) = parse(&input) {
+                let message = error.to_string();
+                assert!(
+                    !message.contains("Unknown command"),
+                    "command /{} not recognized by parser",
+                    spec.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_registry_aliases_parseable() {
+        for spec in COMMANDS {
+            for alias in spec.aliases {
+                let input = format!("/{alias}");
+                if let Err(ref error) = parse(&input) {
+                    let message = error.to_string();
+                    assert!(
+                        !message.contains("Unknown command"),
+                        "alias /{alias} for /{} not recognized by parser",
+                        spec.name,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_categories_non_empty() {
+        let categories = help_categories();
+        assert!(!categories.is_empty());
+        for category in &categories {
+            assert!(
+                !category.commands.is_empty(),
+                "empty category: {}",
+                category.label,
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_help_contains_all_commands() {
+        let lines = format_help_lines();
+        let text = lines.join("\n");
+        for spec in COMMANDS {
+            assert!(
+                text.contains(spec.usage),
+                "help output missing usage for /{}",
+                spec.name,
+            );
+        }
     }
 }

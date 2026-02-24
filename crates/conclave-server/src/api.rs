@@ -563,7 +563,9 @@ async fn upload_commit(
     // Perform all DB operations atomically in a single transaction.
     state.db.process_commit(
         group_id,
+        None,
         auth.user_id,
+        &std::collections::HashMap::new(),
         &request.group_info,
         &request.commit_message,
     )?;

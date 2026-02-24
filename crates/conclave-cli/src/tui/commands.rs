@@ -28,6 +28,45 @@ pub async fn execute(
     config: &ClientConfig,
     msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
+    match cmd {
+        Command::Register { .. } | Command::Login { .. } | Command::Logout => {
+            execute_auth(cmd, api, state, mls, config).await
+        }
+        Command::Create { .. }
+        | Command::List
+        | Command::Join { .. }
+        | Command::Close
+        | Command::Part
+        | Command::Unread
+        | Command::Info => execute_room(cmd, api, state, mls, config, msg_store).await,
+        Command::Invite { .. }
+        | Command::Kick { .. }
+        | Command::Promote { .. }
+        | Command::Demote { .. }
+        | Command::Admins
+        | Command::Who => execute_member(cmd, api, state, config).await,
+        Command::Invites | Command::Accept { .. } | Command::Decline { .. } => {
+            execute_invite(cmd, api, state, config).await
+        }
+        Command::Msg { .. } | Command::Message { .. } | Command::Rotate => {
+            execute_messaging(cmd, api, state, config, msg_store).await
+        }
+        Command::Nick { .. }
+        | Command::Topic { .. }
+        | Command::Whois
+        | Command::Help
+        | Command::Quit
+        | Command::Reset => execute_profile(cmd, api, state, mls, config).await,
+    }
+}
+
+async fn execute_auth(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
     let mut start_sse = false;
 
@@ -107,7 +146,6 @@ pub async fn execute(
             state.user_id = Some(resp.user_id);
             state.logged_in = true;
 
-            // Save session.
             let session = SessionState {
                 server_url: Some(server),
                 token: Some(resp.token),
@@ -116,11 +154,9 @@ pub async fn execute(
             };
             session.save(&config.data_dir)?;
 
-            // Initialize MLS identity.
             std::fs::create_dir_all(&config.data_dir)?;
             *mls = Some(MlsManager::new(&config.data_dir, resp.user_id)?);
 
-            // Auto-generate and upload key packages (1 last-resort + 5 regular).
             if let Some(mls_mgr) = &*mls {
                 match generate_initial_key_packages(mls_mgr) {
                     Ok(entries) => {
@@ -143,11 +179,9 @@ pub async fn execute(
                 }
             }
 
-            // Load rooms from server and build group mapping.
             let room_infos = load_rooms(api, state).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
-            // Detect groups with no local MLS state (stale after data loss).
             let unmapped_count = state
                 .rooms
                 .keys()
@@ -167,6 +201,52 @@ pub async fn execute(
             start_sse = true;
         }
 
+        Command::Logout => {
+            if !state.logged_in {
+                msgs.push(DisplayMessage::system("Not logged in."));
+                return Ok((msgs, start_sse));
+            }
+
+            if let Err(error) = api.lock().await.logout().await {
+                tracing::warn!(%error, "server-side session revocation failed");
+            }
+
+            api.lock().await.set_token(String::new());
+            state.logged_in = false;
+            state.username = None;
+            state.user_id = None;
+            state.active_room = None;
+            state.rooms.clear();
+            state.group_mapping.clear();
+            *mls = None;
+
+            let session_path = config.data_dir.join("session.toml");
+            if let Err(error) = std::fs::remove_file(&session_path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, "failed to remove session file");
+            }
+
+            msgs.push(DisplayMessage::system("Logged out. Session revoked."));
+        }
+
+        _ => {}
+    }
+
+    Ok((msgs, start_sse))
+}
+
+async fn execute_room(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
+) -> Result<(Vec<DisplayMessage>, bool)> {
+    let mut msgs = Vec::new();
+
+    match cmd {
         Command::Create { name } => {
             let user_id = require_user_id(state)?;
 
@@ -178,12 +258,10 @@ pub async fn execute(
             state
                 .group_mapping
                 .insert(result.server_group_id, result.mls_group_id);
-
             load_rooms(api, state).await?;
 
             state.active_room = Some(result.server_group_id);
             state.scroll_offset = 0;
-
             msgs.push(DisplayMessage::system(&format!(
                 "Created and joined #{name} ({})",
                 result.server_group_id
@@ -200,7 +278,7 @@ pub async fn execute(
 
             if results.is_empty() {
                 msgs.push(DisplayMessage::system("No pending invitations."));
-                return Ok((msgs, start_sse));
+                return Ok((msgs, false));
             }
 
             let mut last_group_id = None;
@@ -227,9 +305,8 @@ pub async fn execute(
                 state.scroll_offset = 0;
             }
 
-            // Advance last_seen_seq for newly joined groups so that
-            // fetch_missed_messages skips the initial commit (seq 1)
-            // which was already processed as part of the welcome.
+            // Skip the initial commit (seq 1) that was already processed
+            // as part of the welcome message.
             for group_id in &joined_group_ids {
                 if let Some(room) = state.rooms.get_mut(group_id)
                     && room.last_seen_seq == 0
@@ -254,9 +331,10 @@ pub async fn execute(
                     .get(&gid)
                     .map(|r| r.display_name())
                     .unwrap_or_default();
+
                 state.active_room = Some(gid);
                 state.scroll_offset = 0;
-                // Mark all messages in this room as read.
+
                 if let Some(room) = state.rooms.get_mut(&gid) {
                     room.last_read_seq = room.last_seen_seq;
                     if let Some(store) = msg_store {
@@ -271,13 +349,207 @@ pub async fn execute(
             }
         }
 
-        Command::Invite { members } => {
+        Command::Close => {
+            if let Some(room_id) = state.active_room.take() {
+                let name = state
+                    .rooms
+                    .get(&room_id)
+                    .map(|r| r.display_name())
+                    .unwrap_or_default();
+
+                state.scroll_offset = 0;
+                msgs.push(DisplayMessage::system(&format!(
+                    "Switched away from #{name} (use /part to leave the group)"
+                )));
+            } else {
+                msgs.push(DisplayMessage::system("No active room."));
+            }
+        }
+
+        Command::Part => {
             let user_id = require_user_id(state)?;
 
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
 
+            let name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.display_name())
+                .unwrap_or_default();
+
+            let mls_group_id = state.group_mapping.get(&group_id).cloned();
+
+            {
+                let api_guard = api.lock().await;
+                operations::leave_group(
+                    &api_guard,
+                    group_id,
+                    mls_group_id.as_deref(),
+                    &config.data_dir,
+                    user_id,
+                )
+                .await?;
+            }
+
+            state.group_mapping.remove(&group_id);
+            state.rooms.remove(&group_id);
+            state.active_room = None;
+            state.scroll_offset = 0;
+
+            msgs.push(DisplayMessage::system(&format!("Left #{name}")));
+        }
+
+        Command::Unread => {
+            if !state.logged_in {
+                msgs.push(DisplayMessage::system("Not logged in."));
+                return Ok((msgs, false));
+            }
+            if state.rooms.is_empty() {
+                msgs.push(DisplayMessage::system("No rooms."));
+                return Ok((msgs, false));
+            }
+
+            let mut any_unread = false;
+
+            for room in state.rooms.values() {
+                let local_unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
+
+                let server_unread = match api
+                    .lock()
+                    .await
+                    .get_messages(room.server_group_id, room.last_seen_seq as i64)
+                    .await
+                {
+                    Ok(resp) => resp.messages.len() as u64,
+                    Err(_) => 0,
+                };
+
+                let total = local_unread + server_unread;
+                if total > 0 {
+                    any_unread = true;
+                    msgs.push(DisplayMessage::system(&format!(
+                        "  #{}: {total} new message{}",
+                        room.display_name(),
+                        if total == 1 { "" } else { "s" },
+                    )));
+                }
+            }
+
+            if !any_unread {
+                msgs.push(DisplayMessage::system("No unread messages."));
+            }
+        }
+
+        Command::Info => {
+            let mls_mgr = mls
+                .as_ref()
+                .ok_or_else(|| Error::Other("not logged in".into()))?;
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let mls_group_id = state
+                .group_mapping
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                .clone();
+
+            let details = mls_mgr.group_info_details(&mls_group_id)?;
+            let room_name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.display_name())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            msgs.push(DisplayMessage::system(&format!("Group: #{room_name}")));
+            msgs.push(DisplayMessage::system(&format!("  Server ID: {group_id}")));
+            msgs.push(DisplayMessage::system(&format!(
+                "  MLS Group ID: {mls_group_id}"
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Epoch: {}",
+                details.epoch
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Cipher Suite: {}",
+                details.cipher_suite
+            )));
+            msgs.push(DisplayMessage::system(&format!(
+                "  Members: {} (your index: {})",
+                details.member_count, details.own_index
+            )));
+
+            let room_members = state
+                .rooms
+                .get(&group_id)
+                .map(|r| &r.members[..])
+                .unwrap_or(&[]);
+            for (index, user_id) in &details.members {
+                let marker = if *index == details.own_index {
+                    " (you)"
+                } else {
+                    ""
+                };
+                let name = match user_id {
+                    Some(uid) => room_members
+                        .iter()
+                        .find(|m| m.user_id == *uid)
+                        .map(|m| m.display_name().to_string())
+                        .unwrap_or_else(|| format!("user#{uid}")),
+                    None => "<unknown>".to_string(),
+                };
+                msgs.push(DisplayMessage::system(&format!(
+                    "    [{index}] {name}{marker}"
+                )));
+            }
+        }
+
+        Command::List => {
+            load_rooms(api, state).await?;
+
+            if state.rooms.is_empty() {
+                msgs.push(DisplayMessage::system("No rooms."));
+            } else {
+                msgs.push(DisplayMessage::system("Rooms:"));
+                for room in state.rooms.values() {
+                    let active = if state.active_room == Some(room.server_group_id) {
+                        " (active)"
+                    } else {
+                        ""
+                    };
+                    let member_display: Vec<&str> =
+                        room.members.iter().map(|m| m.display_name()).collect();
+                    msgs.push(DisplayMessage::system(&format!(
+                        "  #{} [{}] -- {}{active}",
+                        room.display_name(),
+                        member_display.join(", "),
+                        room.server_group_id,
+                    )));
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    Ok((msgs, false))
+}
+
+async fn execute_member(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    config: &ClientConfig,
+) -> Result<(Vec<DisplayMessage>, bool)> {
+    let mut msgs = Vec::new();
+
+    match cmd {
+        Command::Invite { members } => {
+            let user_id = require_user_id(state)?;
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
             let mls_group_id = state
                 .group_mapping
                 .get(&group_id)
@@ -311,17 +583,14 @@ pub async fn execute(
 
         Command::Kick { username: target } => {
             let user_id = require_user_id(state)?;
-
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
             let mls_group_id = state
                 .group_mapping
                 .get(&group_id)
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
-
             let target_user_id = state
                 .rooms
                 .get(&group_id)
@@ -362,9 +631,7 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
 
             api.lock().await.promote_member(group_id, &target).await?;
-
             load_rooms(api, state).await?;
-
             msgs.push(DisplayMessage::system(&format!(
                 "Promoted {target} to admin"
             )));
@@ -376,9 +643,7 @@ pub async fn execute(
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
 
             api.lock().await.demote_member(group_id, &target).await?;
-
             load_rooms(api, state).await?;
-
             msgs.push(DisplayMessage::system(&format!(
                 "Demoted {target} to regular member"
             )));
@@ -388,7 +653,6 @@ pub async fn execute(
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
             let response = api.lock().await.list_admins(group_id).await?;
             let admin_names: Vec<String> = response
                 .admins
@@ -401,18 +665,56 @@ pub async fn execute(
                     }
                 })
                 .collect();
-
             let room_name = state
                 .rooms
                 .get(&group_id)
                 .map(|r| r.display_name())
                 .unwrap_or_default();
+
             msgs.push(DisplayMessage::system(&format!(
                 "Admins of #{room_name}: {}",
                 admin_names.join(", ")
             )));
         }
 
+        Command::Who => {
+            if let Some(room) = state.active_room_info() {
+                let name = room.display_name();
+                let member_display: Vec<String> = room
+                    .members
+                    .iter()
+                    .map(|m| {
+                        if m.role == "admin" {
+                            format!("{} (admin)", m.display_name())
+                        } else {
+                            m.display_name().to_string()
+                        }
+                    })
+                    .collect();
+                msgs.push(DisplayMessage::system(&format!(
+                    "Members of #{name}: {}",
+                    member_display.join(", ")
+                )));
+            } else {
+                msgs.push(DisplayMessage::system("No active room."));
+            }
+        }
+
+        _ => {}
+    }
+
+    Ok((msgs, false))
+}
+
+async fn execute_invite(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    config: &ClientConfig,
+) -> Result<(Vec<DisplayMessage>, bool)> {
+    let mut msgs = Vec::new();
+
+    match cmd {
         Command::Invites => {
             let invites = {
                 let api_guard = api.lock().await;
@@ -441,7 +743,6 @@ pub async fn execute(
 
         Command::Accept { invite_id } => {
             let user_id = require_user_id(state)?;
-
             let invites = if let Some(id) = invite_id {
                 vec![id]
             } else {
@@ -454,7 +755,7 @@ pub async fn execute(
 
             if invites.is_empty() {
                 msgs.push(DisplayMessage::system("No pending invitations to accept."));
-                return Ok((msgs, start_sse));
+                return Ok((msgs, false));
             }
 
             for id in &invites {
@@ -478,7 +779,6 @@ pub async fn execute(
 
             load_rooms(api, state).await?;
 
-            // Advance last_seen_seq for newly joined groups.
             for group_id in state.group_mapping.keys() {
                 if let Some(room) = state.rooms.get_mut(group_id)
                     && room.last_seen_seq == 0
@@ -500,233 +800,28 @@ pub async fn execute(
             msgs.push(DisplayMessage::system("Invitation declined."));
         }
 
-        Command::Part => {
-            let user_id = require_user_id(state)?;
+        _ => {}
+    }
 
-            let group_id = state
-                .active_room
-                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+    Ok((msgs, false))
+}
 
-            let name = state
-                .rooms
-                .get(&group_id)
-                .map(|r| r.display_name())
-                .unwrap_or_default();
+async fn execute_messaging(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
+) -> Result<(Vec<DisplayMessage>, bool)> {
+    let mut msgs = Vec::new();
 
-            let mls_group_id = state.group_mapping.get(&group_id).cloned();
-
-            {
-                let api_guard = api.lock().await;
-                operations::leave_group(
-                    &api_guard,
-                    group_id,
-                    mls_group_id.as_deref(),
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?;
-            }
-
-            state.group_mapping.remove(&group_id);
-            state.rooms.remove(&group_id);
-            state.active_room = None;
-            state.scroll_offset = 0;
-
-            msgs.push(DisplayMessage::system(&format!("Left #{name}")));
-        }
-
-        Command::Close => {
-            if let Some(room_id) = state.active_room.take() {
-                let name = state
-                    .rooms
-                    .get(&room_id)
-                    .map(|r| r.display_name())
-                    .unwrap_or_default();
-                state.scroll_offset = 0;
-                msgs.push(DisplayMessage::system(&format!(
-                    "Switched away from #{name} (use /part to leave the group)"
-                )));
-            } else {
-                msgs.push(DisplayMessage::system("No active room."));
-            }
-        }
-
-        Command::Rotate => {
-            let user_id = require_user_id(state)?;
-
-            let group_id = state
-                .active_room
-                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
-            let mls_group_id = state
-                .group_mapping
-                .get(&group_id)
-                .ok_or_else(|| Error::Other("group mapping not found".into()))?
-                .clone();
-
-            {
-                let api_guard = api.lock().await;
-                operations::rotate_keys(
-                    &api_guard,
-                    group_id,
-                    &mls_group_id,
-                    &config.data_dir,
-                    user_id,
-                )
-                .await?;
-            }
-
-            msgs.push(DisplayMessage::system(
-                "Keys rotated. Forward secrecy updated.",
-            ));
-        }
-
-        Command::Reset => {
-            let user_id = require_user_id(state)?;
-
-            let result = {
-                let api_guard = api.lock().await;
-                operations::reset_account(&api_guard, &config.data_dir, user_id).await?
-            };
-
-            // Refresh the local MLS manager since reset_account wiped and
-            // regenerated state internally.
-            *mls = Some(MlsManager::new(&config.data_dir, user_id)?);
-
-            state.group_mapping = result.new_group_mapping;
-
-            for error in &result.errors {
-                msgs.push(DisplayMessage::system(error));
-            }
-
-            msgs.push(DisplayMessage::system(&format!(
-                "Account reset complete. Rejoined {}/{} groups.",
-                result.rejoin_count, result.total_groups
-            )));
-        }
-
-        Command::Info => {
-            let mls_mgr = mls
-                .as_ref()
-                .ok_or_else(|| Error::Other("not logged in".into()))?;
-
-            let group_id = state
-                .active_room
-                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
-            let mls_group_id = state
-                .group_mapping
-                .get(&group_id)
-                .ok_or_else(|| Error::Other("group mapping not found".into()))?
-                .clone();
-
-            let details = mls_mgr.group_info_details(&mls_group_id)?;
-
-            let room_name = state
-                .rooms
-                .get(&group_id)
-                .map(|r| r.display_name())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            msgs.push(DisplayMessage::system(&format!("Group: #{room_name}")));
-            msgs.push(DisplayMessage::system(&format!("  Server ID: {group_id}")));
-            msgs.push(DisplayMessage::system(&format!(
-                "  MLS Group ID: {mls_group_id}"
-            )));
-            msgs.push(DisplayMessage::system(&format!(
-                "  Epoch: {}",
-                details.epoch
-            )));
-            msgs.push(DisplayMessage::system(&format!(
-                "  Cipher Suite: {}",
-                details.cipher_suite
-            )));
-            msgs.push(DisplayMessage::system(&format!(
-                "  Members: {} (your index: {})",
-                details.member_count, details.own_index
-            )));
-            let room_members = state
-                .rooms
-                .get(&group_id)
-                .map(|r| &r.members[..])
-                .unwrap_or(&[]);
-            for (index, user_id) in &details.members {
-                let marker = if *index == details.own_index {
-                    " (you)"
-                } else {
-                    ""
-                };
-                let name = match user_id {
-                    Some(uid) => room_members
-                        .iter()
-                        .find(|m| m.user_id == *uid)
-                        .map(|m| m.display_name().to_string())
-                        .unwrap_or_else(|| format!("user#{uid}")),
-                    None => "<unknown>".to_string(),
-                };
-                msgs.push(DisplayMessage::system(&format!(
-                    "    [{index}] {name}{marker}"
-                )));
-            }
-        }
-
-        Command::List => {
-            // Refresh from server.
-            load_rooms(api, state).await?;
-
-            if state.rooms.is_empty() {
-                msgs.push(DisplayMessage::system("No rooms."));
-            } else {
-                msgs.push(DisplayMessage::system("Rooms:"));
-                for room in state.rooms.values() {
-                    let active = if state.active_room == Some(room.server_group_id) {
-                        " (active)"
-                    } else {
-                        ""
-                    };
-                    let member_display: Vec<&str> =
-                        room.members.iter().map(|m| m.display_name()).collect();
-                    msgs.push(DisplayMessage::system(&format!(
-                        "  #{} [{}] -- {}{active}",
-                        room.display_name(),
-                        member_display.join(", "),
-                        room.server_group_id,
-                    )));
-                }
-            }
-        }
-
-        Command::Who => {
-            if let Some(room) = state.active_room_info() {
-                let name = room.display_name();
-                let member_display: Vec<String> = room
-                    .members
-                    .iter()
-                    .map(|m| {
-                        if m.role == "admin" {
-                            format!("{} (admin)", m.display_name())
-                        } else {
-                            m.display_name().to_string()
-                        }
-                    })
-                    .collect();
-                msgs.push(DisplayMessage::system(&format!(
-                    "Members of #{name}: {}",
-                    member_display.join(", ")
-                )));
-            } else {
-                msgs.push(DisplayMessage::system("No active room."));
-            }
-        }
-
+    match cmd {
         Command::Msg { room, text } => {
             let user_id = require_user_id(state)?;
-
             let group_id = state
                 .resolve_room(&room)
                 .map(|r| r.server_group_id)
                 .ok_or_else(|| Error::Other(format!("Unknown room '{room}'")))?;
-
             let mls_group_id = state
                 .group_mapping
                 .get(&group_id)
@@ -766,199 +861,11 @@ pub async fn execute(
             msgs.push(DisplayMessage::system(&format!("Message sent to #{room}")));
         }
 
-        Command::Unread => {
-            if !state.logged_in {
-                msgs.push(DisplayMessage::system("Not logged in."));
-                return Ok((msgs, start_sse));
-            }
-
-            if state.rooms.is_empty() {
-                msgs.push(DisplayMessage::system("No rooms."));
-                return Ok((msgs, start_sse));
-            }
-
-            let mut any_unread = false;
-
-            for room in state.rooms.values() {
-                // Messages between last_read_seq and last_seen_seq have been
-                // fetched/decrypted but not yet viewed by the user.
-                let local_unread = room.last_seen_seq.saturating_sub(room.last_read_seq);
-
-                // Also check the server for messages we haven't fetched yet.
-                let server_unread = match api
-                    .lock()
-                    .await
-                    .get_messages(room.server_group_id, room.last_seen_seq as i64)
-                    .await
-                {
-                    Ok(resp) => resp.messages.len() as u64,
-                    Err(_) => 0,
-                };
-
-                let total = local_unread + server_unread;
-                if total > 0 {
-                    any_unread = true;
-                    msgs.push(DisplayMessage::system(&format!(
-                        "  #{}: {total} new message{}",
-                        room.display_name(),
-                        if total == 1 { "" } else { "s" },
-                    )));
-                }
-            }
-
-            if !any_unread {
-                msgs.push(DisplayMessage::system("No unread messages."));
-            }
-        }
-
-        Command::Logout => {
-            if !state.logged_in {
-                msgs.push(DisplayMessage::system("Not logged in."));
-                return Ok((msgs, start_sse));
-            }
-
-            // Revoke session on server.
-            if let Err(error) = api.lock().await.logout().await {
-                tracing::warn!(%error, "server-side session revocation failed");
-            }
-
-            // Clear local session state.
-            api.lock().await.set_token(String::new());
-            state.logged_in = false;
-            state.username = None;
-            state.user_id = None;
-            state.active_room = None;
-            state.rooms.clear();
-            state.group_mapping.clear();
-            *mls = None;
-
-            // Delete saved session file.
-            let session_path = config.data_dir.join("session.toml");
-            if let Err(error) = std::fs::remove_file(&session_path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!(%error, "failed to remove session file");
-            }
-
-            msgs.push(DisplayMessage::system("Logged out. Session revoked."));
-        }
-
-        Command::Nick { alias } => {
-            api.lock().await.update_profile(&alias).await?;
-            msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
-
-            // Reload rooms so updated alias appears in member lists.
-            let rooms = {
-                let api_guard = api.lock().await;
-                operations::load_rooms(&api_guard).await?
-            };
-            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
-            for room_info in &rooms {
-                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
-                    room.members = room_info
-                        .members
-                        .iter()
-                        .map(|m| m.to_room_member())
-                        .collect();
-                }
-            }
-        }
-
-        Command::Topic { topic } => {
-            let group_id = state
-                .active_room
-                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
-            api.lock()
-                .await
-                .update_group(group_id, Some(&topic))
-                .await?;
-            msgs.push(DisplayMessage::system(&format!(
-                "Room alias set to: {topic}"
-            )));
-
-            // Reload rooms so updated alias appears in room list.
-            let rooms = {
-                let api_guard = api.lock().await;
-                operations::load_rooms(&api_guard).await?
-            };
-            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
-            for room_info in rooms {
-                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
-                    room.alias = room_info.alias;
-                    room.group_name = room_info.group_name;
-                }
-            }
-        }
-
-        Command::Whois => {
-            let resp = api.lock().await.me().await?;
-            msgs.push(DisplayMessage::system(&format!(
-                "User: {} (ID: {})",
-                resp.username, resp.user_id
-            )));
-        }
-
-        Command::Help => {
-            let help = [
-                "ACCOUNT:",
-                "  /register <server> <user> <pass>  Register a new account",
-                "  /login <server> <user> <pass>     Login to the server",
-                "  /logout                           Logout and revoke session",
-                "  /reset                            Reset account and rejoin groups",
-                "  /nick <alias>                     Set your display name",
-                "  /whois                            Show current user info",
-                "",
-                "ROOMS:",
-                "  /create <name>                    Create a new room",
-                "  /list                             List your rooms",
-                "  /join                             Accept pending invitations",
-                "  /join <room>                      Switch to a room",
-                "  /close                            Switch away without leaving",
-                "  /part                             Leave the room (MLS removal)",
-                "  /info                             Show MLS group details",
-                "  /topic <text>                     Set active room's display name",
-                "  /unread                           Check rooms for new messages",
-                "",
-                "MEMBERS:",
-                "  /who                              List members of active room",
-                "  /invite <user1,user2>             Invite to the active room",
-                "  /kick <username>                  Remove a member from the room",
-                "  /promote <username>               Promote a member to admin",
-                "  /demote <username>                Demote an admin to member",
-                "  /admins                           List admins of active room",
-                "",
-                "INVITES:",
-                "  /invites                          List pending invitations",
-                "  /accept [id]                      Accept a pending invite (or all)",
-                "  /decline <id>                     Decline a pending invite",
-                "",
-                "MESSAGING:",
-                "  /msg <room> <text>                Send to a room without switching",
-                "  /rotate                           Rotate keys (forward secrecy)",
-                "",
-                "GENERAL:",
-                "  /help                             Show this help",
-                "  /quit                             Exit",
-                "",
-                "Type text without / to send a message to the active room.",
-            ];
-            for line in help {
-                msgs.push(DisplayMessage::system(line));
-            }
-        }
-
-        Command::Quit => {
-            // Handled by caller.
-        }
-
         Command::Message { text } => {
             let user_id = require_user_id(state)?;
-
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
-
             let mls_group_id = state
                 .group_mapping
                 .get(&group_id)
@@ -995,9 +902,141 @@ pub async fn execute(
                 }
             }
         }
+
+        Command::Rotate => {
+            let user_id = require_user_id(state)?;
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let mls_group_id = state
+                .group_mapping
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                .clone();
+
+            {
+                let api_guard = api.lock().await;
+                operations::rotate_keys(
+                    &api_guard,
+                    group_id,
+                    &mls_group_id,
+                    &config.data_dir,
+                    user_id,
+                )
+                .await?;
+            }
+
+            msgs.push(DisplayMessage::system(
+                "Keys rotated. Forward secrecy updated.",
+            ));
+        }
+
+        _ => {}
     }
 
-    Ok((msgs, start_sse))
+    Ok((msgs, false))
+}
+
+async fn execute_profile(
+    cmd: Command,
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+) -> Result<(Vec<DisplayMessage>, bool)> {
+    let mut msgs = Vec::new();
+
+    match cmd {
+        Command::Nick { alias } => {
+            api.lock().await.update_profile(&alias).await?;
+            msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
+
+            let rooms = {
+                let api_guard = api.lock().await;
+                operations::load_rooms(&api_guard).await?
+            };
+            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
+            for room_info in &rooms {
+                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
+                    room.members = room_info
+                        .members
+                        .iter()
+                        .map(|m| m.to_room_member())
+                        .collect();
+                }
+            }
+        }
+
+        Command::Topic { topic } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            api.lock()
+                .await
+                .update_group(group_id, Some(&topic))
+                .await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "Room alias set to: {topic}"
+            )));
+
+            let rooms = {
+                let api_guard = api.lock().await;
+                operations::load_rooms(&api_guard).await?
+            };
+            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
+            for room_info in rooms {
+                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
+                    room.alias = room_info.alias;
+                    room.group_name = room_info.group_name;
+                }
+            }
+        }
+
+        Command::Whois => {
+            let resp = api.lock().await.me().await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "User: {} (ID: {})",
+                resp.username, resp.user_id
+            )));
+        }
+
+        Command::Help => {
+            for line in conclave_lib::command::format_help_lines() {
+                msgs.push(DisplayMessage::system(&line));
+            }
+        }
+
+        Command::Quit => {
+            // Handled by caller.
+        }
+
+        Command::Reset => {
+            let user_id = require_user_id(state)?;
+
+            let result = {
+                let api_guard = api.lock().await;
+                operations::reset_account(&api_guard, &config.data_dir, user_id).await?
+            };
+
+            // Re-initialize because reset_account wiped and regenerated MLS state.
+            *mls = Some(MlsManager::new(&config.data_dir, user_id)?);
+            state.group_mapping = result.new_group_mapping;
+
+            for error in &result.errors {
+                msgs.push(DisplayMessage::system(error));
+            }
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Account reset complete. Rejoined {}/{} groups.",
+                result.rejoin_count, result.total_groups
+            )));
+        }
+
+        _ => {}
+    }
+
+    Ok((msgs, false))
 }
 
 fn require_user_id(state: &AppState) -> Result<i64> {
@@ -1006,9 +1045,6 @@ fn require_user_id(state: &AppState) -> Result<i64> {
         .ok_or_else(|| Error::Other("not logged in".into()))
 }
 
-/// Load rooms from the server and update state, preserving existing sequence tracking.
-/// Prunes rooms that the server no longer returns (e.g., user was removed while offline).
-/// Returns the raw `RoomInfo` list for use in building the group mapping.
 pub async fn load_rooms(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
@@ -1023,6 +1059,7 @@ pub async fn load_rooms(
     for room_info in &rooms {
         server_group_ids.insert(room_info.group_id);
 
+        // Preserve existing sequence counters so we don't re-fetch old messages.
         let (existing_seq, existing_read) = state
             .rooms
             .get(&room_info.group_id)
@@ -1046,7 +1083,6 @@ pub async fn load_rooms(
         );
     }
 
-    // Prune rooms that the server no longer returns.
     let stale_ids: Vec<i64> = state
         .rooms
         .keys()

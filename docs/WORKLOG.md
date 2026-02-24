@@ -1,5 +1,40 @@
 # Conclave Work Log
 
+## 2026-02-23: Codebase Decluttering — Split Large Files
+
+Split the two largest files in the codebase for better navigability without changing any behavior.
+
+### Part 1: Split `app.rs` (GUI)
+
+Split the 2,278-line `app.rs` (55% of the GUI crate) into `app.rs` + 4 sub-modules using the `app.rs` + `app/` directory pattern (same as `theme.rs`/`theme/` and `screen.rs`/`screen/`). Each sub-module has its own `impl Conclave` block. Struct fields changed to `pub(crate)` for cross-module access.
+
+- `app.rs` (~530 lines) — types, core loop (`new`, `update`, `view`, `subscription`), helpers
+- `app/login.rs` (~260 lines) — `handle_login_message`, `handle_login_result`, `handle_register_result`, `handle_keygen_done`, `perform_logout`
+- `app/commands.rs` (~310 lines) — `handle_dashboard_message`, `handle_input_text`
+- `app/sse.rs` (~160 lines) — `handle_sse_event`
+- `app/rooms.rs` (~640 lines) — room state handlers, message sending, group operations, welcomes
+
+### Part 2: Extract Command Groups in `commands.rs` (TUI)
+
+Extracted the 936-line `execute()` match into 6 category-specific async helper functions in the same file. The main `execute()` is now a thin dispatcher (~30 lines).
+
+- `execute_auth()` — Register, Login, Logout
+- `execute_room()` — Create, List, Join, Close, Part, Unread, Info
+- `execute_member()` — Invite, Kick, Promote, Demote, Admins, Who
+- `execute_invite()` — Invites, Accept, Decline
+- `execute_messaging()` — Msg, Message, Rotate
+- `execute_profile()` — Nick, Topic, Whois, Help, Quit, Reset
+
+### Files Modified/Created
+
+- Modified: `crates/conclave-gui/src/app.rs`
+- Created: `crates/conclave-gui/src/app/login.rs`
+- Created: `crates/conclave-gui/src/app/commands.rs`
+- Created: `crates/conclave-gui/src/app/sse.rs`
+- Created: `crates/conclave-gui/src/app/rooms.rs`
+- Modified: `crates/conclave-cli/src/tui/commands.rs`
+- Modified: `docs/WORKLOG.md`
+
 ## 2026-02-23: Simplify Group Creation to Creator-Only
 
 Removed multi-member group creation. `/create <name>` now creates a group with only the creator as a member. All members must be added via `/invite`, which goes through the two-phase escrow system requiring acceptance. This eliminates the consent bypass where initial members were added without their approval.
