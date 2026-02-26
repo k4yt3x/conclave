@@ -1,8 +1,8 @@
 use iced::Task;
 
-use conclave_lib::command::Command;
-use conclave_lib::operations;
-use conclave_lib::state::DisplayMessage;
+use conclave_client::command::Command;
+use conclave_client::operations;
+use conclave_client::state::DisplayMessage;
 
 use crate::screen;
 
@@ -137,7 +137,7 @@ impl Conclave {
     }
 
     fn handle_input_text(&mut self, text: String) -> Task<Message> {
-        match conclave_lib::command::parse(&text) {
+        match conclave_client::command::parse(&text) {
             Ok(Command::Quit) => iced::exit(),
             Ok(Command::Message { text }) => self.send_message(text),
             Ok(Command::Help) => {

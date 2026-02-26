@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/conclave-cli",
     "crates/conclave-gui",
-    "crates/conclave-lib",
+    "crates/conclave-client",
     "crates/conclave-proto",
     "crates/conclave-server",
 ]

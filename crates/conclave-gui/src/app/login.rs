@@ -1,11 +1,11 @@
 use iced::Task;
 use iced::widget::operation::focus;
 
-use conclave_lib::api::{ApiClient, normalize_server_url};
-use conclave_lib::config::{SessionState, generate_initial_key_packages};
-use conclave_lib::mls::MlsManager;
-use conclave_lib::state::{ConnectionStatus, DisplayMessage};
-use conclave_lib::store::MessageStore;
+use conclave_client::api::{ApiClient, normalize_server_url};
+use conclave_client::config::{SessionState, generate_initial_key_packages};
+use conclave_client::mls::MlsManager;
+use conclave_client::state::{ConnectionStatus, DisplayMessage};
+use conclave_client::store::MessageStore;
 
 use crate::screen;
 
@@ -105,7 +105,7 @@ impl Conclave {
                                     ApiClient::new(&server_url, accept_invalid_certs);
                                 auth_api.set_token(token.clone());
 
-                                conclave_lib::operations::initialize_mls_and_upload_key_packages(
+                                conclave_client::operations::initialize_mls_and_upload_key_packages(
                                     &auth_api, &data_dir, user_id,
                                 )
                                 .await

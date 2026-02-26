@@ -916,7 +916,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "conclave-lib",
+ "conclave-client",
  "conclave-proto",
  "crossterm",
  "futures-util",
@@ -933,29 +933,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "conclave-gui"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "chrono",
- "conclave-lib",
- "conclave-proto",
- "futures-util",
- "hex",
- "iced",
- "prost",
- "reqwest",
- "reqwest-eventsource",
- "serde",
- "tokio",
- "toml 1.0.1+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "winres",
-]
-
-[[package]]
-name = "conclave-lib"
+name = "conclave-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -981,6 +959,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "conclave-gui"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "chrono",
+ "conclave-client",
+ "conclave-proto",
+ "futures-util",
+ "hex",
+ "iced",
+ "prost",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "tokio",
+ "toml 1.0.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "winres",
+]
+
+[[package]]
 name = "conclave-proto"
 version = "0.1.0"
 dependencies = [
@@ -997,7 +997,7 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
- "conclave-lib",
+ "conclave-client",
  "conclave-proto",
  "hex",
  "http-body-util",

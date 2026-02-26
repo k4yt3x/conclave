@@ -6,13 +6,13 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 
-use conclave_lib::state::{RoomMember, resolve_sender_name};
+use conclave_client::state::{RoomMember, resolve_sender_name};
 
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage};
 
 fn sanitize_for_terminal(input: &str) -> String {
-    conclave_lib::sanitize_control_chars(input)
+    conclave_client::sanitize_control_chars(input)
 }
 
 /// Full redraw of the terminal.

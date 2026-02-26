@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use conclave_lib::api::ApiClient;
-use conclave_lib::error::Result;
-use conclave_lib::operations::{self, SseEvent};
+use conclave_client::api::ApiClient;
+use conclave_client::error::Result;
+use conclave_client::operations::{self, SseEvent};
 
 use super::commands;
 use super::state::{AppState, DisplayMessage};
@@ -129,7 +129,7 @@ async fn handle_new_message(
         None => return Ok(vec![]),
     };
 
-    let members: Vec<conclave_lib::state::RoomMember> = state
+    let members: Vec<conclave_client::state::RoomMember> = state
         .rooms
         .get(&group_id)
         .map(|r| r.members.clone())
@@ -270,7 +270,7 @@ async fn handle_member_removed(
         let user_id = state.user_id;
 
         if let (Some(mls_group_id), Some(user_id)) = (state.group_mapping.get(&group_id), user_id) {
-            let members: Vec<conclave_lib::state::RoomMember> = state
+            let members: Vec<conclave_client::state::RoomMember> = state
                 .rooms
                 .get(&group_id)
                 .map(|r| r.members.clone())

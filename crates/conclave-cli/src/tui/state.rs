@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
+pub use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
 
 pub struct AppState {
     // Identity
@@ -104,7 +104,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conclave_lib::state::RoomMember;
+    use conclave_client::state::RoomMember;
 
     fn make_room(id: i64, name: &str) -> Room {
         Room {

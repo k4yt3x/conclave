@@ -1,1 +1,1 @@
-pub use conclave_lib::store::MessageStore;
+pub use conclave_client::store::MessageStore;

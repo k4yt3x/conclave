@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Lib(#[from] conclave_lib::error::Error),
+    Lib(#[from] conclave_client::error::Error),
 
     #[error("terminal error: {0}")]
     Terminal(String),

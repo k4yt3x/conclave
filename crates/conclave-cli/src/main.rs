@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use conclave_lib::api::ApiClient;
-use conclave_lib::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
-use conclave_lib::error::Error;
-use conclave_lib::operations;
+use conclave_client::api::ApiClient;
+use conclave_client::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
+use conclave_client::error::Error;
+use conclave_client::operations;
 
 #[derive(Parser)]
 #[command(name = "conclave-cli", about = "Conclave E2EE messaging client")]
@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
 fn api_from_session(
     session: &SessionState,
     config: &ClientConfig,
-) -> conclave_lib::error::Result<ApiClient> {
+) -> conclave_client::error::Result<ApiClient> {
     let server_url = session
         .server_url
         .as_ref()
@@ -139,13 +139,13 @@ fn api_from_session(
     Ok(api)
 }
 
-fn require_user_id(session: &SessionState) -> conclave_lib::error::Result<i64> {
+fn require_user_id(session: &SessionState) -> conclave_client::error::Result<i64> {
     session
         .user_id
         .ok_or_else(|| Error::Other("not logged in -- run login first".into()))
 }
 
-fn resolve_mls_group_id(data_dir: &Path, group_id: i64) -> conclave_lib::error::Result<String> {
+fn resolve_mls_group_id(data_dir: &Path, group_id: i64) -> conclave_client::error::Result<String> {
     let mapping = load_group_mapping(data_dir);
     mapping
         .get(&group_id)
@@ -153,7 +153,7 @@ fn resolve_mls_group_id(data_dir: &Path, group_id: i64) -> conclave_lib::error::
         .ok_or_else(|| Error::Other(format!("unknown group '{group_id}' -- run join first")))
 }
 
-async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::error::Result<()> {
+async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::error::Result<()> {
     let mut session = SessionState::load(&config.data_dir);
 
     match cmd {
@@ -347,7 +347,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_lib::erro
             let mls_group_id = resolve_mls_group_id(&config.data_dir, group)?;
 
             let rooms = operations::load_rooms(&api).await?;
-            let members: Vec<conclave_lib::state::RoomMember> = rooms
+            let members: Vec<conclave_client::state::RoomMember> = rooms
                 .iter()
                 .find(|r| r.group_id == group)
                 .map(|r| r.members.iter().map(|m| m.to_room_member()).collect())

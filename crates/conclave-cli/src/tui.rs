@@ -18,13 +18,13 @@ use futures_util::StreamExt;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 use tokio::sync::Mutex;
 
-use conclave_lib::api::ApiClient;
-use conclave_lib::config::{
+use conclave_client::api::ApiClient;
+use conclave_client::config::{
     ClientConfig, NotificationMethod, SessionState, build_group_mapping,
     generate_initial_key_packages,
 };
-use conclave_lib::mls::MlsManager;
-use conclave_lib::operations;
+use conclave_client::mls::MlsManager;
+use conclave_client::operations;
 
 use self::commands::Command;
 use self::input::InputLine;
@@ -617,7 +617,7 @@ fn add_and_render_message(
             NotificationMethod::Bell | NotificationMethod::Both
         );
         if use_native {
-            conclave_lib::notification::send_notification(
+            conclave_client::notification::send_notification(
                 &format!("#{room_name} - {}", msg.sender),
                 &msg.content,
             );
@@ -685,7 +685,7 @@ async fn fetch_missed_messages(
     data_dir: &std::path::Path,
     store: &MessageStore,
 ) {
-    let room_ids: Vec<(i64, u64, String, Vec<conclave_lib::state::RoomMember>)> = state
+    let room_ids: Vec<(i64, u64, String, Vec<conclave_client::state::RoomMember>)> = state
         .rooms
         .iter()
         .filter_map(|(id, room)| {

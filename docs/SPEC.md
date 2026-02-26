@@ -26,7 +26,7 @@ Conclave is a minimalistic, self-hosted, end-to-end encrypted group messaging sy
 
 ## 2. Architecture
 
-Conclave uses a client-server architecture with MLS running on top of HTTP/2. Shared client logic (API client, MLS manager, config, message store, command parsing) lives in the `conclave-lib` library crate, consumed by both the CLI/TUI (`conclave-cli`) and GUI (`conclave-gui`) client binaries.
+Conclave uses a client-server architecture with MLS running on top of HTTP/2. Shared client logic (API client, MLS manager, config, message store, command parsing) lives in the `conclave-client` library crate, consumed by both the CLI/TUI (`conclave-cli`) and GUI (`conclave-gui`) client binaries.
 
 ### 2.1 Workspace Layout
 
@@ -54,10 +54,10 @@ conclave/
 │   │   │   └── error.rs               # Error enum with IntoResponse impl
 │   │   └── tests/
 │   │       └── api_tests.rs           # Integration tests (tower::oneshot)
-│   ├── conclave-lib/                   # Shared library (used by CLI and GUI)
+│   ├── conclave-client/                # Client library (used by CLI and GUI)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── lib.rs                  # Re-exports all modules
+│   │       ├── conclave_client.rs      # Re-exports all modules
 │   │       ├── api.rs                  # ApiClient (reqwest HTTP wrapper, TLS config)
 │   │       ├── mls.rs                  # MlsManager (mls-rs operations with SQLite storage)
 │   │       ├── config.rs              # ClientConfig, SessionState, group mapping I/O, key package generation
@@ -473,7 +473,7 @@ GENERAL:
 
 ### 4.5 GUI Client
 
-The GUI client (`conclave-gui`) is built with [iced](https://iced.rs/) 0.14 and provides a graphical alternative to the TUI. It shares all core logic (API client, MLS manager, config, message store, command parsing) via `conclave-lib`.
+The GUI client (`conclave-gui`) is built with [iced](https://iced.rs/) 0.14 and provides a graphical alternative to the TUI. It shares all core logic (API client, MLS manager, config, message store, command parsing) via `conclave-client`.
 
 **Architecture**: Elm-style (model → update → view) with iced's `application()` entry point, custom `Theme` implementing `iced::theme::Base`, and SSE subscriptions via `iced::Subscription::run_with()`.
 

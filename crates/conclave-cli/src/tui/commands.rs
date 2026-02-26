@@ -2,19 +2,19 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use conclave_lib::api::ApiClient;
-pub use conclave_lib::command::Command;
-use conclave_lib::config::{ClientConfig, SessionState, build_group_mapping};
-use conclave_lib::mls::MlsManager;
-use conclave_lib::operations;
+use conclave_client::api::ApiClient;
+pub use conclave_client::command::Command;
+use conclave_client::config::{ClientConfig, SessionState, build_group_mapping};
+use conclave_client::mls::MlsManager;
+use conclave_client::operations;
 
-pub use conclave_lib::command::parse;
+pub use conclave_client::command::parse;
 
 use super::state::{AppState, DisplayMessage, Room};
 use super::store::MessageStore;
 
-type Result<T> = conclave_lib::error::Result<T>;
-type Error = conclave_lib::error::Error;
+type Result<T> = conclave_client::error::Result<T>;
+type Error = conclave_client::error::Error;
 
 /// Execute a command, updating state and returning messages to display.
 /// Returns (messages_for_current_view, should_start_sse).
@@ -918,7 +918,7 @@ async fn execute_profile(
         }
 
         Command::Help => {
-            for line in conclave_lib::command::format_help_lines() {
+            for line in conclave_client::command::format_help_lines() {
                 msgs.push(DisplayMessage::system(&line));
             }
         }

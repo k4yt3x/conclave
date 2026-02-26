@@ -7,12 +7,12 @@ use iced::widget::operation::focus_next;
 use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
 
-use conclave_lib::api::{ApiClient, normalize_server_url};
-use conclave_lib::config::{ClientConfig, SessionState, generate_initial_key_packages};
-use conclave_lib::mls::MlsManager;
-use conclave_lib::operations;
-use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
-use conclave_lib::store::MessageStore;
+use conclave_client::api::{ApiClient, normalize_server_url};
+use conclave_client::config::{ClientConfig, SessionState, generate_initial_key_packages};
+use conclave_client::mls::MlsManager;
+use conclave_client::operations;
+use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
+use conclave_client::store::MessageStore;
 
 use crate::screen;
 use crate::subscription::{self, SseUpdate};
@@ -544,7 +544,7 @@ impl Conclave {
     }
 
     pub(crate) fn show_help(&mut self) {
-        for line in conclave_lib::command::format_help_lines() {
+        for line in conclave_client::command::format_help_lines() {
             self.push_system_message(&line);
         }
     }

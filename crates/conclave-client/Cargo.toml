@@ -1,8 +1,11 @@
 [package]
-name = "conclave-lib"
+name = "conclave-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+path = "src/conclave_client.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

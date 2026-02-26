@@ -132,25 +132,25 @@ fn sse_stream(
 }
 
 fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
-    let event = conclave_lib::operations::decode_sse_event(hex_data).ok()?;
+    let event = conclave_client::operations::decode_sse_event(hex_data).ok()?;
 
     match event {
-        conclave_lib::operations::SseEvent::NewMessage { group_id } => {
+        conclave_client::operations::SseEvent::NewMessage { group_id } => {
             Some(SseUpdate::NewMessage { group_id })
         }
-        conclave_lib::operations::SseEvent::Welcome { .. } => Some(SseUpdate::Welcome),
-        conclave_lib::operations::SseEvent::GroupUpdate { .. } => Some(SseUpdate::GroupUpdate),
-        conclave_lib::operations::SseEvent::MemberRemoved {
+        conclave_client::operations::SseEvent::Welcome { .. } => Some(SseUpdate::Welcome),
+        conclave_client::operations::SseEvent::GroupUpdate { .. } => Some(SseUpdate::GroupUpdate),
+        conclave_client::operations::SseEvent::MemberRemoved {
             group_id,
             removed_username,
         } => Some(SseUpdate::MemberRemoved {
             group_id,
             username: removed_username,
         }),
-        conclave_lib::operations::SseEvent::IdentityReset { group_id, username } => {
+        conclave_client::operations::SseEvent::IdentityReset { group_id, username } => {
             Some(SseUpdate::IdentityReset { group_id, username })
         }
-        conclave_lib::operations::SseEvent::InviteReceived {
+        conclave_client::operations::SseEvent::InviteReceived {
             invite_id,
             group_id,
             group_name,
@@ -163,7 +163,7 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
             group_alias,
             inviter_username,
         }),
-        conclave_lib::operations::SseEvent::InviteDeclined {
+        conclave_client::operations::SseEvent::InviteDeclined {
             group_id,
             declined_username,
         } => Some(SseUpdate::InviteDeclined {

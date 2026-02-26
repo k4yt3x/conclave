@@ -1,7 +1,7 @@
 use iced::Task;
 
-use conclave_lib::operations;
-use conclave_lib::state::{ConnectionStatus, DisplayMessage};
+use conclave_client::operations;
+use conclave_client::state::{ConnectionStatus, DisplayMessage};
 
 use crate::subscription::SseUpdate;
 

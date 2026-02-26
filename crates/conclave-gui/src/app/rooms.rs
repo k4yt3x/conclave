@@ -2,10 +2,10 @@ use std::collections::HashSet;
 
 use iced::Task;
 
-use conclave_lib::config::build_group_mapping;
-use conclave_lib::mls::MlsManager;
-use conclave_lib::operations;
-use conclave_lib::state::{DisplayMessage, Room};
+use conclave_client::config::build_group_mapping;
+use conclave_client::mls::MlsManager;
+use conclave_client::operations;
+use conclave_client::state::{DisplayMessage, Room};
 
 use super::{Conclave, Message};
 
@@ -207,7 +207,7 @@ impl Conclave {
                             .get(&fetched.group_id)
                             .map(|r| r.display_name())
                             .unwrap_or_else(|| "unknown".to_string());
-                        conclave_lib::notification::send_notification(
+                        conclave_client::notification::send_notification(
                             &format!("#{room_name} - {}", msg.sender),
                             &msg.content,
                         );

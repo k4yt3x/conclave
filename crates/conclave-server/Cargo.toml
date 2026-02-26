@@ -29,7 +29,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-conclave-lib = { path = "../conclave-lib" }
+conclave-client = { path = "../conclave-client" }
 http-body-util = "0.1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

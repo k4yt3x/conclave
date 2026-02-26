@@ -102,17 +102,17 @@ Extracted `send_to_group()` helper in `commands.rs`, eliminating ~40 lines of du
 - `crates/conclave-server/src/api/invites.rs`
 - `crates/conclave-server/src/api/welcomes.rs`
 - `crates/conclave-server/src/api/external.rs`
-- `crates/conclave-lib/src/operations/messaging.rs`
-- `crates/conclave-lib/src/operations/groups.rs`
-- `crates/conclave-lib/src/operations/account.rs`
+- `crates/conclave-client/src/operations/messaging.rs`
+- `crates/conclave-client/src/operations/groups.rs`
+- `crates/conclave-client/src/operations/account.rs`
 
 ### Files Modified
 
 - `crates/conclave-server/src/lib.rs` — added `pub mod validation`
 - `crates/conclave-server/src/db.rs` — module root with schema/init only
 - `crates/conclave-server/src/api.rs` — module root with router + helpers only
-- `crates/conclave-lib/src/operations.rs` — module root with types + SSE decoding
-- `crates/conclave-lib/src/mls.rs` — extracted `build_commit_with_welcomes()`
+- `crates/conclave-client/src/operations.rs` — module root with types + SSE decoding
+- `crates/conclave-client/src/mls.rs` — extracted `build_commit_with_welcomes()`
 - `crates/conclave-cli/src/main.rs` — use consolidated key package init
 - `crates/conclave-cli/src/tui.rs` — refactored handle_key_event, extracted handle_enter
 - `crates/conclave-cli/src/tui/commands.rs` — extracted send_to_group, use consolidated key package init
@@ -179,9 +179,9 @@ Removed multi-member group creation. `/create <name>` now creates a group with o
 - `crates/conclave-server/src/main.rs`
 - `crates/conclave-server/tests/api_tests.rs`
 - `crates/conclave-server/tests/protocol_flow_tests.rs`
-- `crates/conclave-lib/src/api.rs`
-- `crates/conclave-lib/src/operations.rs`
-- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-client/src/api.rs`
+- `crates/conclave-client/src/operations.rs`
+- `crates/conclave-client/src/command.rs`
 - `crates/conclave-cli/src/tui/commands.rs`
 - `crates/conclave-cli/src/main.rs`
 - `crates/conclave-gui/src/app.rs`
@@ -213,9 +213,9 @@ Introduced a consent-based invite system for post-creation member additions. Pre
 - `crates/conclave-server/src/api.rs`
 - `crates/conclave-server/src/main.rs`
 - `crates/conclave-server/tests/api_tests.rs`
-- `crates/conclave-lib/src/api.rs`
-- `crates/conclave-lib/src/operations.rs`
-- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-client/src/api.rs`
+- `crates/conclave-client/src/operations.rs`
+- `crates/conclave-client/src/command.rs`
 - `crates/conclave-cli/src/tui/commands.rs`
 - `crates/conclave-cli/src/tui/events.rs`
 - `crates/conclave-gui/src/app.rs`
@@ -242,10 +242,10 @@ Replaced the single `creator_id` ownership model with a proper admin role system
 - `crates/conclave-server/src/db.rs`
 - `crates/conclave-server/src/api.rs`
 - `crates/conclave-server/tests/api_tests.rs`
-- `crates/conclave-lib/src/api.rs`
-- `crates/conclave-lib/src/state.rs`
-- `crates/conclave-lib/src/operations.rs`
-- `crates/conclave-lib/src/command.rs`
+- `crates/conclave-client/src/api.rs`
+- `crates/conclave-client/src/state.rs`
+- `crates/conclave-client/src/operations.rs`
+- `crates/conclave-client/src/command.rs`
 - `crates/conclave-cli/src/tui/commands.rs`
 - `crates/conclave-cli/src/tui/state.rs`
 - `crates/conclave-gui/src/app.rs`
@@ -310,9 +310,9 @@ Made `group_name` a required field for group creation, matching the username mod
 - `crates/conclave-server/src/api.rs` — validation, response mapping
 - `crates/conclave-server/tests/api_tests.rs` — unique group names in all tests
 - `crates/conclave-server/tests/protocol_flow_tests.rs` — group creation helper
-- `crates/conclave-lib/src/api.rs` — create_group signature
-- `crates/conclave-lib/src/operations.rs` — RoomInfo, create_group, load_rooms
-- `crates/conclave-lib/src/state.rs` — Room struct, display_name
+- `crates/conclave-client/src/api.rs` — create_group signature
+- `crates/conclave-client/src/operations.rs` — RoomInfo, create_group, load_rooms
+- `crates/conclave-client/src/state.rs` — Room struct, display_name
 - `crates/conclave-cli/src/main.rs` — one-shot create-group command
 - `crates/conclave-cli/src/tui/commands.rs` — /create passes group_name
 - `crates/conclave-cli/src/tui/state.rs` — test helper make_room
@@ -343,7 +343,7 @@ Reviewed all logging statements across the codebase for consistent style, tone, 
 
 - `crates/conclave-server/src/error.rs` — structured fields for database/internal errors
 - `crates/conclave-server/src/api.rs` — explicit field names in SSE warning, added registration/login/reset/SSE logging
-- `crates/conclave-lib/src/notification.rs` — path-qualified macro, structured error field
+- `crates/conclave-client/src/notification.rs` — path-qualified macro, structured error field
 - `crates/conclave-gui/src/app.rs` — skip warn on NotFound during session removal
 
 ## 2026-02-21: Fix TUI Not Re-rendering on Alias Update SSE Events
@@ -419,10 +419,10 @@ Sender fields only shown for user messages. Alias line only shown when set. Remo
 
 ### Files Modified
 
-- `crates/conclave-lib/src/mls.rs` — Added `group_epoch()` method
-- `crates/conclave-lib/src/operations.rs` — Added `epoch` to `ProcessedMessage`, `MessageSentResult`, `fetch_and_decrypt`, `send_message`
-- `crates/conclave-lib/src/state.rs` — Added `epoch` to `DisplayMessage`
-- `crates/conclave-lib/src/store.rs` — DB migration, store/load epoch
+- `crates/conclave-client/src/mls.rs` — Added `group_epoch()` method
+- `crates/conclave-client/src/operations.rs` — Added `epoch` to `ProcessedMessage`, `MessageSentResult`, `fetch_and_decrypt`, `send_message`
+- `crates/conclave-client/src/state.rs` — Added `epoch` to `DisplayMessage`
+- `crates/conclave-client/src/store.rs` — DB migration, store/load epoch
 - `crates/conclave-gui/src/widget/message_view.rs` — Rewrote tooltip format
 - `crates/conclave-gui/src/app.rs` — Set epoch at conversion sites
 - `crates/conclave-cli/src/tui/events.rs` — Set epoch at conversion site
@@ -452,8 +452,8 @@ Extended the GUI message hover tooltip to show detailed metadata instead of just
 
 ### Files Modified
 
-- `crates/conclave-lib/src/state.rs` — Added `sequence_num` to `DisplayMessage`
-- `crates/conclave-lib/src/store.rs` — DB migration, store/load sequence_num
+- `crates/conclave-client/src/state.rs` — Added `sequence_num` to `DisplayMessage`
+- `crates/conclave-client/src/store.rs` — DB migration, store/load sequence_num
 - `crates/conclave-gui/src/widget/message_view.rs` — Rich multi-line tooltip, accept group_id
 - `crates/conclave-gui/src/screen/dashboard.rs` — Pass active_room as group_id to message_list
 - `crates/conclave-gui/src/app.rs` — Set sequence_num when converting ProcessedMessage
@@ -496,9 +496,9 @@ Refactored message handling to store `sender_id` instead of baked-in sender name
 
 ### Files Modified
 
-- `crates/conclave-lib/src/state.rs` — Added `sender_id` to `DisplayMessage`, `resolve_sender_name()` helper
-- `crates/conclave-lib/src/store.rs` — DB migration, store/load sender_id
-- `crates/conclave-lib/src/operations.rs` — Added `sender_id` to `ProcessedMessage`
+- `crates/conclave-client/src/state.rs` — Added `sender_id` to `DisplayMessage`, `resolve_sender_name()` helper
+- `crates/conclave-client/src/store.rs` — DB migration, store/load sender_id
+- `crates/conclave-client/src/operations.rs` — Added `sender_id` to `ProcessedMessage`
 - `crates/conclave-gui/src/app.rs` — Pass sender_id in message creation
 - `crates/conclave-gui/src/widget/message_view.rs` — Accept members, resolve names at render time
 - `crates/conclave-gui/src/screen/dashboard.rs` — Pass members to message_list
@@ -551,8 +551,8 @@ Added `/nick` and `/topic` IRC-standard commands, improved display formatting ac
 
 ### Files Modified
 
-- `crates/conclave-lib/src/api.rs` — Added `patch()`, `update_profile()`, `update_group()`
-- `crates/conclave-lib/src/command.rs` — Added `Nick`, `Topic` command variants with parsing and tests
+- `crates/conclave-client/src/api.rs` — Added `patch()`, `update_profile()`, `update_group()`
+- `crates/conclave-client/src/command.rs` — Added `Nick`, `Topic` command variants with parsing and tests
 - `crates/conclave-gui/src/app.rs` — Added `user_alias` field, fetch at login/restore, `/nick` and `/topic` handlers, updated `view()` and `show_help()`
 - `crates/conclave-gui/src/screen/dashboard.rs` — Members sidebar header, room/member/user display format changes, popover restructure
 - `crates/conclave-cli/src/tui/commands.rs` — `/nick` and `/topic` command handlers, updated help text
@@ -577,9 +577,9 @@ Three interrelated fixes making the system more robust: server-side group mappin
 - `proto/conclave/v1/conclave.proto` — Added `mls_group_id` to `GroupInfo`, `UploadCommitRequest`, `ExternalJoinRequest`
 - `crates/conclave-server/src/db.rs` — Added `mls_group_id TEXT` column, migration, `set_mls_group_id()`, updated `list_user_groups()` return type
 - `crates/conclave-server/src/api.rs` — `list_groups` returns `mls_group_id`; `upload_commit`/`external_join` store it
-- `crates/conclave-lib/src/api.rs` — Added `mls_group_id` param to `upload_commit()` and `external_join()`
-- `crates/conclave-lib/src/operations.rs` — Added `mls_group_id` to `RoomInfo`; rewrote `reset_account()` to fetch groups from server
-- `crates/conclave-lib/src/config.rs` — Added `build_group_mapping()` helper
+- `crates/conclave-client/src/api.rs` — Added `mls_group_id` param to `upload_commit()` and `external_join()`
+- `crates/conclave-client/src/operations.rs` — Added `mls_group_id` to `RoomInfo`; rewrote `reset_account()` to fetch groups from server
+- `crates/conclave-client/src/config.rs` — Added `build_group_mapping()` helper
 - `crates/conclave-cli/src/main.rs` — Registration auto-login + key packages; kept file I/O for one-shot commands
 - `crates/conclave-cli/src/tui/commands.rs` — Registration auto-login + key packages; login builds mapping from server; removed `save_group_mapping` calls
 - `crates/conclave-cli/src/tui/mod.rs` — Build mapping from server rooms instead of file
@@ -613,7 +613,7 @@ Added Signal/Matrix-style identity change warnings. When a user resets their enc
 
 - `proto/conclave/v1/conclave.proto` -- `IdentityResetEvent` message + `ServerEvent` variant
 - `crates/conclave-server/src/api.rs` -- `external_join` sends `IdentityResetEvent`
-- `crates/conclave-lib/src/operations.rs` -- `SseEvent::IdentityReset` variant + decode + test
+- `crates/conclave-client/src/operations.rs` -- `SseEvent::IdentityReset` variant + decode + test
 - `crates/conclave-cli/src/tui/events.rs` -- Handle `IdentityReset` SSE
 - `crates/conclave-cli/src/tui/commands.rs` -- Stale group detection on login
 - `crates/conclave-gui/src/subscription.rs` -- `SseUpdate::IdentityReset` variant + decode
@@ -636,9 +636,9 @@ Fixed multiple bugs from the incomplete UUID-to-integer ID migration that preven
 ### Files Modified
 
 - `proto/conclave/v1/conclave.proto` — `uint64` → `int64` for user_id fields
-- `crates/conclave-lib/src/config.rs` — `HashMap<i64, String>`, `user_id: Option<i64>`, tests
-- `crates/conclave-lib/src/state.rs` — `RoomMember.user_id: i64`
-- `crates/conclave-lib/src/operations.rs` — `MemberInfo.user_id: i64`, `ResetResult.new_group_mapping: HashMap<i64, String>`
+- `crates/conclave-client/src/config.rs` — `HashMap<i64, String>`, `user_id: Option<i64>`, tests
+- `crates/conclave-client/src/state.rs` — `RoomMember.user_id: i64`
+- `crates/conclave-client/src/operations.rs` — `MemberInfo.user_id: i64`, `ResetResult.new_group_mapping: HashMap<i64, String>`
 - `crates/conclave-cli/src/main.rs` — Removed casts and `.to_string()` calls
 - `crates/conclave-cli/src/tui/{state,commands,events,mod}.rs` — `HashMap<i64, String>`, `user_id: Option<i64>`, stale room pruning
 - `crates/conclave-gui/src/app.rs` — Same type changes, stale room pruning
@@ -649,9 +649,9 @@ Fixed multiple bugs from the incomplete UUID-to-integer ID migration that preven
 
 Added 59 new tests across 6 files to cover pure functions and new API endpoints introduced by the ID/naming redesign. Total workspace tests: 417.
 
-- **`crates/conclave-lib/src/state.rs`** — 10 tests: `RoomMember::display_name()`, `Room::display_name()`, `DisplayMessage` factories
-- **`crates/conclave-lib/src/operations.rs`** — 19 tests: `RoomInfo::display_name()`, `MemberInfo::display_name()`, `MemberInfo::to_room_member()`, `decode_sse_event()` (all event types + invalid/empty), `resolve_user_display_name()`
-- **`crates/conclave-lib/src/api.rs`** — 8 tests: `normalize_server_url()` (scheme handling, trailing slashes, edge cases)
+- **`crates/conclave-client/src/state.rs`** — 10 tests: `RoomMember::display_name()`, `Room::display_name()`, `DisplayMessage` factories
+- **`crates/conclave-client/src/operations.rs`** — 19 tests: `RoomInfo::display_name()`, `MemberInfo::display_name()`, `MemberInfo::to_room_member()`, `decode_sse_event()` (all event types + invalid/empty), `resolve_user_display_name()`
+- **`crates/conclave-client/src/api.rs`** — 8 tests: `normalize_server_url()` (scheme handling, trailing slashes, edge cases)
 - **`crates/conclave-server/tests/api_tests.rs`** — 10 tests: `PATCH /api/v1/me` (update/clear/invalid alias, unauth), `PATCH /api/v1/groups/{id}` (alias, group_name, non-creator rejected, not found, duplicate name, invalid alias)
 - **`crates/conclave-cli/src/tui/state.rs`** — 4 tests: `resolve_room()` edge cases (empty input, numeric group_name vs ID, both alias and group_name searchable, multiple prefix matches)
 - **`crates/conclave-server/src/db.rs`** — 8 tests: alias validation edge cases (control chars, tab, newline, unicode, clear alias to None, validation on update)
@@ -699,7 +699,7 @@ This is a breaking change affecting all 5 workspace crates, the protobuf schema,
 - `list_groups`: populates alias, group_name, and member aliases in GroupInfo
 - Added `Validation(String)` variant to server error enum
 
-#### Client MLS (`crates/conclave-lib/src/mls.rs`)
+#### Client MLS (`crates/conclave-client/src/mls.rs`)
 
 - `MlsManager::new()` takes `user_id: i64` instead of `username: &str`
 - `BasicCredential` now stores `user_id.to_be_bytes()` (8 bytes, big-endian i64) instead of username bytes
@@ -708,13 +708,13 @@ This is a breaking change affecting all 5 workspace crates, the protobuf schema,
 - `GroupDetails.members`: `Vec<(u32, String)>` changed to `Vec<(u32, Option<i64>)>`
 - `find_member_index()` takes `user_id: i64` instead of `username: &str`
 
-#### Client API (`crates/conclave-lib/src/api.rs`)
+#### Client API (`crates/conclave-client/src/api.rs`)
 
 - All group methods: `group_id: &str` changed to `group_id: i64`
 - `register()`: added `alias: Option<&str>` parameter
 - `create_group()`: changed from `name: &str` to `alias: Option<&str>, group_name: Option<&str>`
 
-#### Client State (`crates/conclave-lib/src/state.rs`)
+#### Client State (`crates/conclave-client/src/state.rs`)
 
 - Added `RoomMember` struct with `user_id`, `username`, `alias`, and `display_name()` method
 - `Room.server_group_id`: `String` changed to `i64`
@@ -722,7 +722,7 @@ This is a breaking change affecting all 5 workspace crates, the protobuf schema,
 - `Room.members`: `Vec<String>` changed to `Vec<RoomMember>`
 - Added `Room::display_name()` for alias > group_name > id fallback
 
-#### Client Operations (`crates/conclave-lib/src/operations.rs`)
+#### Client Operations (`crates/conclave-client/src/operations.rs`)
 
 - New types: `RoomInfo`, `MemberInfo` with display name resolution
 - All result types use `i64` group IDs
@@ -730,7 +730,7 @@ This is a breaking change affecting all 5 workspace crates, the protobuf schema,
 - `fetch_and_decrypt`: added `members: &[RoomMember]` param for display name resolution
 - `kick_member`: takes `target_user_id: i64`
 
-#### Client Store (`crates/conclave-lib/src/store.rs`)
+#### Client Store (`crates/conclave-client/src/store.rs`)
 
 - Schema: `group_id` changed from `TEXT` to `INTEGER` in both tables
 - All methods: `group_id: &str` changed to `group_id: i64`
@@ -775,9 +775,9 @@ This is a breaking change affecting all 5 workspace crates, the protobuf schema,
 
 ### What Changed
 
-Extracted all duplicated business logic from the CLI (`conclave-cli`) and GUI (`conclave-gui`) into a new `operations` module in the shared library (`conclave-lib`). Both clients are now thin UI shells that delegate all protocol orchestration to the shared library.
+Extracted all duplicated business logic from the CLI (`conclave-cli`) and GUI (`conclave-gui`) into a new `operations` module in the shared library (`conclave-client`). Both clients are now thin UI shells that delegate all protocol orchestration to the shared library.
 
-#### New Module: `crates/conclave-lib/src/operations.rs`
+#### New Module: `crates/conclave-client/src/operations.rs`
 
 12 public functions and 8 result types covering all MLS-over-HTTP orchestration:
 
@@ -797,7 +797,7 @@ Extracted all duplicated business logic from the CLI (`conclave-cli`) and GUI (`
 - `accept_welcomes` — Process pending welcomes + MLS join + key package replenishment
 - `reset_account` — Full account reset: collect indices, wipe state, regen identity, rejoin all groups via external commit
 
-All functions use `tokio::task::spawn_blocking` for MLS operations (MlsManager is not `Send`) and propagate errors via `conclave_lib::error::Result`.
+All functions use `tokio::task::spawn_blocking` for MLS operations (MlsManager is not `Send`) and propagate errors via `conclave_client::error::Result`.
 
 #### CLI Changes
 
@@ -859,7 +859,7 @@ When the GUI user was offline and another user created a group and invited them,
 **`crates/conclave-cli/src/tui/mod.rs`**:
 - Removed the dead `max_seq` calculation in `accept_pending_welcomes()` that was always overridden by the store restoration loop.
 
-**`crates/conclave-lib/src/mls.rs`**:
+**`crates/conclave-client/src/mls.rs`**:
 - In `decrypt_message()`, replaced fragile string matching (`err_str.contains(...)`) with structured `MlsError` enum matching (`MlsError::CantProcessMessageFromSelf`, `MlsError::InvalidEpoch`). Both variants return `DecryptedMessage::None` (silently skip). `InvalidEpoch` handles messages from epochs before the client joined (e.g., the group-creation commit when joining via welcome) — these lack key material and cannot be decrypted. The only other string-based error matching in the codebase (rusqlite "duplicate column" in `db.rs` and `store.rs`) was investigated but rusqlite has no structured error code for this case.
 
 ## 2026-02-19: Fix GUI SSE "Always Disconnected" Bug
@@ -874,7 +874,7 @@ The GUI always showed "Disconnected" status even though API calls (creating room
 
 #### Fix
 
-- **`crates/conclave-lib/src/api.rs`**: Extracted URL normalization logic from `ApiClient::new()` into a public `normalize_server_url()` function, then refactored `ApiClient::new()` to use it.
+- **`crates/conclave-client/src/api.rs`**: Extracted URL normalization logic from `ApiClient::new()` into a public `normalize_server_url()` function, then refactored `ApiClient::new()` to use it.
 - **`crates/conclave-gui/src/app.rs`**: Imported `normalize_server_url` and applied it when setting `self.server_url` in both the session restore path (`Conclave::new()`) and the login result handler (`handle_login_result()`). This ensures the SSE subscription always receives a properly normalized URL with scheme.
 
 ## 2026-02-19: GUI `/reset` Command Implementation
@@ -903,7 +903,7 @@ Expanded the test suite from ~208 tests to 330 tests (+122 new tests) covering M
 
 ### New Tests by Category
 
-#### MLS Protocol Compliance (11 tests in `conclave-lib/src/mls.rs`)
+#### MLS Protocol Compliance (11 tests in `conclave-client/src/mls.rs`)
 - Epoch retention boundary (16 epochs), five-member group operations, invite after multiple key rotations, removed member cannot rejoin via old welcome, external rejoin with self-removal, multi-group isolation, rapid sequential messages, binary payload roundtrip, leave group self-removal detection, group info epoch matching, concurrent key rotations from different members.
 
 #### Server API Edge Cases (16 tests in `conclave-server/tests/api_tests.rs`)
@@ -912,7 +912,7 @@ Expanded the test suite from ~208 tests to 330 tests (+122 new tests) covering M
 #### Server Database & Auth (14 tests in `conclave-server/src/db.rs` and `auth.rs`)
 - `process_commit` with multiple welcomes, empty commit message, empty group info, nonexistent user. Messages isolated between groups, `group_exists`, multiple pending welcomes for same user, delete welcome wrong user, `count_key_packages`, session token hashed. Auth: dummy hash validity, token hex format, empty password hashing/verification.
 
-#### Client Store & Config (13 tests in `conclave-lib/src/store.rs` and `config.rs`)
+#### Client Store & Config (13 tests in `conclave-client/src/store.rs` and `config.rs`)
 - Room state creation via set_last_seen/read_seq, reopen preserves room state independently, empty/unicode/large content messages, system vs user message counts, sequence numbers isolated between groups. Config: group mapping empty values, many entries, malformed session file, key package structure verification.
 
 #### End-to-End Protocol Flow (9 tests in `conclave-server/tests/protocol_flow_tests.rs`)
@@ -923,7 +923,7 @@ Expanded the test suite from ~208 tests to 330 tests (+122 new tests) covering M
 | Crate | Before | After |
 |-------|--------|-------|
 | conclave-cli | 33 | 33 |
-| conclave-lib | 116 | 140 |
+| conclave-client | 116 | 140 |
 | conclave-server (unit) | 40 | 54 |
 | conclave-server (api_tests) | 78 | 94 |
 | conclave-server (protocol_flow_tests) | 0 | 9 |
@@ -949,14 +949,14 @@ Full codebase audit covering RFC 9420 compliance, security vulnerabilities, Rust
 #### H5. Username character validation (`conclave-server/src/api.rs`)
 - Registration only checked non-empty and max 64 chars. Added regex validation: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`. Rejects control characters, Unicode homoglyphs, whitespace-only strings, and names starting with punctuation.
 
-#### C2. `leave_group` MLS commit (`conclave-server/src/api.rs`, `conclave-lib/src/mls.rs`, TUI/GUI)
+#### C2. `leave_group` MLS commit (`conclave-server/src/api.rs`, `conclave-client/src/mls.rs`, TUI/GUI)
 - Leaving a group previously only removed the user from the server DB without producing an MLS commit. Remaining members' MLS state still included the departed member (RFC 9420 Section 12.3 violation).
 - `MlsManager::leave_group()` now produces a self-remove proposal+commit and returns `(commit_message, group_info)`.
 - `LeaveGroupRequest` protobuf updated with `commit_message` and `group_info` fields.
 - Server `leave_group` endpoint stores the commit as a message and updates group_info.
 - TUI/GUI `MemberRemovedEvent` handlers fetch and process the leave commit to advance MLS epoch.
 
-#### C3. `delete_group_state` actually deletes (`conclave-lib/src/mls.rs`)
+#### C3. `delete_group_state` actually deletes (`conclave-client/src/mls.rs`)
 - `delete_group_state()` was a no-op (loaded group state and wrote it back unchanged). Now calls `SqLiteDataStorageEngine::delete_group()` to properly remove MLS cryptographic material.
 
 #### C4. Key package replenishment (`conclave-cli/src/tui/commands.rs`, `conclave-gui/src/app.rs`)
@@ -965,7 +965,7 @@ Full codebase audit covering RFC 9420 compliance, security vulnerabilities, Rust
 #### C5. Server-side key package validation (`conclave-server/src/api.rs`)
 - `upload_key_package` accepted any non-empty blob under 16 KiB. Added `validate_key_package_wire_format()` that checks the MLS 1.0 version header (0x0001) and mls_key_package wire format (0x0003) per RFC 9420 Section 6.
 
-#### C6. Welcome-to-username mapping (`conclave-lib/src/mls.rs`)
+#### C6. Welcome-to-username mapping (`conclave-client/src/mls.rs`)
 - `create_group()` and `invite_to_group()` assumed `commit_output.welcome_messages[i]` corresponded to `username_order[i]`, relying on mls-rs producing welcomes in add-order (not guaranteed).
 - Now uses `key_package_reference()` and `welcome_key_package_references()` to match each welcome to its recipient by KeyPackage reference (RFC 9420 Section 12.4.3).
 
@@ -1018,18 +1018,18 @@ Full codebase audit covering RFC 9420 compliance, security vulnerabilities, Rust
 
 ### Phase 5: Code Quality Cleanup
 
-#### L1/L2. Deduplicated shared functions (`conclave-lib/src/config.rs`)
+#### L1/L2. Deduplicated shared functions (`conclave-client/src/config.rs`)
 - `load_group_mapping()`, `save_group_mapping()`, and `generate_initial_key_packages()` were duplicated across `conclave-gui/src/app.rs`, `conclave-cli/src/main.rs`, and `conclave-cli/src/tui/commands.rs`.
-- Moved all three to `conclave-lib/src/config.rs` as public functions. Updated all call sites. The `save_group_mapping` in `conclave-cli/src/main.rs` was missing the Unix `0o600` permission setting — now fixed by using the centralized version.
+- Moved all three to `conclave-client/src/config.rs` as public functions. Updated all call sites. The `save_group_mapping` in `conclave-cli/src/main.rs` was missing the Unix `0o600` permission setting — now fixed by using the centralized version.
 
 #### M4. Section divider comments removed
 - Removed 54 `// ──` section divider comments across 6 files per CLAUDE.md guideline: "Do not write organizational or comments that summarize the code."
 
 #### M3. Abbreviated variable names renamed
-- `req` → `request` in `conclave-server/src/api.rs` (50+ occurrences) and `conclave-lib/src/api.rs`.
-- `resp` → `response` in `conclave-lib/src/api.rs`.
+- `req` → `request` in `conclave-server/src/api.rs` (50+ occurrences) and `conclave-client/src/api.rs`.
+- `resp` → `response` in `conclave-client/src/api.rs`.
 - `kp_data` → `key_package_data` in `conclave-server/src/api.rs`.
-- `seq` → `sequence_number` in `conclave-server/src/api.rs` and `conclave-lib/src/store.rs`.
+- `seq` → `sequence_number` in `conclave-server/src/api.rs` and `conclave-client/src/store.rs`.
 - `mls_msg` → `mls_message` in `conclave-server/src/api.rs`.
 - `gid` → `id` (tuple destructuring) in `conclave-server/src/api.rs`.
 - `btn` → `room_button` in `conclave-gui/src/screen/dashboard.rs`.
@@ -1079,7 +1079,7 @@ When `decrypt_message()` failed (e.g., epoch data evicted after being offline to
 
 #### DecryptedMessage::Failed Variant
 
-- **`conclave-lib/src/mls.rs`**: Added `DecryptedMessage::Failed(String)` variant. `decrypt_message()` now distinguishes between "can't process message from self" (harmless, returns `None`) and real decryption errors (returns `Failed(reason)`). Uses string matching on the `Display` output since `MlsError` is `#[non_exhaustive]` and Conclave wraps it as `Error::Mls(String)`.
+- **`conclave-client/src/mls.rs`**: Added `DecryptedMessage::Failed(String)` variant. `decrypt_message()` now distinguishes between "can't process message from self" (harmless, returns `None`) and real decryption errors (returns `Failed(reason)`). Uses string matching on the `Display` output since `MlsError` is `#[non_exhaustive]` and Conclave wraps it as `Error::Mls(String)`.
 - **`conclave-cli/src/tui/events.rs`**: `handle_new_message()` emits a system message on `Failed` with the failure reason and sequence number.
 - **`conclave-cli/src/tui/mod.rs`**: `fetch_missed_messages()` emits a system message on `Failed` and continues processing subsequent messages.
 - **`conclave-cli/src/main.rs`**: One-shot `messages` subcommand prints failures to stderr.
@@ -1087,7 +1087,7 @@ When `decrypt_message()` failed (e.g., epoch data evicted after being offline to
 
 #### Epoch Retention Increase
 
-- **`conclave-lib/src/mls.rs`**: Added `EPOCH_RETENTION` constant (16). Configured `with_max_epoch_retention(EPOCH_RETENTION)` on the SQLite group state storage in `build_client()`. This extends the window from 3 to 16 epochs, allowing offline catch-up across many more commits. RFC 9420 does not specify a recommended value — this is left to implementations.
+- **`conclave-client/src/mls.rs`**: Added `EPOCH_RETENTION` constant (16). Configured `with_max_epoch_retention(EPOCH_RETENTION)` on the SQLite group state storage in `build_client()`. This extends the window from 3 to 16 epochs, allowing offline catch-up across many more commits. RFC 9420 does not specify a recommended value — this is left to implementations.
 
 #### GUI Fetch Deduplication
 
@@ -1118,7 +1118,7 @@ Previously all files (config, session, MLS keys, messages) were stored in a sing
 - **Data** (`~/.local/share/conclave/`): `session.toml`, `group_mapping.toml`, `message_history.db`, MLS cryptographic state. Unchanged.
 
 Changes:
-- **`conclave-lib/src/config.rs`**: Added `config_dir: PathBuf` field to `ClientConfig` with `default_config_dir()` (mirrors `default_data_dir()` pattern: env var → XDG config dir → `.conclave` fallback). `ClientConfig::load()` now reads from `<config_dir>/config.toml` instead of `<data_dir>/config.toml`.
+- **`conclave-client/src/config.rs`**: Added `config_dir: PathBuf` field to `ClientConfig` with `default_config_dir()` (mirrors `default_data_dir()` pattern: env var → XDG config dir → `.conclave` fallback). `ClientConfig::load()` now reads from `<config_dir>/config.toml` instead of `<data_dir>/config.toml`.
 - **`conclave-cli/src/main.rs`**: Default config path changed from `conclave-cli.toml` in cwd to `ClientConfig::load()` (XDG config dir). The `-c` flag still accepts an explicit path.
 
 #### Preset Themes
@@ -1181,7 +1181,7 @@ RFC 9420 §16.8 requires key packages to never be reused and recommends pre-publ
 - `upload_key_package` handler supports batch path (`req.entries` non-empty) and legacy single-upload path.
 - New integration tests: `test_batch_upload_and_ordered_consumption`, `test_last_resort_not_deleted_on_consumption`.
 
-**Client library** (`conclave-lib`):
+**Client library** (`conclave-client`):
 - Enabled `last_resort_key_package_ext` feature in mls-rs dependency.
 - Added `generate_last_resort_key_package()` using `LastResortKeyPackageExt` extension.
 - Added `generate_key_packages(count)` batch method.
@@ -1237,7 +1237,7 @@ Four GUI bugs fixed in `conclave-gui`.
 
 Upgraded the MLS cipher suite from `CURVE25519_AES128` (suite 1, 128-bit security) to `CURVE448_CHACHA` (suite 6, 256-bit security).
 
-- **`conclave-lib/src/mls.rs`**: Changed the `CIPHERSUITE` constant from `CipherSuite::CURVE25519_AES128` to `CipherSuite::CURVE448_CHACHA`.
+- **`conclave-client/src/mls.rs`**: Changed the `CIPHERSUITE` constant from `CipherSuite::CURVE25519_AES128` to `CipherSuite::CURVE448_CHACHA`.
 - **New primitives**: X448 (KEM), ChaCha20-Poly1305 (AEAD), SHA-512 (hash), Ed448 (signatures).
 - **Breaking change**: Existing MLS state is incompatible. Clients must `/reset` and re-create groups.
 
@@ -1319,7 +1319,7 @@ Full graphical client using iced 0.14 with Elm-style architecture (model → upd
 
 #### Architecture
 
-- **`conclave-gui` crate**: New workspace member with `conclave-lib` as shared dependency.
+- **`conclave-gui` crate**: New workspace member with `conclave-client` as shared dependency.
 - **Screens**: Login (centered card with server URL, username, password, login/register toggle) and Dashboard (three-panel layout: sidebar with room list + unread counts, scrollable message area, chat input).
 - **Theme**: Custom dark theme (Ferra-inspired palette) implementing `iced::theme::Base` with per-widget `Catalog` styles for buttons, containers, text, text inputs, and scrollables.
 - **Subscriptions**: SSE event stream via `iced::Subscription::run_with()` keyed by auth token, plus a 1-second tick timer for connection status.
@@ -1332,23 +1332,23 @@ Full graphical client using iced 0.14 with Elm-style architecture (model → upd
 - **Room list not refreshing**: Group creation, invite, and kick operations now trigger automatic room list reload.
 - **"group mapping not found"**: `create_group` now returns a `GroupCreated` message that updates `self.group_mapping` before switching to the new room.
 
-## 2026-02-15: Shared Library Extraction (`conclave-lib`)
+## 2026-02-15: Shared Library Extraction (`conclave-client`)
 
 ### What Was Built
 
-Extracted reusable client logic from `conclave-cli` into a new `conclave-lib` library crate so both the CLI/TUI and GUI can share it.
+Extracted reusable client logic from `conclave-cli` into a new `conclave-client` library crate so both the CLI/TUI and GUI can share it.
 
 #### Modules Moved
 
 | Module | From | To |
 |--------|------|----|
-| `api.rs` | `conclave-cli/src/` | `conclave-lib/src/api.rs` |
-| `mls.rs` | `conclave-cli/src/` | `conclave-lib/src/mls.rs` |
-| `config.rs` | `conclave-cli/src/` | `conclave-lib/src/config.rs` |
-| `error.rs` | `conclave-cli/src/` | `conclave-lib/src/error.rs` (removed `Terminal` variant) |
-| `Room`, `DisplayMessage`, `ConnectionStatus` | `conclave-cli/src/tui/state.rs` | `conclave-lib/src/state.rs` |
-| `MessageStore` | `conclave-cli/src/tui/store.rs` | `conclave-lib/src/store.rs` |
-| `Command` enum + `parse()` | `conclave-cli/src/tui/commands.rs` | `conclave-lib/src/command.rs` |
+| `api.rs` | `conclave-cli/src/` | `conclave-client/src/api.rs` |
+| `mls.rs` | `conclave-cli/src/` | `conclave-client/src/mls.rs` |
+| `config.rs` | `conclave-cli/src/` | `conclave-client/src/config.rs` |
+| `error.rs` | `conclave-cli/src/` | `conclave-client/src/error.rs` (removed `Terminal` variant) |
+| `Room`, `DisplayMessage`, `ConnectionStatus` | `conclave-cli/src/tui/state.rs` | `conclave-client/src/state.rs` |
+| `MessageStore` | `conclave-cli/src/tui/store.rs` | `conclave-client/src/store.rs` |
+| `Command` enum + `parse()` | `conclave-cli/src/tui/commands.rs` | `conclave-client/src/command.rs` |
 
 #### Crate Rename
 

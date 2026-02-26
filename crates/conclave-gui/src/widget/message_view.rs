@@ -3,7 +3,7 @@ use std::time::Duration;
 use iced::Length;
 use iced::widget::{column, container, rich_text, span, text, tooltip};
 
-use conclave_lib::state::{DisplayMessage, RoomMember, resolve_sender_name};
+use conclave_client::state::{DisplayMessage, RoomMember, resolve_sender_name};
 
 use crate::theme;
 use crate::widget::Element;

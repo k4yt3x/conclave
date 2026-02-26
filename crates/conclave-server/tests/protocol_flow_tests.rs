@@ -9,7 +9,7 @@ use prost::Message;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use conclave_lib::mls::MlsManager;
+use conclave_client::mls::MlsManager;
 use conclave_server::{api, config, db, state};
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ async fn register_and_login(app: &Router, username: &str) -> (i64, String) {
 
 /// Upload MLS key packages (1 last-resort + 5 regular) via the batch API.
 async fn upload_real_key_packages(app: &Router, token: &str, mls: &MlsManager) {
-    let entries = conclave_lib::config::generate_initial_key_packages(mls).unwrap();
+    let entries = conclave_client::config::generate_initial_key_packages(mls).unwrap();
     let proto_entries: Vec<conclave_proto::KeyPackageEntry> = entries
         .into_iter()
         .map(|(data, is_last_resort)| conclave_proto::KeyPackageEntry {
@@ -367,7 +367,7 @@ async fn test_e2e_group_creation_and_messaging() {
         .decrypt_message(&mls_group_id, &app_msg.mls_message)
         .unwrap();
     match decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, plaintext);
         }
         other => panic!("expected Application message, got: {other:?}"),
@@ -387,7 +387,7 @@ async fn test_e2e_group_creation_and_messaging() {
         .decrypt_message(&mls_group_id, &reply_msg.mls_message)
         .unwrap();
     match decrypted_reply {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, reply);
         }
         other => panic!("expected Application message, got: {other:?}"),
@@ -504,7 +504,7 @@ async fn test_e2e_three_party_messaging() {
         .decrypt_message(&mls_group_id, &msg.mls_message)
         .unwrap();
     match bob_decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, plaintext);
         }
         other => panic!("bob expected Application, got: {other:?}"),
@@ -517,7 +517,7 @@ async fn test_e2e_three_party_messaging() {
         .decrypt_message(&mls_group_id, &charlie_msg.mls_message)
         .unwrap();
     match charlie_decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, plaintext);
         }
         other => panic!("charlie expected Application, got: {other:?}"),
@@ -611,7 +611,7 @@ async fn test_e2e_post_creation_invite_flow() {
         .decrypt_message(&mls_group_id, &msg.mls_message)
         .unwrap();
     match decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, b"Post-invite message");
         }
         other => panic!("expected Application, got: {other:?}"),
@@ -742,7 +742,7 @@ async fn test_e2e_member_removal_flow() {
         .decrypt_message(&mls_group_id, &remove_msg.mls_message)
         .unwrap();
     match decrypted {
-        conclave_lib::mls::DecryptedMessage::Commit(info) => {
+        conclave_client::mls::DecryptedMessage::Commit(info) => {
             assert!(
                 !info.members_removed.is_empty(),
                 "should report a member removed"
@@ -763,7 +763,7 @@ async fn test_e2e_member_removal_flow() {
         .decrypt_message(&mls_group_id, &msg.mls_message)
         .unwrap();
     match charlie_decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, post_removal);
         }
         other => panic!("charlie expected Application after removal, got: {other:?}"),
@@ -772,7 +772,7 @@ async fn test_e2e_member_removal_flow() {
     // Bob should not be able to decrypt (wrong epoch or key).
     let bob_result = bob_mls.decrypt_message(&mls_group_id, &encrypted);
     match bob_result {
-        Ok(conclave_lib::mls::DecryptedMessage::Application(_)) => {
+        Ok(conclave_client::mls::DecryptedMessage::Application(_)) => {
             panic!("removed member should not be able to decrypt new messages");
         }
         _ => {} // Any error or non-Application result is expected.
@@ -873,7 +873,7 @@ async fn test_e2e_key_rotation_continuity() {
         .decrypt_message(&mls_group_id, &msg.mls_message)
         .unwrap();
     match decrypted {
-        conclave_lib::mls::DecryptedMessage::Application(data) => {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
             assert_eq!(data, post_rotation);
         }
         other => panic!("expected Application after rotation, got: {other:?}"),
@@ -1141,7 +1141,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
             .decrypt_message(&mls_group_id, &msg.mls_message)
             .unwrap();
         match decrypted {
-            conclave_lib::mls::DecryptedMessage::Application(data) => {
+            conclave_client::mls::DecryptedMessage::Application(data) => {
                 let expected = format!("Message #{i}");
                 assert_eq!(
                     String::from_utf8(data).unwrap(),

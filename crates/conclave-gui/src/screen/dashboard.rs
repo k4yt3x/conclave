@@ -6,7 +6,7 @@ use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
 };
 
-use conclave_lib::state::{ConnectionStatus, DisplayMessage, Room};
+use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
 
 use crate::theme;
 use crate::widget::Element;
@@ -494,7 +494,7 @@ impl Dashboard {
             None => system_messages,
         };
 
-        let members: &[conclave_lib::state::RoomMember] = match active_room {
+        let members: &[conclave_client::state::RoomMember] = match active_room {
             Some(room_id) => rooms
                 .get(room_id)
                 .map(|r| r.members.as_slice())
