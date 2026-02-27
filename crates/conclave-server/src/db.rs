@@ -32,18 +32,10 @@ pub struct PendingWelcomeRow {
     pub welcome_data: Vec<u8>,
 }
 
-/// Result of `process_commit`: newly added members and optional message sequence number.
+/// Result of `process_commit`: optional message sequence number.
 #[derive(Debug)]
 pub struct CommitResult {
-    pub new_members: Vec<NewMember>,
     pub sequence_number: Option<i64>,
-}
-
-/// A newly added group member from a commit.
-#[derive(Debug)]
-pub struct NewMember {
-    pub user_id: i64,
-    pub username: String,
 }
 
 /// A pending invite held in escrow until the invitee accepts or declines.
@@ -714,71 +706,18 @@ mod tests {
     }
 
     #[test]
-    fn test_process_commit_with_multiple_welcomes() {
-        let db = Database::open_in_memory().unwrap();
-        let alice = db.create_user("alice", "hash").unwrap();
-        let bob = db.create_user("bob", "hash").unwrap();
-        let charlie = db.create_user("charlie", "hash").unwrap();
-
-        let group_id = db
-            .create_group("test_group", Some("test_group"), alice)
-            .unwrap();
-
-        let mut welcomes = std::collections::HashMap::new();
-        welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
-        welcomes.insert("charlie".to_string(), b"welcome_charlie".to_vec());
-
-        let result = db
-            .process_commit(
-                group_id,
-                Some("test_group"),
-                alice,
-                &welcomes,
-                b"group_info",
-                b"commit_msg",
-            )
-            .unwrap();
-
-        assert_eq!(result.new_members.len(), 2);
-        assert!(db.is_group_member(group_id, bob).unwrap());
-        assert!(db.is_group_member(group_id, charlie).unwrap());
-
-        let bob_welcomes = db.get_pending_welcomes(bob).unwrap();
-        assert_eq!(bob_welcomes.len(), 1);
-        let charlie_welcomes = db.get_pending_welcomes(charlie).unwrap();
-        assert_eq!(charlie_welcomes.len(), 1);
-
-        assert_eq!(result.sequence_number, Some(1));
-        let msgs = db.get_messages(group_id, 0, 100).unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].mls_message, b"commit_msg");
-    }
-
-    #[test]
     fn test_process_commit_empty_commit_message() {
         let db = Database::open_in_memory().unwrap();
         let alice = db.create_user("alice", "hash").unwrap();
-        db.create_user("bob", "hash").unwrap();
 
         let group_id = db
             .create_group("test_group", Some("test_group"), alice)
             .unwrap();
 
-        let mut welcomes = std::collections::HashMap::new();
-        welcomes.insert("bob".to_string(), b"welcome_bob".to_vec());
-
         let result = db
-            .process_commit(
-                group_id,
-                Some("test_group"),
-                alice,
-                &welcomes,
-                b"group_info",
-                b"",
-            )
+            .process_commit(group_id, alice, b"group_info", b"")
             .unwrap();
 
-        assert_eq!(result.new_members.len(), 1);
         assert_eq!(result.sequence_number, None);
         let msgs = db.get_messages(group_id, 0, 100).unwrap();
         assert!(msgs.is_empty());
@@ -793,49 +732,11 @@ mod tests {
             .create_group("test_group", Some("test_group"), alice)
             .unwrap();
 
-        let welcomes = std::collections::HashMap::new();
-
-        db.process_commit(
-            group_id,
-            Some("test_group"),
-            alice,
-            &welcomes,
-            b"",
-            b"commit_msg",
-        )
-        .unwrap();
+        db.process_commit(group_id, alice, b"", b"commit_msg")
+            .unwrap();
 
         let info = db.get_group_info(group_id).unwrap();
         assert!(info.is_none());
-    }
-
-    #[test]
-    fn test_process_commit_nonexistent_user() {
-        let db = Database::open_in_memory().unwrap();
-        let alice = db.create_user("alice", "hash").unwrap();
-
-        let group_id = db
-            .create_group("test_group", Some("test_group"), alice)
-            .unwrap();
-
-        let mut welcomes = std::collections::HashMap::new();
-        welcomes.insert("nonexistent".to_string(), b"welcome_data".to_vec());
-
-        let result = db.process_commit(
-            group_id,
-            Some("test_group"),
-            alice,
-            &welcomes,
-            b"group_info",
-            b"commit_msg",
-        );
-
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("not found"),
-            "Expected error to contain 'not found', got: {err_msg}"
-        );
     }
 
     #[test]
