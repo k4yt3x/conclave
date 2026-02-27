@@ -89,6 +89,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/whois",
         description: "Show current user info",
     },
+    CommandSpec {
+        name: "passwd",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/passwd <current> <new>",
+        description: "Change your password",
+    },
     // Rooms
     CommandSpec {
         name: "create",
@@ -330,6 +337,10 @@ pub enum Command {
         alias: String,
     },
     Whois,
+    Passwd {
+        current_password: String,
+        new_password: String,
+    },
 
     // Rooms
     Create {
@@ -452,6 +463,18 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             Ok(Command::Nick { alias })
         }
         "whois" => Ok(Command::Whois),
+        "passwd" => {
+            let parts: Vec<&str> = full_input.splitn(3, ' ').collect();
+            if parts.len() < 3 {
+                return Err(Error::Other(
+                    "Usage: /passwd <current_password> <new_password>".into(),
+                ));
+            }
+            Ok(Command::Passwd {
+                current_password: parts[1].to_string(),
+                new_password: parts[2].to_string(),
+            })
+        }
 
         // Rooms
         "create" => {
@@ -620,6 +643,40 @@ mod tests {
         assert!(parse("/login example.com alice").is_err());
         assert!(parse("/login example.com").is_err());
         assert!(parse("/login").is_err());
+    }
+
+    #[test]
+    fn test_parse_passwd() {
+        let cmd = parse("/passwd oldpass123 newpass456").unwrap();
+        let Command::Passwd {
+            current_password,
+            new_password,
+        } = cmd
+        else {
+            panic!("expected Passwd variant");
+        };
+        assert_eq!(current_password, "oldpass123");
+        assert_eq!(new_password, "newpass456");
+    }
+
+    #[test]
+    fn test_parse_passwd_new_password_with_spaces() {
+        let cmd = parse("/passwd oldpass123 new pass with spaces").unwrap();
+        let Command::Passwd {
+            current_password,
+            new_password,
+        } = cmd
+        else {
+            panic!("expected Passwd variant");
+        };
+        assert_eq!(current_password, "oldpass123");
+        assert_eq!(new_password, "new pass with spaces");
+    }
+
+    #[test]
+    fn test_parse_passwd_missing_args() {
+        assert!(parse("/passwd oldpass123").is_err());
+        assert!(parse("/passwd").is_err());
     }
 
     // Rooms

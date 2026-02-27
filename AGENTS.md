@@ -4,50 +4,52 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Rust Coding Guidelines
 
-* Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
-* Do not write organizational or comments that summarize the code. Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
-* Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
-* Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
-* Be careful with operations like indexing which may panic if the indexes are out of bounds.
-* Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:
-  - Propagate errors with `?` when the calling function should handle them
-  - Use `.log_err()` or similar when you need to ignore errors but want visibility
-  - Use explicit error handling with `match` or `if let Err(...)` when you need custom logic
-  - Example: avoid `let _ = client.request(...).await?;` - use `client.request(...).await?;` instead
-* When implementing async operations that may fail, ensure errors propagate to the UI layer so users get meaningful feedback.
-* Never create files with `mod.rs` paths - prefer `src/some_module.rs` instead of `src/some_module/mod.rs`.
-* When creating new crates, prefer specifying the library root path in `Cargo.toml` using `[lib] path = "...rs"` instead of the default `lib.rs`, to maintain consistent and descriptive naming (e.g., `gpui.rs` or `main.rs`).
-* Avoid creative additions unless explicitly requested
-* Use full words for variable names (no abbreviations like "q" for "queue")
-* Use variable shadowing to scope clones in async contexts for clarity, minimizing the lifetime of borrowed references.
+- Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
+- Do not write organizational or comments that summarize the code. Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
+- Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
+- Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
+- Be careful with operations like indexing which may panic if the indexes are out of bounds.
+- Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:
+    - Propagate errors with `?` when the calling function should handle them
+    - Use `.log_err()` or similar when you need to ignore errors but want visibility
+    - Use explicit error handling with `match` or `if let Err(...)` when you need custom logic
+    - Example: avoid `let _ = client.request(...).await?;` - use `client.request(...).await?;` instead
+- When implementing async operations that may fail, ensure errors propagate to the UI layer so users get meaningful feedback.
+- Never create files with `mod.rs` paths - prefer `src/some_module.rs` instead of `src/some_module/mod.rs`.
+- When creating new crates, prefer specifying the library root path in `Cargo.toml` using `[lib] path = "...rs"` instead of the default `lib.rs`, to maintain consistent and descriptive naming (e.g., `gpui.rs` or `main.rs`).
+- Avoid creative additions unless explicitly requested
+- Use full words for variable names (no abbreviations like "q" for "queue")
+- Use variable shadowing to scope clones in async contexts for clarity, minimizing the lifetime of borrowed references.
   Example:
-  ```rust
-  executor.spawn({
-      let task_ran = task_ran.clone();
-      async move {
-          *task_ran.borrow_mut() = true;
-      }
-  });
-  ```
+    ```rust
+    executor.spawn({
+        let task_ran = task_ran.clone();
+        async move {
+            *task_ran.borrow_mut() = true;
+        }
+    });
+    ```
 
 ## Build Commands
 
 ```bash
-cargo build                              # Debug build (all crates)
-cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~507 tests across 9 suites)
-cargo test -p conclave-server --test "*" # Server integration tests only
+cargo build                               # Debug build (all crates)
+cargo build --release                     # Release build (LTO, stripped symbols)
+cargo test --workspace                    # Run all tests
+cargo test -p conclave-server --test "*"  # Server integration tests only
 cargo test -p conclave-client             # Client library tests only
-cargo clippy --workspace                 # Lint
-cargo fmt --all -- --check               # Format check
+cargo clippy --workspace                  # Lint
+cargo fmt --all -- --check                # Format check
 ```
 
 Run individual test by name:
+
 ```bash
 cargo test -p conclave-server test_register_and_login
 ```
 
 Run the server/clients:
+
 ```bash
 cargo run --bin conclave-server -- -c conclave-server.toml
 cargo run --bin conclave-cli        # Interactive TUI (no subcommand)
@@ -72,13 +74,13 @@ Five crates in `crates/`:
 
 Users and groups are always referenced by their integer IDs (`user_id`, `group_id`) throughout the codebase:
 
-* **API request bodies and path parameters** use IDs for all operations (invite, kick, promote, demote, message, etc.). The only exceptions are authentication endpoints (register/login accept usernames) and group creation (accepts a group name).
-* **Usernames and group names** are human-readable shortcuts. They are never passed in API calls except through the dedicated lookup endpoints: `GET /api/v1/users/{username}` (name→ID) and `GET /api/v1/users/by-id/{user_id}` (ID→name).
-* **Client command handling**: When a user types a command with a username (e.g., `/invite alice`), the CLI/GUI resolves the name to a user ID via the lookup endpoint at the UI boundary, then passes only the ID to the operations layer.
-* **Display name resolution**: Clients resolve user IDs to display names from their local member cache (populated by `ListGroupsResponse`). For cache misses (e.g., users who left the group), clients use the `GET /api/v1/users/by-id/{user_id}` endpoint. The fallback is `user#<id>`.
-* **API responses** that list members or groups (e.g., `ListGroupsResponse`, `PendingInvite`, `InviteReceivedEvent`) include names alongside IDs as a batch-lookup convenience for display. Operational responses do not include names.
-* **MLS layer** uses `user_id` exclusively — the credential embeds user_id as big-endian i64 bytes.
-* **SSE events** reference users and groups by ID only, except `InviteReceivedEvent` and `PendingInvite` which include group name/alias because the invitee is not yet a member and cannot resolve the name from their local cache.
+- **API request bodies and path parameters** use IDs for all operations (invite, kick, promote, demote, message, etc.). The only exceptions are authentication endpoints (register/login accept usernames) and group creation (accepts a group name).
+- **Usernames and group names** are human-readable shortcuts. They are never passed in API calls except through the dedicated lookup endpoints: `GET /api/v1/users/{username}` (name→ID) and `GET /api/v1/users/by-id/{user_id}` (ID→name).
+- **Client command handling**: When a user types a command with a username (e.g., `/invite alice`), the CLI/GUI resolves the name to a user ID via the lookup endpoint at the UI boundary, then passes only the ID to the operations layer.
+- **Display name resolution**: Clients resolve user IDs to display names from their local member cache (populated by `ListGroupsResponse`). For cache misses (e.g., users who left the group), clients use the `GET /api/v1/users/by-id/{user_id}` endpoint. The fallback is `user#<id>`.
+- **API responses** that list members or groups (e.g., `ListGroupsResponse`, `PendingInvite`, `InviteReceivedEvent`) include names alongside IDs as a batch-lookup convenience for display. Operational responses do not include names.
+- **MLS layer** uses `user_id` exclusively — the credential embeds user_id as big-endian i64 bytes.
+- **SSE events** reference users and groups by ID only, except `InviteReceivedEvent` and `PendingInvite` which include group name/alias because the invitee is not yet a member and cannot resolve the name from their local cache.
 
 ## Key Architecture Details
 
@@ -94,7 +96,7 @@ Users and groups are always referenced by their integer IDs (`user_id`, `group_i
 
 ## Testing Patterns
 
-- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 158 tests covering registration, auth, key packages, groups, messages, invites, invite cancellation, removal, external join, profile/group updates, admin roles, validation edge cases.
+- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 167 tests covering registration, auth, password change, key packages, groups, messages, invites, invite cancellation, removal, external join, profile/group updates, admin roles, validation edge cases.
 - **End-to-end protocol flow tests** (`crates/conclave-server/tests/protocol_flow_tests.rs`): Combine real MLS cryptographic operations (via `conclave-client::MlsManager`) with server API calls through tower::oneshot. Tests full protocol flows: group creation, welcome processing, encrypted messaging, member removal, key rotation, external rejoin.
 - **Client MLS tests** (`crates/conclave-client/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking. 74 tests covering key package generation, group lifecycle, message encryption/decryption, epoch management, member operations.
 - **All tests use real protobuf encoding/decoding** — match production wire format.
@@ -123,11 +125,11 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
 - **Explicit field names**: Use `tracing::warn!(user_id = user_id, count = count, "message")`, not bare `tracing::warn!(user_id, count, "message")`.
 - **No trailing punctuation** in log messages. Use lowercase for the message text.
 - **Log levels**:
-  - `trace` — best-effort or high-frequency operations (e.g., DB deletes that may no-op)
-  - `debug` — connection events, routine internal state (e.g., SSE client connected)
-  - `info` — server lifecycle and security-relevant events (startup, shutdown, registration, login, account reset)
-  - `warn` — recoverable failures (notification errors, SSE lag, config issues)
-  - `error` — internal failures, encoding errors, database errors
+    - `trace` — best-effort or high-frequency operations (e.g., DB deletes that may no-op)
+    - `debug` — connection events, routine internal state (e.g., SSE client connected)
+    - `info` — server lifecycle and security-relevant events (startup, shutdown, registration, login, account reset)
+    - `warn` — recoverable failures (notification errors, SSE lag, config issues)
+    - `error` — internal failures, encoding errors, database errors
 
 ## Conventions
 

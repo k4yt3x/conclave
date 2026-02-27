@@ -52,6 +52,15 @@ impl Database {
         Ok(result)
     }
 
+    pub fn get_password_hash(&self, user_id: i64) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT password_hash FROM users WHERE id = ?1")?;
+        let result = stmt
+            .query_row(params![user_id], |row| row.get(0))
+            .optional()?;
+        Ok(result)
+    }
+
     pub fn get_user_id_by_username(&self, username: &str) -> Result<Option<i64>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT id FROM users WHERE username = ?1")?;
@@ -59,6 +68,15 @@ impl Database {
             .query_row(params![username], |row| row.get(0))
             .optional()?;
         Ok(result)
+    }
+
+    pub fn update_user_password(&self, user_id: i64, password_hash: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![password_hash, user_id],
+        )?;
+        Ok(())
     }
 
     pub fn update_user_alias(&self, user_id: i64, alias: Option<&str>) -> Result<()> {

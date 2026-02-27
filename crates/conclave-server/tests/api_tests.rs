@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use axum::Router;
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{header, Request, StatusCode};
+use axum::Router;
 use http_body_util::BodyExt;
 use prost::Message;
 use tower::ServiceExt;
@@ -389,6 +389,212 @@ async fn test_me_invalid_token() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Change Password Tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_change_password_success() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: "newpass456".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Login with new password should succeed
+    let _new_token = login_user(&app, "alice", "newpass456").await;
+}
+
+#[tokio::test]
+async fn test_change_password_old_password_no_longer_works() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: "newpass456".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Login with old password should fail
+    let req_body = conclave_proto::LoginRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/login")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_change_password_wrong_current() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "wrong_password".to_string(),
+        new_password: "newpass456".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_change_password_short_new_password() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: "short".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_change_password_unauthenticated() {
+    let app = setup();
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: "newpass456".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_change_password_empty_new_password() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_change_password_session_stays_valid() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::ChangePasswordRequest {
+        current_password: "password123".to_string(),
+        new_password: "newpass456".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/change-password")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The same token should still work for authenticated requests
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 // ── User Lookup Tests (13-14) ─────────────────────────────────────

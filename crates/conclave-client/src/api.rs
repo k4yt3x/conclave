@@ -185,6 +185,15 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn change_password(&self, current_password: &str, new_password: &str) -> Result<()> {
+        let request = conclave_proto::ChangePasswordRequest {
+            current_password: current_password.to_string(),
+            new_password: new_password.to_string(),
+        };
+        self.post("/api/v1/change-password", &request).await?;
+        Ok(())
+    }
+
     pub async fn update_group(&self, group_id: i64, alias: Option<&str>) -> Result<()> {
         let request = conclave_proto::UpdateGroupRequest {
             alias: alias.unwrap_or_default().to_string(),

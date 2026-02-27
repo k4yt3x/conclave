@@ -110,12 +110,12 @@ impl Login {
 
         let toggle_button = button(
             text(toggle_label)
-                .size(13)
+                .size(14)
                 .align_x(Horizontal::Center)
                 .width(Length::Fill),
         )
         .width(Length::Fill)
-        .padding(8)
+        .padding(10)
         .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>)
         .on_press_maybe(if is_loading {
             None

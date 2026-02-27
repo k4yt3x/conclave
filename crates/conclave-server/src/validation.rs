@@ -44,6 +44,21 @@ pub fn validate_group_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// Check whether a password is valid (at least 8 characters).
+pub fn validate_password(password: &str) -> Result<()> {
+    if password.is_empty() {
+        return Err(Error::Validation("password is required".to_string()));
+    }
+    if password.len() < MIN_PASSWORD_LENGTH {
+        return Err(Error::Validation(format!(
+            "password must be at least {MIN_PASSWORD_LENGTH} characters"
+        )));
+    }
+    Ok(())
+}
+
 /// Check whether an alias string is valid (no ASCII control characters, max 64 chars).
 pub fn validate_alias(alias: &str) -> Result<()> {
     if alias.len() > MAX_ALIAS_LENGTH {

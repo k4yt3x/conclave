@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use crate::auth::{self, AuthUser};
 use crate::error::{Error, Result};
 use crate::state::AppState;
-use crate::validation::{validate_alias, validate_username};
+use crate::validation::{validate_alias, validate_password, validate_username};
 
 use super::{decode_proto, notify_group_members, proto_response, unix_now};
 
@@ -25,12 +25,7 @@ pub async fn register(
     }
 
     validate_username(&request.username)?;
-
-    if request.password.len() < 8 {
-        return Err(Error::BadRequest(
-            "password must be at least 8 characters".into(),
-        ));
-    }
+    validate_password(&request.password)?;
 
     if !request.alias.is_empty() {
         validate_alias(&request.alias)?;
@@ -185,6 +180,35 @@ pub async fn get_user_by_id(
             username,
             alias: alias.unwrap_or_default(),
         },
+    ))
+}
+
+pub async fn change_password(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::ChangePasswordRequest>(&body)?;
+
+    validate_password(&request.new_password)?;
+
+    let password_hash = state
+        .db
+        .get_password_hash(auth.user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    if !auth::verify_password(&request.current_password, &password_hash)? {
+        return Err(Error::Unauthorized("incorrect current password".into()));
+    }
+
+    let new_hash = auth::hash_password(&request.new_password)?;
+    state.db.update_user_password(auth.user_id, &new_hash)?;
+
+    tracing::info!(user_id = auth.user_id, "password changed");
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ChangePasswordResponse {},
     ))
 }
 

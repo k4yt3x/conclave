@@ -1,5 +1,21 @@
 # Conclave Work Log
 
+## 2026-02-27: Add Change Password Feature
+
+Added a `/passwd` command and `POST /api/v1/change-password` endpoint allowing authenticated users to change their account password. Requires verification of the current password before accepting the new one. Existing sessions remain valid after a password change. Extracted inline password validation from the register handler into a reusable `validate_password()` function in `validation.rs`.
+
+### Changes
+- **Proto**: Added `ChangePasswordRequest` (with `current_password`, `new_password`) and `ChangePasswordResponse` messages.
+- **Server validation**: Added `validate_password()` to `validation.rs` (min 8 chars). Refactored `register` handler to use it instead of inline check.
+- **Server DB**: Added `get_password_hash()` and `update_user_password()` methods to `db/users.rs`.
+- **Server handler**: Added `change_password()` handler in `api/auth.rs` — verifies current password, validates new password, hashes with Argon2id, updates DB. Logged at `info` level.
+- **Server router**: Added `POST /api/v1/change-password` route in the Authentication group.
+- **Client API**: Added `change_password()` method to `ApiClient`.
+- **Command**: Added `CommandSpec` for `passwd` in Account category, `Passwd` variant to `Command` enum, and `parse_command_args` branch using `splitn(3, ' ')` so the new password can contain spaces.
+- **CLI**: Added `Command::Passwd` to `execute_profile` dispatch in `tui/commands.rs`.
+- **GUI**: Added `Command::Passwd` handler using `Message::CommandResult` in `app/commands.rs`.
+- **Tests**: Added 7 server API tests (success, old password invalidated, wrong current, short new password, unauthenticated, empty new password, session stays valid). Added 3 client command parser tests (success, spaces in password, missing args). Total test count: 517.
+
 ## 2026-02-27: Remove Embedded Names from StoredMessage, Add User Lookup by ID
 
 Continued the ID-first convention enforcement. Removed `sender_username` and `sender_alias` fields from `StoredMessage` protobuf — the server no longer JOINs the users table when fetching messages. Clients now resolve sender display names from their local member cache (populated by `ListGroupsResponse`). Added `inviter_id` field to `PendingInvite` so both the ID and display name are available. Added `GET /api/v1/users/by-id/{user_id}` endpoint for client-side ID→name resolution when the local cache has a miss (e.g., for users who have left the group).

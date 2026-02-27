@@ -11,12 +11,12 @@ mod welcomes;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Router;
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
-use axum::http::{StatusCode, header};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, patch, post};
+use axum::Router;
 use prost::Message;
 
 use crate::error::{Error, Result};
@@ -39,6 +39,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/logout", post(auth::logout))
         // GET: retrieve the current user's profile. PATCH: update the display alias.
         .route("/api/v1/me", get(auth::me).patch(auth::update_profile))
+        // Change the current user's password (requires current password verification).
+        .route("/api/v1/change-password", post(auth::change_password))
         // Reset the current user's account, removing all MLS state and group memberships.
         .route("/api/v1/reset-account", post(auth::reset_account))
 

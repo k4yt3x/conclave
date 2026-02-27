@@ -263,6 +263,25 @@ impl Conclave {
                     Message::NickResult,
                 )
             }
+            Ok(Command::Passwd {
+                current_password,
+                new_password,
+            }) => {
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        params
+                            .into_client()
+                            .change_password(&current_password, &new_password)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(vec![DisplayMessage::system(
+                            "Password changed successfully.",
+                        )])
+                    },
+                    Message::CommandResult,
+                )
+            }
 
             // Rooms (continued)
             Ok(Command::Topic { topic }) => {

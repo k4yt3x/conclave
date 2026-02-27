@@ -54,6 +54,7 @@ pub async fn execute(
         Command::Nick { .. }
         | Command::Topic { .. }
         | Command::Whois
+        | Command::Passwd { .. }
         | Command::Help
         | Command::Quit
         | Command::Reset => execute_profile(cmd, api, state, mls, config).await,
@@ -999,6 +1000,17 @@ async fn execute_profile(
                 "User: {} (ID: {})",
                 resp.username, resp.user_id
             )));
+        }
+
+        Command::Passwd {
+            current_password,
+            new_password,
+        } => {
+            api.lock()
+                .await
+                .change_password(&current_password, &new_password)
+                .await?;
+            msgs.push(DisplayMessage::system("Password changed successfully."));
         }
 
         Command::Help => {
