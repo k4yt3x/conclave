@@ -185,9 +185,8 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn change_password(&self, current_password: &str, new_password: &str) -> Result<()> {
+    pub async fn change_password(&self, new_password: &str) -> Result<()> {
         let request = conclave_proto::ChangePasswordRequest {
-            current_password: current_password.to_string(),
             new_password: new_password.to_string(),
         };
         self.post("/api/v1/change-password", &request).await?;

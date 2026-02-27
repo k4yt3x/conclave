@@ -1,20 +1,32 @@
 # Conclave Work Log
 
-## 2026-02-27: Add Change Password Feature
+## 2026-02-27: Remove Old Password Requirement from /passwd
 
-Added a `/passwd` command and `POST /api/v1/change-password` endpoint allowing authenticated users to change their account password. Requires verification of the current password before accepting the new one. Existing sessions remain valid after a password change. Extracted inline password validation from the register handler into a reusable `validate_password()` function in `validation.rs`.
+Removed the `current_password` field from the `/passwd` command and `POST /api/v1/change-password` endpoint. The old password was previously required for verification, but since the user is already authenticated via session token (`AuthUser` extractor), re-verifying the old password was redundant. This also fixes a usability bug where passwords containing spaces could not be entered as the current password argument due to whitespace-based argument splitting.
 
 ### Changes
-- **Proto**: Added `ChangePasswordRequest` (with `current_password`, `new_password`) and `ChangePasswordResponse` messages.
+- **Proto**: Removed `current_password` field from `ChangePasswordRequest`; only `new_password` remains.
+- **Server handler**: Removed `get_password_hash()` lookup and `verify_password()` check from `change_password()` handler in `api/auth.rs`. The handler now only validates the new password, hashes it, and updates the DB.
+- **Client API**: Changed `change_password()` signature from `(current_password, new_password)` to `(new_password)`.
+- **Command**: Changed `Passwd` variant from two fields (`current_password`, `new_password`) to one field (`new_password`). Updated `CommandSpec` usage to `/passwd <new_password>`. Changed parser from `splitn(3, ' ')` to `splitn(2, ' ')` so the entire argument (including spaces) is the new password.
+- **CLI/GUI**: Updated dispatch to match the single-field `Passwd` variant.
+- **Tests**: Removed `test_change_password_wrong_current` (no longer applicable). Updated remaining 6 server API tests and 3 client command parser tests to remove `current_password`.
+
+## 2026-02-27: Add Change Password Feature
+
+Added a `/passwd` command and `POST /api/v1/change-password` endpoint allowing authenticated users to change their account password. Existing sessions remain valid after a password change. Extracted inline password validation from the register handler into a reusable `validate_password()` function in `validation.rs`.
+
+### Changes
+- **Proto**: Added `ChangePasswordRequest` (with `new_password`) and `ChangePasswordResponse` messages.
 - **Server validation**: Added `validate_password()` to `validation.rs` (min 8 chars). Refactored `register` handler to use it instead of inline check.
 - **Server DB**: Added `get_password_hash()` and `update_user_password()` methods to `db/users.rs`.
-- **Server handler**: Added `change_password()` handler in `api/auth.rs` — verifies current password, validates new password, hashes with Argon2id, updates DB. Logged at `info` level.
+- **Server handler**: Added `change_password()` handler in `api/auth.rs` — validates new password, hashes with Argon2id, updates DB. Logged at `info` level.
 - **Server router**: Added `POST /api/v1/change-password` route in the Authentication group.
 - **Client API**: Added `change_password()` method to `ApiClient`.
-- **Command**: Added `CommandSpec` for `passwd` in Account category, `Passwd` variant to `Command` enum, and `parse_command_args` branch using `splitn(3, ' ')` so the new password can contain spaces.
+- **Command**: Added `CommandSpec` for `passwd` in Account category, `Passwd` variant to `Command` enum, and `parse_command_args` branch using `splitn(2, ' ')` so the new password can contain spaces.
 - **CLI**: Added `Command::Passwd` to `execute_profile` dispatch in `tui/commands.rs`.
 - **GUI**: Added `Command::Passwd` handler using `Message::CommandResult` in `app/commands.rs`.
-- **Tests**: Added 7 server API tests (success, old password invalidated, wrong current, short new password, unauthenticated, empty new password, session stays valid). Added 3 client command parser tests (success, spaces in password, missing args). Total test count: 517.
+- **Tests**: Added 6 server API tests (success, old password invalidated, short new password, unauthenticated, empty new password, session stays valid). Added 3 client command parser tests (success, spaces in password, missing args).
 
 ## 2026-02-27: Remove Embedded Names from StoredMessage, Add User Lookup by ID
 

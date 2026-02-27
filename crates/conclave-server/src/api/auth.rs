@@ -192,15 +192,6 @@ pub async fn change_password(
 
     validate_password(&request.new_password)?;
 
-    let password_hash = state
-        .db
-        .get_password_hash(auth.user_id)?
-        .ok_or_else(|| Error::NotFound("user not found".into()))?;
-
-    if !auth::verify_password(&request.current_password, &password_hash)? {
-        return Err(Error::Unauthorized("incorrect current password".into()));
-    }
-
     let new_hash = auth::hash_password(&request.new_password)?;
     state.db.update_user_password(auth.user_id, &new_hash)?;
 

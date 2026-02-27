@@ -1002,13 +1002,10 @@ async fn execute_profile(
             )));
         }
 
-        Command::Passwd {
-            current_password,
-            new_password,
-        } => {
+        Command::Passwd { new_password } => {
             api.lock()
                 .await
-                .change_password(&current_password, &new_password)
+                .change_password(&new_password)
                 .await?;
             msgs.push(DisplayMessage::system("Password changed successfully."));
         }

@@ -400,7 +400,6 @@ async fn test_change_password_success() {
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: "newpass456".to_string(),
     };
     let mut body = Vec::new();
@@ -428,7 +427,6 @@ async fn test_change_password_old_password_no_longer_works() {
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: "newpass456".to_string(),
     };
     let mut body = Vec::new();
@@ -465,38 +463,12 @@ async fn test_change_password_old_password_no_longer_works() {
 }
 
 #[tokio::test]
-async fn test_change_password_wrong_current() {
-    let app = setup();
-    register_user(&app, "alice", "password123").await;
-    let token = login_user(&app, "alice", "password123").await;
-
-    let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "wrong_password".to_string(),
-        new_password: "newpass456".to_string(),
-    };
-    let mut body = Vec::new();
-    req_body.encode(&mut body).unwrap();
-
-    let request = Request::builder()
-        .method("POST")
-        .uri("/api/v1/change-password")
-        .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
 async fn test_change_password_short_new_password() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: "short".to_string(),
     };
     let mut body = Vec::new();
@@ -519,7 +491,6 @@ async fn test_change_password_unauthenticated() {
     let app = setup();
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: "newpass456".to_string(),
     };
     let mut body = Vec::new();
@@ -543,7 +514,6 @@ async fn test_change_password_empty_new_password() {
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: String::new(),
     };
     let mut body = Vec::new();
@@ -568,7 +538,6 @@ async fn test_change_password_session_stays_valid() {
     let token = login_user(&app, "alice", "password123").await;
 
     let req_body = conclave_proto::ChangePasswordRequest {
-        current_password: "password123".to_string(),
         new_password: "newpass456".to_string(),
     };
     let mut body = Vec::new();
