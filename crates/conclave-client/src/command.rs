@@ -46,6 +46,7 @@ pub struct HelpCategory {
 }
 
 pub static COMMANDS: &[CommandSpec] = &[
+    // Account
     CommandSpec {
         name: "register",
         aliases: &[],
@@ -88,6 +89,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/whois",
         description: "Show current user info",
     },
+    // Rooms
     CommandSpec {
         name: "create",
         aliases: &[],
@@ -144,6 +146,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/unread",
         description: "Check rooms for new messages",
     },
+    // Members
     CommandSpec {
         name: "who",
         aliases: &[],
@@ -200,6 +203,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/uninvite <username>",
         description: "Cancel a pending invite",
     },
+    // Invites
     CommandSpec {
         name: "invites",
         aliases: &[],
@@ -221,6 +225,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/decline <id>",
         description: "Decline a pending invite",
     },
+    // Messaging
     CommandSpec {
         name: "msg",
         aliases: &[],
@@ -235,6 +240,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/rotate",
         description: "Rotate keys (forward secrecy)",
     },
+    // General
     CommandSpec {
         name: "help",
         aliases: &["h"],
@@ -307,6 +313,7 @@ fn lookup_command(name: &str) -> Option<&'static CommandSpec> {
 
 /// Parsed command from user input.
 pub enum Command {
+    // Account
     Register {
         server: String,
         username: String,
@@ -317,6 +324,14 @@ pub enum Command {
         username: String,
         password: String,
     },
+    Logout,
+    Reset,
+    Nick {
+        alias: String,
+    },
+    Whois,
+
+    // Rooms
     Create {
         name: String,
     },
@@ -324,6 +339,17 @@ pub enum Command {
     Join {
         target: Option<String>,
     },
+    List,
+    Close,
+    Part,
+    Info,
+    Topic {
+        topic: String,
+    },
+    Unread,
+
+    // Members
+    Who,
     Invite {
         members: Vec<String>,
     },
@@ -337,54 +363,33 @@ pub enum Command {
         username: String,
     },
     Admins,
-    /// List pending invites for the active room (admin-only).
     Invited,
-    /// Cancel a pending invite. /uninvite <username>
     Uninvite {
         username: String,
     },
-    /// Leave the room (MLS removal). IRC: /part
-    Part,
-    /// Switch away from the active room without leaving. IRC: /close
-    Close,
-    Rotate,
-    Reset,
-    Info,
-    /// List rooms. IRC: /list
-    List,
-    /// List members of the active room. IRC: /who, /names
-    Who,
+
+    // Invites
+    Invites,
+    Accept {
+        invite_id: Option<i64>,
+    },
+    Decline {
+        invite_id: i64,
+    },
+
+    // Messaging
     Msg {
         room: String,
         text: String,
     },
-    Unread,
-    Logout,
-    /// Change display name. IRC: /nick
-    Nick {
-        alias: String,
-    },
-    /// Set active room's display alias. IRC: /topic
-    Topic {
-        topic: String,
-    },
-    /// Show current user info. IRC: /whois
-    Whois,
-    /// List pending invites. /invites
-    Invites,
-    /// Accept a pending invite. /accept or /accept <id>
-    Accept {
-        invite_id: Option<i64>,
-    },
-    /// Decline a pending invite. /decline <id>
-    Decline {
-        invite_id: i64,
-    },
-    Help,
-    Quit,
+    Rotate,
     Message {
         text: String,
     },
+
+    // General
+    Help,
+    Quit,
 }
 
 /// Parse user input into a Command.
@@ -409,6 +414,7 @@ pub fn parse(input: &str) -> Result<Command> {
 
 fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Command> {
     match name {
+        // Account
         "register" => {
             let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
             if parts.len() < 4 {
@@ -435,6 +441,19 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 password: parts[3].to_string(),
             })
         }
+        "logout" => Ok(Command::Logout),
+        "reset" => Ok(Command::Reset),
+        "nick" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /nick <alias>".into()));
+            }
+            let prefix = format!("/{name} ");
+            let alias = full_input[prefix.len()..].to_string();
+            Ok(Command::Nick { alias })
+        }
+        "whois" => Ok(Command::Whois),
+
+        // Rooms
         "create" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /create <name>".into()));
@@ -447,6 +466,22 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             let target = parts.get(1).map(|s| s.to_string());
             Ok(Command::Join { target })
         }
+        "list" => Ok(Command::List),
+        "close" => Ok(Command::Close),
+        "part" => Ok(Command::Part),
+        "info" => Ok(Command::Info),
+        "topic" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /topic <text>".into()));
+            }
+            let prefix = format!("/{name} ");
+            let topic = full_input[prefix.len()..].to_string();
+            Ok(Command::Topic { topic })
+        }
+        "unread" => Ok(Command::Unread),
+
+        // Members
+        "who" => Ok(Command::Who),
         "invite" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /invite <member1,member2,...>".into()));
@@ -488,6 +523,8 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 username: parts[1].to_string(),
             })
         }
+
+        // Invites
         "invites" => Ok(Command::Invites),
         "accept" => {
             let invite_id = parts.get(1).map(|s| {
@@ -511,13 +548,8 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 .map_err(|_| Error::Other("Usage: /decline <invite_id>".into()))?;
             Ok(Command::Decline { invite_id })
         }
-        "part" => Ok(Command::Part),
-        "close" => Ok(Command::Close),
-        "rotate" => Ok(Command::Rotate),
-        "reset" => Ok(Command::Reset),
-        "info" => Ok(Command::Info),
-        "list" => Ok(Command::List),
-        "who" => Ok(Command::Who),
+
+        // Messaging
         "msg" => {
             if parts.len() < 3 {
                 return Err(Error::Other("Usage: /msg <room> <message>".into()));
@@ -527,25 +559,9 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 text: parts[2].to_string(),
             })
         }
-        "nick" => {
-            if parts.len() < 2 {
-                return Err(Error::Other("Usage: /nick <alias>".into()));
-            }
-            let prefix = format!("/{name} ");
-            let alias = full_input[prefix.len()..].to_string();
-            Ok(Command::Nick { alias })
-        }
-        "topic" => {
-            if parts.len() < 2 {
-                return Err(Error::Other("Usage: /topic <text>".into()));
-            }
-            let prefix = format!("/{name} ");
-            let topic = full_input[prefix.len()..].to_string();
-            Ok(Command::Topic { topic })
-        }
-        "unread" => Ok(Command::Unread),
-        "logout" => Ok(Command::Logout),
-        "whois" => Ok(Command::Whois),
+        "rotate" => Ok(Command::Rotate),
+
+        // General
         "help" => Ok(Command::Help),
         "quit" => Ok(Command::Quit),
         _ => Err(Error::Other(format!(
@@ -557,6 +573,8 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Account
 
     #[test]
     fn test_parse_register() {
@@ -604,6 +622,8 @@ mod tests {
         assert!(parse("/login").is_err());
     }
 
+    // Rooms
+
     #[test]
     fn test_parse_create() {
         let cmd = parse("/create room").unwrap();
@@ -635,6 +655,8 @@ mod tests {
         };
         assert_eq!(target, Some("myroom".to_string()));
     }
+
+    // Members
 
     #[test]
     fn test_parse_invite() {
@@ -706,6 +728,17 @@ mod tests {
         assert!(matches!(cmd, Command::Who));
     }
 
+    // Messaging
+
+    #[test]
+    fn test_parse_plain_message() {
+        let cmd = parse("hello").unwrap();
+        let Command::Message { text } = cmd else {
+            panic!("expected Message variant");
+        };
+        assert_eq!(text, "hello");
+    }
+
     #[test]
     fn test_parse_msg() {
         let cmd = parse("/msg room hello world").unwrap();
@@ -739,6 +772,13 @@ mod tests {
         assert!(matches!(cmd, Command::Whois));
     }
 
+    // General
+
+    #[test]
+    fn test_parse_unknown_command() {
+        assert!(parse("/xyz").is_err());
+    }
+
     #[test]
     fn test_parse_help() {
         let cmd = parse("/help").unwrap();
@@ -767,15 +807,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plain_message() {
-        let cmd = parse("hello").unwrap();
-        let Command::Message { text } = cmd else {
-            panic!("expected Message variant");
-        };
-        assert_eq!(text, "hello");
-    }
-
-    #[test]
     fn test_parse_nick() {
         let cmd = parse("/nick Alice Smith").unwrap();
         let Command::Nick { alias } = cmd else {
@@ -787,25 +818,6 @@ mod tests {
     #[test]
     fn test_parse_nick_missing_args() {
         assert!(parse("/nick").is_err());
-    }
-
-    #[test]
-    fn test_parse_topic() {
-        let cmd = parse("/topic Dev Team Chat").unwrap();
-        let Command::Topic { topic } = cmd else {
-            panic!("expected Topic variant");
-        };
-        assert_eq!(topic, "Dev Team Chat");
-    }
-
-    #[test]
-    fn test_parse_topic_missing_args() {
-        assert!(parse("/topic").is_err());
-    }
-
-    #[test]
-    fn test_parse_unknown_command() {
-        assert!(parse("/xyz").is_err());
     }
 
     #[test]
@@ -823,6 +835,24 @@ mod tests {
         assert_eq!(username, "user");
         assert_eq!(password, "pass word here");
     }
+
+    // Rooms (continued)
+
+    #[test]
+    fn test_parse_topic() {
+        let cmd = parse("/topic Dev Team Chat").unwrap();
+        let Command::Topic { topic } = cmd else {
+            panic!("expected Topic variant");
+        };
+        assert_eq!(topic, "Dev Team Chat");
+    }
+
+    #[test]
+    fn test_parse_topic_missing_args() {
+        assert!(parse("/topic").is_err());
+    }
+
+    // Members (continued)
 
     #[test]
     fn test_parse_admins() {
@@ -878,6 +908,8 @@ mod tests {
         assert!(parse("/uninvite").is_err());
     }
 
+    // Invites
+
     #[test]
     fn test_parse_invites() {
         let cmd = parse("/invites").unwrap();
@@ -925,6 +957,8 @@ mod tests {
     fn test_parse_decline_invalid_id() {
         assert!(parse("/decline xyz").is_err());
     }
+
+    // Registry validation
 
     #[test]
     fn test_registry_names_unique() {

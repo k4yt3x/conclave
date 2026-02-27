@@ -23,100 +23,115 @@ use crate::error::{Error, Result};
 use crate::state::{AppState, SseEvent};
 
 /// Build the axum router with all API routes.
+///
+/// All routes require authentication unless marked `[Public]`.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        // Public endpoints
+        //
+        // Authentication
+        //
+
+        // [Public] Register a new user account with username, password, and optional alias.
         .route("/api/v1/register", post(auth::register))
+        // [Public] Log in with username and password, returning a session token.
         .route("/api/v1/login", post(auth::login))
-        // Authenticated endpoints
-        .route("/api/v1/me", get(auth::me).patch(auth::update_profile))
-        .route("/api/v1/key-packages", post(key_packages::upload_key_package))
-        .route(
-            "/api/v1/key-packages/{user_id}",
-            get(key_packages::get_key_package),
-        )
-        .route(
-            "/api/v1/groups",
-            post(groups::create_group).get(groups::list_groups),
-        )
-        .route("/api/v1/groups/{group_id}", patch(groups::update_group))
-        .route(
-            "/api/v1/groups/{group_id}/invite",
-            post(members::invite_to_group),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/commit",
-            post(messages::upload_commit),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/messages",
-            post(messages::send_message).get(messages::get_messages),
-        )
-        .route("/api/v1/welcomes", get(welcomes::list_pending_welcomes))
-        .route(
-            "/api/v1/welcomes/{welcome_id}/accept",
-            post(welcomes::accept_welcome),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/escrow-invite",
-            post(invites::escrow_invite),
-        )
-        .route("/api/v1/invites", get(invites::list_pending_invites))
-        .route(
-            "/api/v1/groups/{group_id}/invites",
-            get(invites::list_group_pending_invites),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/cancel-invite",
-            post(invites::cancel_invite),
-        )
-        .route(
-            "/api/v1/invites/{invite_id}/accept",
-            post(invites::accept_invite),
-        )
-        .route(
-            "/api/v1/invites/{invite_id}/decline",
-            post(invites::decline_invite),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/promote",
-            post(members::promote_member),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/demote",
-            post(members::demote_member),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/admins",
-            get(members::list_admins),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/remove",
-            post(members::remove_group_member),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/leave",
-            post(members::leave_group),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/group-info",
-            get(groups::get_group_info),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/external-join",
-            post(external::external_join),
-        )
-        .route("/api/v1/reset-account", post(auth::reset_account))
+        // Log out and invalidate the current session token.
         .route("/api/v1/logout", post(auth::logout))
+        // GET: retrieve the current user's profile. PATCH: update the display alias.
+        .route("/api/v1/me", get(auth::me).patch(auth::update_profile))
+        // Reset the current user's account, removing all MLS state and group memberships.
+        .route("/api/v1/reset-account", post(auth::reset_account))
+
+        //
+        // User lookup
+        //
+
+        // Look up a user's ID and alias by username.
+        .route("/api/v1/users/{username}", get(auth::get_user_by_username))
+        // Look up a user's username and alias by ID.
+        .route("/api/v1/users/by-id/{user_id}", get(auth::get_user_by_id))
+
+        //
+        // Key packages
+        //
+
+        // Upload MLS key packages for the current user.
+        .route("/api/v1/key-packages", post(key_packages::upload_key_package))
+        // Fetch a key package for the given user to build an MLS welcome.
+        .route("/api/v1/key-packages/{user_id}", get(key_packages::get_key_package))
+
+        //
+        // Groups
+        //
+
+        // POST: create a new group with a name and optional alias. GET: list the current user's groups.
+        .route("/api/v1/groups", post(groups::create_group).get(groups::list_groups))
+        // Update a group's display alias or name.
+        .route("/api/v1/groups/{group_id}", patch(groups::update_group))
+        // Fetch the MLS GroupInfo message for external joins.
+        .route("/api/v1/groups/{group_id}/group-info", get(groups::get_group_info))
+
+        //
+        // Members
+        //
+
+        // Invite one or more users to a group by user ID.
+        .route("/api/v1/groups/{group_id}/invite", post(members::invite_to_group))
+        // Remove a member from a group (admin only).
+        .route("/api/v1/groups/{group_id}/remove", post(members::remove_group_member))
+        // Leave a group voluntarily.
+        .route("/api/v1/groups/{group_id}/leave", post(members::leave_group))
+        // Promote a group member to admin.
+        .route("/api/v1/groups/{group_id}/promote", post(members::promote_member))
+        // Demote an admin to regular member.
+        .route("/api/v1/groups/{group_id}/demote", post(members::demote_member))
+        // List all admins of a group.
+        .route("/api/v1/groups/{group_id}/admins", get(members::list_admins))
+        // Rejoin a group via MLS external commit (e.g., after account reset).
+        .route("/api/v1/groups/{group_id}/external-join", post(external::external_join))
+
+        //
+        // Invites
+        //
+
+        // Create an escrow invite with a pre-built MLS welcome for the invitee.
+        .route("/api/v1/groups/{group_id}/escrow-invite", post(invites::escrow_invite))
+        // List all pending invites received by the current user.
+        .route("/api/v1/invites", get(invites::list_pending_invites))
+        // List all pending invites for a specific group (admin only).
+        .route("/api/v1/groups/{group_id}/invites", get(invites::list_group_pending_invites))
+        // Cancel a pending invite for a user in a group (admin only).
+        .route("/api/v1/groups/{group_id}/cancel-invite", post(invites::cancel_invite))
+        // Accept a pending invite and join the group.
+        .route("/api/v1/invites/{invite_id}/accept", post(invites::accept_invite))
+        // Decline a pending invite.
+        .route("/api/v1/invites/{invite_id}/decline", post(invites::decline_invite))
+
+        //
+        // Welcomes
+        //
+
+        // List pending MLS welcome messages for the current user.
+        .route("/api/v1/welcomes", get(welcomes::list_pending_welcomes))
+        // Accept and consume a pending MLS welcome, joining the group.
+        .route("/api/v1/welcomes/{welcome_id}/accept", post(welcomes::accept_welcome))
+
+        //
+        // Messaging
+        //
+
+        // Upload an MLS commit message (for group state changes like key rotation).
+        .route("/api/v1/groups/{group_id}/commit", post(messages::upload_commit))
+        // POST: send an MLS-encrypted message to a group. GET: fetch messages after a given sequence number.
+        .route("/api/v1/groups/{group_id}/messages", post(messages::send_message).get(messages::get_messages))
+
+        //
+        // Server-Sent Events
+        //
+
+        // Subscribe to real-time SSE event stream for the current user.
         .route("/api/v1/events", get(sse::sse_stream))
-        .route(
-            "/api/v1/users/by-id/{user_id}",
-            get(auth::get_user_by_id),
-        )
-        .route(
-            "/api/v1/users/{username}",
-            get(auth::get_user_by_username),
-        )
+
         // Limit request body size to 1 MiB to prevent memory exhaustion.
         .layer(DefaultBodyLimit::max(1024 * 1024))
 }

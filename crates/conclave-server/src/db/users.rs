@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 use crate::db::UserRow;
 use crate::error::{Error, Result};

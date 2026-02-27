@@ -422,10 +422,7 @@ impl ApiClient {
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
     }
 
-    pub async fn get_user_by_id(
-        &self,
-        user_id: i64,
-    ) -> Result<conclave_proto::UserInfoResponse> {
+    pub async fn get_user_by_id(&self, user_id: i64) -> Result<conclave_proto::UserInfoResponse> {
         let bytes = self.get(&format!("/api/v1/users/by-id/{user_id}")).await?;
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
     }

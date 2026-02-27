@@ -10,6 +10,8 @@ use conclave_client::state::{DisplayMessage, Room};
 use super::{Conclave, Message};
 
 impl Conclave {
+    // Result handlers
+
     pub(crate) fn handle_group_created(
         &mut self,
         result: Result<operations::GroupCreatedResult, String>,
@@ -339,7 +341,7 @@ impl Conclave {
         }
     }
 
-    // ── Message sending ───────────────────────────────────────────
+    // Message sending
 
     pub(crate) fn send_message(&mut self, text: String) -> Task<Message> {
         let group_id = match self.active_room {
@@ -411,7 +413,7 @@ impl Conclave {
         )
     }
 
-    // ── Group operations ──────────────────────────────────────────
+    // Group lifecycle
 
     pub(crate) fn create_group(&mut self, name: String) -> Task<Message> {
         let user_id = match self.user_id {
@@ -509,6 +511,8 @@ impl Conclave {
             Message::RefreshRooms,
         )
     }
+
+    // Invites
 
     pub(crate) fn list_invites(&mut self) -> Task<Message> {
         let params = self.api_params();
@@ -687,6 +691,8 @@ impl Conclave {
         )
     }
 
+    // Member management
+
     pub(crate) fn kick_member(&mut self, target: String) -> Task<Message> {
         let group_id = match self.active_room {
             Some(id) => id,
@@ -830,6 +836,8 @@ impl Conclave {
         )
     }
 
+    // Leave / key rotation / reset
+
     pub(crate) fn leave_group(&mut self) -> Task<Message> {
         let group_id = match self.active_room {
             Some(id) => id,
@@ -948,6 +956,8 @@ impl Conclave {
             Message::ResetComplete,
         )
     }
+
+    // Message fetching
 
     pub(crate) fn fetch_all_missed_messages(&mut self) -> Task<Message> {
         // Collect eligible group IDs first, then create fetch tasks.

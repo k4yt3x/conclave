@@ -66,38 +66,36 @@ pub struct Conclave {
 #[derive(Debug, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
-    // Screen messages
+    // Screen navigation
     Login(screen::login::Message),
     Dashboard(screen::dashboard::Message),
-    // Async results
+
+    // Authentication results
     LoginResult(Result<LoginInfo, String>),
     RegisterResult(Result<LoginInfo, String>),
+
+    // Room / message async results
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
     MessagesFetched(Result<operations::FetchedMessages, (i64, String)>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
+
     // SSE
     SseEvent(SseUpdate),
-    // Commands
+
+    // Command results
     CommandResult(Result<Vec<DisplayMessage>, String>),
-    /// A group was created or joined — update mapping and refresh rooms.
     GroupCreated(Result<operations::GroupCreatedResult, String>),
-    /// A group operation completed that requires a room refresh.
     RefreshRooms(Result<Vec<DisplayMessage>, String>),
-    /// Account reset completed — update group mapping and MLS state.
     ResetComplete(Result<operations::ResetResult, String>),
-    /// User alias loaded from server.
     UserAliasLoaded(Result<Option<String>, String>),
-    /// /nick command result — carries the new alias.
     NickResult(Result<String, String>),
-    /// /topic command result — carries the new topic.
     TopicResult(Result<String, String>),
-    /// Tab key pressed (for login field navigation).
+
+    // Keyboard / window events
     TabPressed,
-    /// Escape key pressed (close popover, etc.).
     EscapePressed,
-    /// Quit the application (e.g. Ctrl+Q).
     Quit,
     WindowFocused,
     WindowUnfocused,
@@ -228,10 +226,15 @@ impl Conclave {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            // Screen navigation
             Message::Login(msg) => self.handle_login_message(msg),
             Message::Dashboard(msg) => self.handle_dashboard_message(msg),
+
+            // Authentication results
             Message::LoginResult(result) => self.handle_login_result(result),
             Message::RegisterResult(result) => self.handle_register_result(result),
+
+            // Room / message async results
             Message::RoomsLoaded(result) => self.handle_rooms_loaded(result),
             Message::MessageSent(result) => self.handle_message_sent(result),
             Message::MessagesFetched(result) => self.handle_messages_fetched(result),
@@ -242,7 +245,11 @@ impl Conclave {
                 Task::none()
             }
             Message::WelcomesProcessed(result) => self.handle_welcomes_processed(result),
+
+            // SSE
             Message::SseEvent(update) => self.handle_sse_event(update),
+
+            // Command results
             Message::CommandResult(result) => {
                 match result {
                     Ok(msgs) => {
@@ -254,6 +261,48 @@ impl Conclave {
                 }
                 Task::none()
             }
+            Message::GroupCreated(result) => self.handle_group_created(result),
+            Message::RefreshRooms(result) => {
+                match result {
+                    Ok(msgs) => {
+                        for msg in msgs {
+                            self.add_message(None, msg);
+                        }
+                    }
+                    Err(e) => self.push_system_message(&format!("Error: {e}")),
+                }
+                self.load_rooms_task()
+            }
+            Message::ResetComplete(result) => self.handle_reset_complete(result),
+            Message::UserAliasLoaded(result) => {
+                if let Ok(alias) = result {
+                    self.user_alias = alias;
+                }
+                Task::none()
+            }
+            Message::NickResult(result) => match result {
+                Ok(alias) => {
+                    self.user_alias = Some(alias.clone());
+                    self.push_system_message(&format!("Alias set to: {alias}"));
+                    self.load_rooms_task()
+                }
+                Err(e) => {
+                    self.push_system_message(&format!("Failed to set alias: {e}"));
+                    Task::none()
+                }
+            },
+            Message::TopicResult(result) => match result {
+                Ok(topic) => {
+                    self.push_system_message(&format!("Room alias set to: {topic}"));
+                    self.load_rooms_task()
+                }
+                Err(e) => {
+                    self.push_system_message(&format!("Failed to set topic: {e}"));
+                    Task::none()
+                }
+            },
+
+            // Keyboard / window events
             Message::TabPressed => {
                 if matches!(self.screen, screen::Screen::Login(_)) {
                     focus_next()
@@ -287,46 +336,6 @@ impl Conclave {
             Message::WindowUnfocused => {
                 self.window_focused = false;
                 Task::none()
-            }
-            Message::ResetComplete(result) => self.handle_reset_complete(result),
-            Message::UserAliasLoaded(result) => {
-                if let Ok(alias) = result {
-                    self.user_alias = alias;
-                }
-                Task::none()
-            }
-            Message::NickResult(result) => match result {
-                Ok(alias) => {
-                    self.user_alias = Some(alias.clone());
-                    self.push_system_message(&format!("Alias set to: {alias}"));
-                    self.load_rooms_task()
-                }
-                Err(e) => {
-                    self.push_system_message(&format!("Failed to set alias: {e}"));
-                    Task::none()
-                }
-            },
-            Message::TopicResult(result) => match result {
-                Ok(topic) => {
-                    self.push_system_message(&format!("Room alias set to: {topic}"));
-                    self.load_rooms_task()
-                }
-                Err(e) => {
-                    self.push_system_message(&format!("Failed to set topic: {e}"));
-                    Task::none()
-                }
-            },
-            Message::GroupCreated(result) => self.handle_group_created(result),
-            Message::RefreshRooms(result) => {
-                match result {
-                    Ok(msgs) => {
-                        for msg in msgs {
-                            self.add_message(None, msg);
-                        }
-                    }
-                    Err(e) => self.push_system_message(&format!("Error: {e}")),
-                }
-                self.load_rooms_task()
             }
         }
     }

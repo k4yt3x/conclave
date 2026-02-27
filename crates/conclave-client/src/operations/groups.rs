@@ -62,9 +62,7 @@ pub async fn invite_members(
     let mut invited = Vec::new();
 
     for &member_id in &member_ids {
-        let response = api
-            .invite_to_group(server_group_id, vec![member_id])
-            .await;
+        let response = api.invite_to_group(server_group_id, vec![member_id]).await;
 
         let response = match response {
             Ok(r) => r,
@@ -193,8 +191,13 @@ pub async fn kick_member(
     .await
     .map_err(super::map_join_error)??;
 
-    api.remove_member(server_group_id, target_user_id, commit_bytes, group_info_bytes)
-        .await?;
+    api.remove_member(
+        server_group_id,
+        target_user_id,
+        commit_bytes,
+        group_info_bytes,
+    )
+    .await?;
 
     Ok(())
 }

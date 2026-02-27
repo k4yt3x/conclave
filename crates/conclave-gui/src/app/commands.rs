@@ -138,12 +138,15 @@ impl Conclave {
 
     fn handle_input_text(&mut self, text: String) -> Task<Message> {
         match conclave_client::command::parse(&text) {
+            // General
             Ok(Command::Quit) => iced::exit(),
             Ok(Command::Message { text }) => self.send_message(text),
             Ok(Command::Help) => {
                 self.show_help();
                 Task::none()
             }
+
+            // Rooms
             Ok(Command::List) => {
                 let params = self.api_params();
                 let active_room = self.active_room;
@@ -183,6 +186,8 @@ impl Conclave {
                 self.switch_to_room(&target);
                 Task::none()
             }
+
+            // Members
             Ok(Command::Who) => {
                 if let Some(room_id) = self.active_room {
                     if let Some(room) = self.rooms.get(&room_id) {
@@ -229,6 +234,8 @@ impl Conclave {
                 self.show_unread();
                 Task::none()
             }
+
+            // Account
             Ok(Command::Whois) => {
                 let params = self.api_params();
                 Task::perform(
@@ -256,6 +263,8 @@ impl Conclave {
                     Message::NickResult,
                 )
             }
+
+            // Rooms (continued)
             Ok(Command::Topic { topic }) => {
                 let group_id = match self.active_room {
                     Some(id) => id,
@@ -277,12 +286,18 @@ impl Conclave {
                     Message::TopicResult,
                 )
             }
+
+            // Account (continued)
             Ok(Command::Login { .. }) | Ok(Command::Register { .. }) => {
                 self.push_system_message("Already logged in. Use /logout first.");
                 Task::none()
             }
             Ok(Command::Logout) => self.perform_logout(),
+
+            // Group lifecycle
             Ok(Command::Create { name }) => self.create_group(name),
+
+            // Members (continued)
             Ok(Command::Invite { members }) => self.invite_members(members),
             Ok(Command::Kick { username }) => self.kick_member(username),
             Ok(Command::Promote { username }) => self.promote_member(username),
@@ -327,11 +342,15 @@ impl Conclave {
                     Message::CommandResult,
                 )
             }
+
+            // Invites
             Ok(Command::Invited) => self.list_group_invites(),
             Ok(Command::Uninvite { username }) => self.cancel_invite(username),
             Ok(Command::Invites) => self.list_invites(),
             Ok(Command::Accept { invite_id }) => self.accept_invites(invite_id),
             Ok(Command::Decline { invite_id }) => self.decline_invite(invite_id),
+
+            // Leave / messaging / reset
             Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
             Ok(Command::Reset) => self.reset_account(),

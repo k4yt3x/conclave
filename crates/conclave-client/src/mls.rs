@@ -1542,9 +1542,7 @@ mod tests {
         let result = alice.create_group(&members).unwrap();
         let group_id = result.mls_group_id;
         let bob_gid = bob.join_group(result.welcomes.get(&2).unwrap()).unwrap();
-        let carol_gid = carol
-            .join_group(result.welcomes.get(&3).unwrap())
-            .unwrap();
+        let carol_gid = carol.join_group(result.welcomes.get(&3).unwrap()).unwrap();
         assert_eq!(bob_gid, group_id);
         assert_eq!(carol_gid, group_id);
 
@@ -1883,12 +1881,8 @@ mod tests {
         let group_id = result.mls_group_id;
 
         let bob_gid = bob.join_group(result.welcomes.get(&2).unwrap()).unwrap();
-        let carol_gid = carol
-            .join_group(result.welcomes.get(&3).unwrap())
-            .unwrap();
-        let dave_gid = dave
-            .join_group(result.welcomes.get(&4).unwrap())
-            .unwrap();
+        let carol_gid = carol.join_group(result.welcomes.get(&3).unwrap()).unwrap();
+        let dave_gid = dave.join_group(result.welcomes.get(&4).unwrap()).unwrap();
         let eve_gid = eve.join_group(result.welcomes.get(&5).unwrap()).unwrap();
 
         assert_eq!(bob_gid, group_id);
@@ -2094,9 +2088,7 @@ mod tests {
         members1.insert(2, bob_kp1);
         let result1 = alice.create_group(&members1).unwrap();
         let group1_id = result1.mls_group_id;
-        let bob_gid1 = bob
-            .join_group(result1.welcomes.get(&2).unwrap())
-            .unwrap();
+        let bob_gid1 = bob.join_group(result1.welcomes.get(&2).unwrap()).unwrap();
 
         // Create group 2 (alice + bob).
         let bob_kp2 = bob.generate_key_package().unwrap();
@@ -2104,9 +2096,7 @@ mod tests {
         members2.insert(2, bob_kp2);
         let result2 = alice.create_group(&members2).unwrap();
         let group2_id = result2.mls_group_id;
-        let bob_gid2 = bob
-            .join_group(result2.welcomes.get(&2).unwrap())
-            .unwrap();
+        let bob_gid2 = bob.join_group(result2.welcomes.get(&2).unwrap()).unwrap();
 
         assert_ne!(group1_id, group2_id, "two groups must have different IDs");
 
@@ -2233,9 +2223,7 @@ mod tests {
         members.insert(2, bob2_kp);
         let result2 = alice2.create_group(&members).unwrap();
         let group2_id = result2.mls_group_id;
-        let bob2_gid = bob2
-            .join_group(result2.welcomes.get(&2).unwrap())
-            .unwrap();
+        let bob2_gid = bob2.join_group(result2.welcomes.get(&2).unwrap()).unwrap();
 
         let leave_result = bob2.leave_group(&bob2_gid).unwrap();
         if let Some((leave_commit, _gi)) = leave_result {

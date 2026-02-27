@@ -20,9 +20,7 @@ pub async fn invite_to_group(
     let request = decode_proto::<conclave_proto::InviteToGroupRequest>(&body)?;
 
     if request.user_ids.is_empty() {
-        return Err(Error::BadRequest(
-            "at least one user_id is required".into(),
-        ));
+        return Err(Error::BadRequest("at least one user_id is required".into()));
     }
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
@@ -49,7 +47,9 @@ pub async fn invite_to_group(
         }
 
         let key_package_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
-            Error::NotFound(format!("no key package available for user with ID {member_id}"))
+            Error::NotFound(format!(
+                "no key package available for user with ID {member_id}"
+            ))
         })?;
 
         member_key_packages.insert(member_id, key_package_data);

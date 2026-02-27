@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 use crate::error::Result;
 

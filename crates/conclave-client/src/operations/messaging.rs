@@ -43,8 +43,7 @@ pub async fn fetch_and_decrypt(
             .await
             .map_err(super::map_join_error)?;
 
-        let sender_display =
-            resolve_user_display_name(Some(stored_message.sender_id), members);
+        let sender_display = resolve_user_display_name(Some(stored_message.sender_id), members);
 
         match decrypted {
             Ok(DecryptedMessage::Application(plaintext)) => {

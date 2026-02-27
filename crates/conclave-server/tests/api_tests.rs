@@ -3734,9 +3734,7 @@ async fn test_promote_member_success() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice promotes Bob.
-    let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3800,9 +3798,7 @@ async fn test_promote_member_already_admin() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
-    let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3817,9 +3813,7 @@ async fn test_promote_member_already_admin() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Promote Bob again — should conflict (409).
-    let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3845,9 +3839,7 @@ async fn test_promote_member_not_member_rejected() {
     let group_id = create_group_for(&app, &alice_token, "test_promote_nonmember").await;
 
     // Try to promote Bob who is not a member.
-    let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3877,9 +3869,7 @@ async fn test_demote_member_success() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
-    let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
     let request = Request::builder()
@@ -3892,9 +3882,7 @@ async fn test_demote_member_success() {
     app.clone().oneshot(request).await.unwrap();
 
     // Alice demotes Bob.
-    let request_body = conclave_proto::DemoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::DemoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3924,9 +3912,7 @@ async fn test_demote_member_not_admin_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (regular member) tries to demote Alice.
-    let request_body = conclave_proto::DemoteMemberRequest {
-        user_id: alice_id,
-    };
+    let request_body = conclave_proto::DemoteMemberRequest { user_id: alice_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3956,9 +3942,7 @@ async fn test_demote_last_admin_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice is the only admin — try to demote herself.
-    let request_body = conclave_proto::DemoteMemberRequest {
-        user_id: alice_id,
-    };
+    let request_body = conclave_proto::DemoteMemberRequest { user_id: alice_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -3988,9 +3972,7 @@ async fn test_demote_regular_member_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice tries to demote Bob who is not an admin.
-    let request_body = conclave_proto::DemoteMemberRequest {
-        user_id: bob_id,
-    };
+    let request_body = conclave_proto::DemoteMemberRequest { user_id: bob_id };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 

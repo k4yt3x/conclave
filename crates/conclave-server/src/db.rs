@@ -220,10 +220,12 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::{OptionalExtension, params};
+    use rusqlite::{params, OptionalExtension};
 
     use super::*;
     use crate::validation::validate_alias;
+
+    // Users
 
     #[test]
     fn test_user_crud() {
@@ -243,6 +245,8 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Key packages
+
     #[test]
     fn test_key_packages() {
         let db = Database::open_in_memory().unwrap();
@@ -255,6 +259,8 @@ mod tests {
         // Consumed, should be gone.
         assert!(db.consume_key_package(uid).unwrap().is_none());
     }
+
+    // Groups and messages
 
     #[test]
     fn test_groups_and_messages() {
@@ -330,6 +336,8 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // Sessions
+
     #[test]
     fn test_session_create_validate() {
         let db = Database::open_in_memory().unwrap();
@@ -387,6 +395,8 @@ mod tests {
         assert_eq!(db.validate_session("valid_token").unwrap(), Some(uid));
         assert!(db.validate_session("expired_token").unwrap().is_none());
     }
+
+    // Key packages (continued)
 
     #[test]
     fn test_key_package_accumulate() {
@@ -462,6 +472,8 @@ mod tests {
         let result = db.consume_key_package(9999).unwrap();
         assert!(result.is_none());
     }
+
+    // Groups and membership
 
     #[test]
     fn test_group_membership_check_nonmember() {
@@ -553,6 +565,8 @@ mod tests {
         assert_eq!(members[0].username, "alice");
     }
 
+    // Messages
+
     #[test]
     fn test_messages_sequence_numbers() {
         let db = Database::open_in_memory().unwrap();
@@ -610,6 +624,8 @@ mod tests {
         assert_eq!(msgs[1].sequence_num, 2);
     }
 
+    // Welcomes
+
     #[test]
     fn test_pending_welcomes_crud() {
         let db = Database::open_in_memory().unwrap();
@@ -643,6 +659,8 @@ mod tests {
         assert!(welcomes.is_empty());
     }
 
+    // Group info
+
     #[test]
     fn test_store_group_info_insert_and_upsert() {
         let db = Database::open_in_memory().unwrap();
@@ -667,6 +685,8 @@ mod tests {
         let result = db.get_group_info(9999).unwrap();
         assert!(result.is_none());
     }
+
+    // Key packages (cleanup)
 
     #[test]
     fn test_delete_key_packages() {
@@ -704,6 +724,8 @@ mod tests {
         let result = db.get_user_id_by_username("nobody").unwrap();
         assert!(result.is_none());
     }
+
+    // Commits
 
     #[test]
     fn test_process_commit_empty_commit_message() {
@@ -867,6 +889,8 @@ mod tests {
         assert_eq!(found, Some(uid));
     }
 
+    // Aliases
+
     #[test]
     fn test_user_alias() {
         let db = Database::open_in_memory().unwrap();
@@ -994,6 +1018,8 @@ mod tests {
         let result = db.update_user_alias(uid, Some("bad\x01alias"));
         assert!(result.is_err());
     }
+
+    // Admin roles
 
     #[test]
     fn test_create_group_creator_is_admin() {
@@ -1131,6 +1157,8 @@ mod tests {
         let admins = db.get_group_admins(group_id).unwrap();
         assert_eq!(admins.len(), 2);
     }
+
+    // Invites
 
     #[test]
     fn test_create_and_get_pending_invite() {
