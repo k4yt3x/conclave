@@ -8,7 +8,7 @@ use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
 
 use conclave_client::api::{ApiClient, normalize_server_url};
-use conclave_client::config::{ClientConfig, SessionState, generate_initial_key_packages};
+use conclave_client::config::{ClientConfig, SessionState};
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
 use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
@@ -61,7 +61,6 @@ pub struct Conclave {
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     pub(crate) fetch_messages_on_rooms_load: bool,
     pub(crate) window_focused: bool,
-    pub(crate) skip_keygen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +75,6 @@ pub enum Message {
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
     MessagesFetched(Result<operations::FetchedMessages, (i64, String)>),
-    KeygenDone(Result<Vec<(Vec<u8>, bool)>, String>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
     // SSE
@@ -152,7 +150,6 @@ impl Conclave {
             fetching_groups: HashSet::new(),
             fetch_messages_on_rooms_load: false,
             window_focused: true,
-            skip_keygen: false,
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -167,7 +164,7 @@ impl Conclave {
             app.server_url = Some(normalize_server_url(&server_url));
             app.username = Some(username.clone());
             app.user_id = Some(user_id);
-            app.token = Some(token);
+            app.token = Some(token.clone());
 
             if let Ok(mls) = MlsManager::new(&app.config.data_dir, user_id) {
                 app.mls = Some(mls);
@@ -185,16 +182,19 @@ impl Conclave {
             ))];
 
             let data_dir = app.config.data_dir.clone();
+            let accept_invalid_certs = app.config.accept_invalid_certs;
+            let server_url = app.server_url.clone().unwrap_or_default();
+            let token_clone = token.clone();
             let keygen_task = Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || {
-                        let mls = MlsManager::new(&data_dir, user_id).map_err(|e| e.to_string())?;
-                        generate_initial_key_packages(&mls).map_err(|e| e.to_string())
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?
+                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                    api.set_token(token_clone);
+                    operations::initialize_mls_and_upload_key_packages(&api, &data_dir, user_id)
+                        .await
+                        .map_err(|e| e.to_string())
+                        .map(|_| ())
                 },
-                Message::KeygenDone,
+                Message::KeyPackageUploaded,
             );
 
             let rooms_task = app.load_rooms_task();
@@ -235,7 +235,6 @@ impl Conclave {
             Message::RoomsLoaded(result) => self.handle_rooms_loaded(result),
             Message::MessageSent(result) => self.handle_message_sent(result),
             Message::MessagesFetched(result) => self.handle_messages_fetched(result),
-            Message::KeygenDone(result) => self.handle_keygen_done(result),
             Message::KeyPackageUploaded(result) => {
                 if let Err(e) = result {
                     self.push_system_message(&format!("Key package upload failed: {e}"));

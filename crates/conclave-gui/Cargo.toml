@@ -12,6 +12,7 @@ path = "src/main.rs"
 async-stream = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 conclave-client = { path = "../conclave-client" }
+notify-rust = "4.11"
 conclave-proto = { workspace = true }
 futures-util = "0.3"
 hex = { workspace = true }

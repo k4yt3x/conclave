@@ -115,16 +115,15 @@ message ListPendingWelcomesResponse {
 // ============================================================
 
 message InviteToGroupRequest {
-  repeated string usernames = 1;
+  repeated int64 user_ids = 1;
 }
 
 message InviteToGroupResponse {
-  // Key packages for each invited user, keyed by username
-  map<string, bytes> member_key_packages = 1;
+  map<int64, bytes> member_key_packages = 1;
 }
 
 message EscrowInviteRequest {
-  string invitee_username = 1;
+  int64 invitee_id = 1;
   bytes commit_message = 2;
   bytes welcome_message = 3;
   bytes group_info = 4;
@@ -139,6 +138,8 @@ message PendingInvite {
   string group_alias = 4;
   string inviter_username = 5;
   uint64 created_at = 6;
+  int64 invitee_id = 7;
+  int64 inviter_id = 8;
 }
 
 message ListPendingInvitesResponse {
@@ -149,18 +150,28 @@ message AcceptInviteResponse {}
 
 message DeclineInviteResponse {}
 
+message ListGroupPendingInvitesResponse {
+  repeated PendingInvite invites = 1;
+}
+
+message CancelInviteRequest {
+  int64 invitee_id = 1;
+}
+
+message CancelInviteResponse {}
+
 // ============================================================
 // Admin Management
 // ============================================================
 
 message PromoteMemberRequest {
-  string username = 1;
+  int64 user_id = 1;
 }
 
 message PromoteMemberResponse {}
 
 message DemoteMemberRequest {
-  string username = 1;
+  int64 user_id = 1;
 }
 
 message DemoteMemberResponse {}
@@ -184,10 +195,10 @@ message SendMessageResponse {
 message StoredMessage {
   uint64 sequence_num = 1;
   int64 sender_id = 2;
-  string sender_username = 3;
+  // Field 3 removed (was sender_username).
   bytes mls_message = 4;
   uint64 created_at = 5;
-  string sender_alias = 6;
+  // Field 6 removed (was sender_alias).
 }
 
 message GetMessagesResponse {
@@ -199,7 +210,7 @@ message GetMessagesResponse {
 // ============================================================
 
 message RemoveMemberRequest {
-  string username = 1;
+  int64 user_id = 1;
   bytes commit_message = 2;
   bytes group_info = 3;
 }
@@ -261,6 +272,7 @@ message ServerEvent {
     IdentityResetEvent identity_reset = 5;
     InviteReceivedEvent invite_received = 6;
     InviteDeclinedEvent invite_declined = 7;
+    InviteCancelledEvent invite_cancelled = 8;
   }
 }
 
@@ -282,12 +294,12 @@ message WelcomeEvent {
 
 message MemberRemovedEvent {
   int64 group_id = 1;
-  string removed_username = 2;
+  int64 removed_user_id = 2;
 }
 
 message IdentityResetEvent {
   int64 group_id = 1;
-  string username = 2;
+  int64 user_id = 2;
 }
 
 message InviteReceivedEvent {
@@ -295,12 +307,16 @@ message InviteReceivedEvent {
   int64 group_id = 2;
   string group_name = 3;
   string group_alias = 4;
-  string inviter_username = 5;
+  int64 inviter_id = 5;
 }
 
 message InviteDeclinedEvent {
   int64 group_id = 1;
-  string declined_username = 2;
+  int64 declined_user_id = 2;
+}
+
+message InviteCancelledEvent {
+  int64 group_id = 1;
 }
 
 // ============================================================

@@ -1,4 +1,4 @@
-use crate::sanitize_control_chars;
+use conclave_client::sanitize_control_chars;
 
 const MAX_SUMMARY_LENGTH: usize = 256;
 const MAX_BODY_LENGTH: usize = 1024;

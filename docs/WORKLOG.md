@@ -1,5 +1,95 @@
 # Conclave Work Log
 
+## 2026-02-27: Remove Embedded Names from StoredMessage, Add User Lookup by ID
+
+Continued the ID-first convention enforcement. Removed `sender_username` and `sender_alias` fields from `StoredMessage` protobuf — the server no longer JOINs the users table when fetching messages. Clients now resolve sender display names from their local member cache (populated by `ListGroupsResponse`). Added `inviter_id` field to `PendingInvite` so both the ID and display name are available. Added `GET /api/v1/users/by-id/{user_id}` endpoint for client-side ID→name resolution when the local cache has a miss (e.g., for users who have left the group).
+
+### Changes
+- **Proto**: Removed `sender_username` (field 3) and `sender_alias` (field 6) from `StoredMessage`. Added `inviter_id` (field 8) to `PendingInvite`.
+- **Server**: Simplified `db/messages.rs` `get_messages()` query to remove JOIN. Added `get_user_by_id` handler and `/api/v1/users/by-id/{user_id}` route. Populated `inviter_id` in invite list responses.
+- **Client**: `operations/messaging.rs` now resolves sender display name from member cache via `resolve_user_display_name()` instead of using server-provided username. Added `get_user_by_id()` API method.
+- **Tests**: Added `test_get_user_by_id_success` and `test_get_user_by_id_not_found`. Added `inviter_id` assertion to existing invite test.
+
+## 2026-02-27: Enforce user_id/group_id as Primary Identifiers Everywhere
+
+Refactored all request messages (client-to-server) and SSE events to use integer IDs (`user_id`/`group_id`) instead of username strings. Response/info messages (like `GroupMember`, `StoredMessage`, `PendingInvite`) retain both ID and username for display convenience. Username resolution now happens at the UI boundary (CLI/GUI command handlers), not in operations or API layers.
+
+### Protobuf changes (`conclave.proto`)
+- `InviteToGroupRequest.usernames` → `repeated int64 user_ids`
+- `InviteToGroupResponse.member_key_packages` → `map<int64, bytes>`
+- `EscrowInviteRequest.invitee_username` → `int64 invitee_id`
+- `PromoteMemberRequest.username` → `int64 user_id`
+- `DemoteMemberRequest.username` → `int64 user_id`
+- `RemoveMemberRequest.username` → `int64 user_id`
+- `MemberRemovedEvent.removed_username` → `int64 removed_user_id`
+- `IdentityResetEvent.username` → `int64 user_id`
+- `InviteReceivedEvent.inviter_username` → `int64 inviter_id`
+- `InviteDeclinedEvent.declined_username` → `int64 declined_user_id`
+
+### Server changes
+- **`api/members.rs`**: `invite_to_group` accepts `user_ids`, verifies via `get_user_by_id()`. `remove_group_member`, `promote_member`, `demote_member` accept `user_id` directly. `leave_group` broadcasts `removed_user_id`.
+- **`api/invites.rs`**: `escrow_invite` accepts `invitee_id`. `cancel_invite`/`decline_invite` broadcast `declined_user_id`. `InviteReceivedEvent` uses `inviter_id`.
+- **`api/external.rs`**: `external_join` broadcasts `IdentityResetEvent` with `user_id`.
+
+### Client library changes
+- **`mls.rs`**: All `HashMap` keys changed from `String` to `i64` in `GroupCreationResult`, `InviteResult`, `build_commit_with_members`, `create_group`, `invite_to_group`. Internal `kp_ref_to_username` → `kp_ref_to_user_id`. All MLS tests updated.
+- **`api.rs`**: `invite_to_group`, `escrow_invite`, `promote_member`, `demote_member`, `remove_member` accept IDs instead of strings.
+- **`operations/groups.rs`**: `invite_members` takes `Vec<i64>`, returns `Vec<i64>`. `kick_member` removed `target_username` parameter. `cancel_invite` takes `user_id` instead of username.
+- **`operations.rs`**: `SseEvent` enum variants updated to use `removed_user_id`, `user_id`, `inviter_id`, `declined_user_id`. `decode_sse_event()` updated.
+
+### CLI changes
+- **`tui/commands.rs`**: `/invite`, `/kick`, `/promote`, `/demote`, `/uninvite` resolve usernames → user_ids at the UI boundary before calling operations.
+- **`tui/events.rs`**: SSE handlers use user_id for self-detection and resolve display names from local member list.
+- **`main.rs`**: One-shot `Invite` command resolves usernames → user_ids.
+
+### GUI changes
+- **`subscription.rs`**: `SseUpdate` enum variants updated to use IDs.
+- **`app/sse.rs`**: SSE handlers use user_id for self-detection and resolve display names from local member list.
+- **`app/rooms.rs`**: `invite_members`, `kick_member`, `promote_member`, `demote_member`, `cancel_invite` resolve usernames → user_ids at the UI boundary.
+
+### Test updates
+- **`api_tests.rs`**: All 158 tests updated to use `user_id`/`user_ids` in request construction and SSE assertions.
+- **`protocol_flow_tests.rs`**: All 9 tests updated. `invite_members` and `escrow_and_accept_invite` helpers take IDs instead of strings.
+
+## 2026-02-26: Add `/invited` and `/uninvite` Commands + Fix `/register` Description
+
+### `/register` description fix
+- Updated description from "Register a new account" to "Register a new account and login" in `command.rs` and CLI `main.rs`, matching actual behavior (register + auto-login).
+
+### New commands: `/invited` and `/uninvite`
+Added two admin commands for managing pending invites on the active room:
+- `/invited` — List pending invites for the active room (admin-only)
+- `/uninvite <username>` — Cancel a pending invite (admin-only)
+
+### Protobuf changes (`conclave.proto`)
+- Added `invitee_id` field (7) to `PendingInvite` message
+- Added `ListGroupPendingInvitesResponse`, `CancelInviteRequest`, `CancelInviteResponse` messages
+- Added `InviteCancelledEvent` message and `invite_cancelled` (8) to `ServerEvent.oneof`
+
+### Server changes
+- **Database** (`db/invites.rs`): Added `list_pending_invites_for_group()` and `get_pending_invite_by_group_and_invitee()` methods
+- **API** (`api/invites.rs`): Added `list_group_pending_invites` (GET `/api/v1/groups/{group_id}/invites`) and `cancel_invite` (POST `/api/v1/groups/{group_id}/cancel-invite`) handlers. Both require admin role. Cancel sends `InviteCancelledEvent` to invitee and `InviteDeclinedEvent` to inviter (for phantom MLS leaf cleanup)
+- **Routes** (`api.rs`): Registered both new endpoints
+- **Existing handler**: Populated new `invitee_id` field in `list_pending_invites` response
+- **Tests**: Added 7 tests — `test_list_group_pending_invites_empty`, `test_list_group_pending_invites_success`, `test_list_group_pending_invites_not_admin`, `test_cancel_invite_success`, `test_cancel_invite_not_found`, `test_cancel_invite_not_admin`, `test_cancel_invite_nonexistent_user`
+
+### Client changes
+- **API** (`api.rs`): Added `list_group_pending_invites()`, `cancel_invite()`, and `get_user_by_username()` methods
+- **SSE** (`operations.rs`): Added `SseEvent::InviteCancelled` variant and decoding
+- **Operations** (`operations/groups.rs`): Added `list_group_pending_invites()` and `cancel_invite()` (resolves username → user_id internally)
+- **Command parser** (`command.rs`): Added `Invited` and `Uninvite` to COMMANDS array (Members category), Command enum, and parser. Added 3 tests
+
+### CLI TUI changes
+- **Commands** (`tui/commands.rs`): Added handlers for `Invited` (shows invitee + inviter names) and `Uninvite` (calls cancel_invite)
+- **SSE** (`tui/events.rs`): Handles `InviteCancelled` event with system message
+
+### GUI changes
+- **Commands** (`app/commands.rs`): Routes `Invited` and `Uninvite` commands
+- **Room operations** (`app/rooms.rs`): Added `list_group_invites()` and `cancel_invite()` methods
+- **SSE** (`app/sse.rs`, `subscription.rs`): Added `InviteCancelled` SSE variant and handler
+
+All 507 tests pass. Release build clean (no warnings).
+
 ## 2026-02-24: Code Style Review — Refinements
 
 Applied 8 code style improvements across the workspace. No behavioral changes — all 497 tests pass.

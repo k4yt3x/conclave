@@ -43,11 +43,8 @@ pub async fn fetch_and_decrypt(
             .await
             .map_err(super::map_join_error)?;
 
-        let sender_display = if !stored_message.sender_alias.is_empty() {
-            stored_message.sender_alias.clone()
-        } else {
-            stored_message.sender_username.clone()
-        };
+        let sender_display =
+            resolve_user_display_name(Some(stored_message.sender_id), members);
 
         match decrypted {
             Ok(DecryptedMessage::Application(plaintext)) => {

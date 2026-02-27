@@ -29,11 +29,10 @@ impl Database {
     ) -> Result<Vec<StoredMessageRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT m.sequence_num, m.sender_id, u.username, u.alias, m.mls_message, m.created_at
-             FROM messages m
-             JOIN users u ON m.sender_id = u.id
-             WHERE m.group_id = ?1 AND m.sequence_num > ?2
-             ORDER BY m.sequence_num ASC
+            "SELECT sequence_num, sender_id, mls_message, created_at
+             FROM messages
+             WHERE group_id = ?1 AND sequence_num > ?2
+             ORDER BY sequence_num ASC
              LIMIT ?3",
         )?;
         let rows = stmt
@@ -41,10 +40,8 @@ impl Database {
                 Ok(StoredMessageRow {
                     sequence_num: row.get(0)?,
                     sender_id: row.get(1)?,
-                    sender_username: row.get(2)?,
-                    sender_alias: row.get(3)?,
-                    mls_message: row.get(4)?,
-                    created_at: row.get(5)?,
+                    mls_message: row.get(2)?,
+                    created_at: row.get(3)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

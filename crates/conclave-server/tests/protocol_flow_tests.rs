@@ -112,14 +112,14 @@ async fn create_server_group(app: &Router, token: &str, name: &str) -> i64 {
     resp.group_id
 }
 
-/// Fetch key packages for the given usernames via the /invite endpoint.
+/// Fetch key packages for the given user IDs via the /invite endpoint.
 async fn invite_members(
     app: &Router,
     token: &str,
     group_id: i64,
-    usernames: Vec<String>,
-) -> HashMap<String, Vec<u8>> {
-    let req_body = conclave_proto::InviteToGroupRequest { usernames };
+    user_ids: Vec<i64>,
+) -> HashMap<i64, Vec<u8>> {
+    let req_body = conclave_proto::InviteToGroupRequest { user_ids };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
@@ -233,13 +233,13 @@ async fn escrow_and_accept_invite(
     admin_token: &str,
     member_token: &str,
     group_id: i64,
-    member_username: &str,
+    member_id: i64,
     commit_message: Vec<u8>,
     welcome_message: Vec<u8>,
     group_info: Vec<u8>,
 ) {
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: member_username.to_string(),
+        invitee_id: member_id,
         commit_message,
         welcome_message,
         group_info,
@@ -307,7 +307,7 @@ async fn test_e2e_group_creation_and_messaging() {
 
     // Create server group (no members), then invite bob via the invite endpoint.
     let server_group_id = create_server_group(&app, &alice_token, "test_room").await;
-    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec![bob_id]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id.clone();
@@ -326,7 +326,7 @@ async fn test_e2e_group_creation_and_messaging() {
     // Escrow invite for bob with the MLS welcome message.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -334,7 +334,7 @@ async fn test_e2e_group_creation_and_messaging() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome.clone(),
         create_result.group_info,
@@ -420,7 +420,7 @@ async fn test_e2e_three_party_messaging() {
         &app,
         &alice_token,
         server_group_id,
-        vec!["bob".into(), "charlie".into()],
+        vec![bob_id, charlie_id],
     )
     .await;
 
@@ -441,7 +441,7 @@ async fn test_e2e_three_party_messaging() {
     // Escrow invite for bob.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -449,7 +449,7 @@ async fn test_e2e_three_party_messaging() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         create_result.group_info.clone(),
@@ -459,7 +459,7 @@ async fn test_e2e_three_party_messaging() {
     // Escrow invite for charlie.
     let charlie_welcome = create_result
         .welcomes
-        .get("charlie")
+        .get(&charlie_id)
         .expect("welcome for charlie")
         .clone();
     escrow_and_accept_invite(
@@ -467,7 +467,7 @@ async fn test_e2e_three_party_messaging() {
         &alice_token,
         &charlie_token,
         server_group_id,
-        "charlie",
+        charlie_id,
         b"escrow_commit".to_vec(),
         charlie_welcome,
         create_result.group_info,
@@ -558,7 +558,7 @@ async fn test_e2e_post_creation_invite_flow() {
     .await;
 
     // Invite bob via the invite endpoint to get his key package.
-    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec![bob_id]).await;
 
     // Alice performs the MLS invite using bob's key package from the server.
     let invite_result = alice_mls
@@ -579,7 +579,7 @@ async fn test_e2e_post_creation_invite_flow() {
     // Escrow invite for bob with the MLS welcome.
     let bob_welcome = invite_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -587,7 +587,7 @@ async fn test_e2e_post_creation_invite_flow() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         invite_result.group_info,
@@ -644,7 +644,7 @@ async fn test_e2e_member_removal_flow() {
         &app,
         &alice_token,
         server_group_id,
-        vec!["bob".into(), "charlie".into()],
+        vec![bob_id, charlie_id],
     )
     .await;
 
@@ -663,7 +663,7 @@ async fn test_e2e_member_removal_flow() {
     // Escrow invite for bob.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -671,7 +671,7 @@ async fn test_e2e_member_removal_flow() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         create_result.group_info.clone(),
@@ -681,7 +681,7 @@ async fn test_e2e_member_removal_flow() {
     // Escrow invite for charlie.
     let charlie_welcome = create_result
         .welcomes
-        .get("charlie")
+        .get(&charlie_id)
         .expect("welcome for charlie")
         .clone();
     escrow_and_accept_invite(
@@ -689,7 +689,7 @@ async fn test_e2e_member_removal_flow() {
         &alice_token,
         &charlie_token,
         server_group_id,
-        "charlie",
+        charlie_id,
         b"escrow_commit".to_vec(),
         charlie_welcome,
         create_result.group_info,
@@ -720,7 +720,7 @@ async fn test_e2e_member_removal_flow() {
         alice_mls.remove_member(&mls_group_id, bob_index).unwrap();
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "bob".into(),
+        user_id: bob_id,
         commit_message: remove_commit.clone(),
         group_info: remove_group_info,
     };
@@ -797,7 +797,7 @@ async fn test_e2e_key_rotation_continuity() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let server_group_id = create_server_group(&app, &alice_token, "rotation_test").await;
-    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec![bob_id]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id.clone();
@@ -814,7 +814,7 @@ async fn test_e2e_key_rotation_continuity() {
     // Escrow invite for bob.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -822,7 +822,7 @@ async fn test_e2e_key_rotation_continuity() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         create_result.group_info,
@@ -898,7 +898,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let server_group_id = create_server_group(&app, &alice_token, "rejoin_test").await;
-    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec![bob_id]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id.clone();
@@ -915,7 +915,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     // Escrow invite for bob.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -923,7 +923,7 @@ async fn test_e2e_external_rejoin_after_removal() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         create_result.group_info,
@@ -945,7 +945,7 @@ async fn test_e2e_external_rejoin_after_removal() {
         alice_mls.remove_member(&mls_group_id, bob_index).unwrap();
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "bob".into(),
+        user_id: bob_id,
         commit_message: remove_commit,
         group_info: remove_group_info,
     };
@@ -1052,7 +1052,7 @@ async fn test_e2e_key_package_roundtrip_through_server() {
     // The key package bytes should be valid MLS that bob's client can parse
     // to create a group with alice.
     let mut member_kps = HashMap::new();
-    member_kps.insert("alice".to_string(), resp.key_package_data);
+    member_kps.insert(alice_id, resp.key_package_data);
     let result = bob_mls.create_group(&member_kps);
     assert!(
         result.is_ok(),
@@ -1078,7 +1078,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     upload_real_key_packages(&app, &bob_token, &bob_mls).await;
 
     let server_group_id = create_server_group(&app, &alice_token, "ordering_test").await;
-    let member_kps = invite_members(&app, &alice_token, server_group_id, vec!["bob".into()]).await;
+    let member_kps = invite_members(&app, &alice_token, server_group_id, vec![bob_id]).await;
 
     let create_result = alice_mls.create_group(&member_kps).unwrap();
     let mls_group_id = create_result.mls_group_id.clone();
@@ -1095,7 +1095,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     // Escrow invite for bob.
     let bob_welcome = create_result
         .welcomes
-        .get("bob")
+        .get(&bob_id)
         .expect("welcome for bob")
         .clone();
     escrow_and_accept_invite(
@@ -1103,7 +1103,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
         &alice_token,
         &bob_token,
         server_group_id,
-        "bob",
+        bob_id,
         b"escrow_commit".to_vec(),
         bob_welcome,
         create_result.group_info,

@@ -44,16 +44,27 @@ pub async fn handle_sse_message(
         }
         SseEvent::MemberRemoved {
             group_id,
-            removed_username,
-        } => handle_member_removed(group_id, &removed_username, api, state, data_dir).await,
-        SseEvent::IdentityReset { group_id, username } => {
+            removed_user_id,
+        } => handle_member_removed(group_id, removed_user_id, api, state, data_dir).await,
+        SseEvent::IdentityReset { group_id, user_id } => {
             // Process the external commit to advance our MLS epoch state.
             let _ = handle_new_message(group_id, api, state, data_dir).await;
+
+            let display_name = state
+                .rooms
+                .get(&group_id)
+                .and_then(|room| {
+                    room.members
+                        .iter()
+                        .find(|m| m.user_id == user_id)
+                        .map(|m| m.display_name().to_string())
+                })
+                .unwrap_or_else(|| format!("user#{user_id}"));
 
             Ok(vec![(
                 group_id,
                 DisplayMessage::system(&format!(
-                    "Caution: {username} has reset their encryption identity."
+                    "Caution: {display_name} has reset their encryption identity."
                 )),
             )])
         }
@@ -62,24 +73,29 @@ pub async fn handle_sse_message(
             group_id,
             group_name,
             group_alias,
-            inviter_username,
+            inviter_id,
         } => {
             let display = if group_alias.is_empty() {
                 &group_name
             } else {
                 &group_alias
             };
+            let inviter_name = format!("user#{inviter_id}");
             Ok(vec![(
                 group_id,
                 DisplayMessage::system(&format!(
-                    "Invitation from {inviter_username} to join #{display}. \
+                    "Invitation from {inviter_name} to join #{display}. \
                      Use /accept {invite_id} or /decline {invite_id}."
                 )),
             )])
         }
+        SseEvent::InviteCancelled { group_id } => Ok(vec![(
+            group_id,
+            DisplayMessage::system("An invitation to this room was cancelled."),
+        )]),
         SseEvent::InviteDeclined {
             group_id,
-            declined_username,
+            declined_user_id,
         } => {
             // Auto-rotate keys to clean up the phantom MLS leaf.
             if let (Some(mls_group_id), Some(user_id)) =
@@ -99,9 +115,20 @@ pub async fn handle_sse_message(
                 }
             }
 
+            let declined_name = state
+                .rooms
+                .get(&group_id)
+                .and_then(|room| {
+                    room.members
+                        .iter()
+                        .find(|m| m.user_id == declined_user_id)
+                        .map(|m| m.display_name().to_string())
+                })
+                .unwrap_or_else(|| format!("user#{declined_user_id}"));
+
             Ok(vec![(
                 group_id,
-                DisplayMessage::system(&format!("{declined_username} declined the invitation.")),
+                DisplayMessage::system(&format!("{declined_name} declined the invitation.")),
             )])
         }
     }
@@ -222,16 +249,16 @@ async fn handle_welcome(
 
 async fn handle_member_removed(
     group_id: i64,
-    removed_username: &str,
+    removed_user_id: i64,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
 ) -> Result<Vec<(i64, DisplayMessage)>> {
     let mut results = Vec::new();
 
-    let our_username = state.username.as_deref().unwrap_or("");
+    let is_self = state.user_id == Some(removed_user_id);
 
-    if removed_username == our_username {
+    if is_self {
         let room_name = state
             .rooms
             .get(&group_id)
@@ -259,6 +286,18 @@ async fn handle_member_removed(
             DisplayMessage::system(&format!("You were removed from #{room_name}")),
         ));
     } else {
+        // Resolve display name from local member list before removal.
+        let removed_name = state
+            .rooms
+            .get(&group_id)
+            .and_then(|room| {
+                room.members
+                    .iter()
+                    .find(|m| m.user_id == removed_user_id)
+                    .map(|m| m.display_name().to_string())
+            })
+            .unwrap_or_else(|| format!("user#{removed_user_id}"));
+
         // Someone else was removed -- fetch the leave commit so our MLS
         // state advances the epoch and excludes the departed member.
         let last_seq = state
@@ -301,11 +340,11 @@ async fn handle_member_removed(
 
         results.push((
             group_id,
-            DisplayMessage::system(&format!("{removed_username} was removed from the group")),
+            DisplayMessage::system(&format!("{removed_name} was removed from the group")),
         ));
 
         if let Some(room) = state.rooms.get_mut(&group_id) {
-            room.members.retain(|m| m.username != removed_username);
+            room.members.retain(|m| m.user_id != removed_user_id);
         }
     }
 

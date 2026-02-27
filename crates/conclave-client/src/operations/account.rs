@@ -1,12 +1,110 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::api::ApiClient;
-use crate::config::generate_initial_key_packages;
+use crate::api::{ApiClient, normalize_server_url};
+use crate::config::{SessionState, generate_initial_key_packages};
 use crate::error::{Error, Result};
 use crate::mls::MlsManager;
 
 use super::{ResetResult, load_rooms};
+
+/// Result of a successful registration or login.
+#[derive(Debug, Clone)]
+pub struct AuthResult {
+    pub server_url: String,
+    pub token: String,
+    pub user_id: i64,
+    pub username: String,
+    pub key_packages_uploaded: usize,
+}
+
+impl AuthResult {
+    /// Build an authenticated `ApiClient` from this result.
+    pub fn into_api_client(&self, accept_invalid_certs: bool) -> ApiClient {
+        let mut api = ApiClient::new(&self.server_url, accept_invalid_certs);
+        api.set_token(self.token.clone());
+        api
+    }
+
+    /// Save the session state to disk.
+    pub fn save_session(&self, data_dir: &Path) -> Result<()> {
+        let session = SessionState {
+            server_url: Some(self.server_url.clone()),
+            token: Some(self.token.clone()),
+            user_id: Some(self.user_id),
+            username: Some(self.username.clone()),
+        };
+        session.save(data_dir)
+    }
+}
+
+/// Register a new account, log in, initialize MLS, and upload key packages.
+pub async fn register_and_login(
+    server_url: &str,
+    username: &str,
+    password: &str,
+    accept_invalid_certs: bool,
+    data_dir: &Path,
+) -> Result<AuthResult> {
+    let server_url = normalize_server_url(server_url);
+    let api = ApiClient::new(&server_url, accept_invalid_certs);
+
+    let register_response = api.register(username, password, None).await?;
+    let user_id = register_response.user_id;
+
+    let login_response = api.login(username, password).await?;
+    let canonical_username = if login_response.username.is_empty() {
+        username.to_string()
+    } else {
+        login_response.username
+    };
+
+    let mut auth_api = ApiClient::new(&server_url, accept_invalid_certs);
+    auth_api.set_token(login_response.token.clone());
+
+    let count = initialize_mls_and_upload_key_packages(&auth_api, data_dir, user_id).await?;
+
+    Ok(AuthResult {
+        server_url,
+        token: login_response.token,
+        user_id,
+        username: canonical_username,
+        key_packages_uploaded: count,
+    })
+}
+
+/// Log in to an existing account, initialize MLS, and upload key packages.
+pub async fn login(
+    server_url: &str,
+    username: &str,
+    password: &str,
+    accept_invalid_certs: bool,
+    data_dir: &Path,
+) -> Result<AuthResult> {
+    let server_url = normalize_server_url(server_url);
+    let api = ApiClient::new(&server_url, accept_invalid_certs);
+
+    let login_response = api.login(username, password).await?;
+    let canonical_username = if login_response.username.is_empty() {
+        username.to_string()
+    } else {
+        login_response.username
+    };
+
+    let mut auth_api = ApiClient::new(&server_url, accept_invalid_certs);
+    auth_api.set_token(login_response.token.clone());
+
+    let count =
+        initialize_mls_and_upload_key_packages(&auth_api, data_dir, login_response.user_id).await?;
+
+    Ok(AuthResult {
+        server_url,
+        token: login_response.token,
+        user_id: login_response.user_id,
+        username: canonical_username,
+        key_packages_uploaded: count,
+    })
+}
 
 /// Initialize the local MLS provider and generate+upload the initial set of key
 /// packages to the server. Call this after a successful login or registration.

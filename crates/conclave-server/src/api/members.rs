@@ -19,9 +19,9 @@ pub async fn invite_to_group(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::InviteToGroupRequest>(&body)?;
 
-    if request.usernames.is_empty() {
+    if request.user_ids.is_empty() {
         return Err(Error::BadRequest(
-            "at least one username is required".into(),
+            "at least one user_id is required".into(),
         ));
     }
 
@@ -32,11 +32,11 @@ pub async fn invite_to_group(
     }
 
     let mut member_key_packages = std::collections::HashMap::new();
-    for username in &request.usernames {
-        let member_id = state
+    for &member_id in &request.user_ids {
+        state
             .db
-            .get_user_id_by_username(username)?
-            .ok_or_else(|| Error::NotFound(format!("user '{username}' not found")))?;
+            .get_user_by_id(member_id)?
+            .ok_or_else(|| Error::NotFound(format!("user with ID {member_id} not found")))?;
 
         if member_id == auth.user_id {
             continue;
@@ -44,15 +44,15 @@ pub async fn invite_to_group(
 
         if state.db.is_group_member(group_id, member_id)? {
             return Err(Error::Conflict(format!(
-                "user '{username}' is already a member of this group"
+                "user with ID {member_id} is already a member of this group"
             )));
         }
 
         let key_package_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
-            Error::NotFound(format!("no key package available for user '{username}'"))
+            Error::NotFound(format!("no key package available for user with ID {member_id}"))
         })?;
 
-        member_key_packages.insert(username.clone(), key_package_data);
+        member_key_packages.insert(member_id, key_package_data);
     }
 
     Ok(proto_response(
@@ -77,15 +77,15 @@ pub async fn remove_group_member(
         ));
     }
 
-    let target_user_id = state
+    let target_user_id = request.user_id;
+    state
         .db
-        .get_user_id_by_username(&request.username)?
-        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
+        .get_user_by_id(target_user_id)?
+        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
 
     if !state.db.is_group_member(group_id, target_user_id)? {
         return Err(Error::BadRequest(format!(
-            "user '{}' is not a member of this group",
-            request.username
+            "user with ID {target_user_id} is not a member of this group"
         )));
     }
 
@@ -111,7 +111,7 @@ pub async fn remove_group_member(
             event: Some(conclave_proto::server_event::Event::MemberRemoved(
                 conclave_proto::MemberRemovedEvent {
                     group_id,
-                    removed_username: request.username.clone(),
+                    removed_user_id: target_user_id,
                 },
             )),
         },
@@ -136,11 +136,6 @@ pub async fn leave_group(
         return Err(Error::Unauthorized("not a member of this group".into()));
     }
 
-    let (_, username, _) = state
-        .db
-        .get_user_by_id(auth.user_id)?
-        .ok_or_else(|| Error::NotFound("user not found".into()))?;
-
     if !request.group_info.is_empty() {
         state.db.store_group_info(group_id, &request.group_info)?;
     }
@@ -163,7 +158,7 @@ pub async fn leave_group(
             event: Some(conclave_proto::server_event::Event::MemberRemoved(
                 conclave_proto::MemberRemovedEvent {
                     group_id,
-                    removed_username: username,
+                    removed_user_id: auth.user_id,
                 },
             )),
         },
@@ -190,22 +185,21 @@ pub async fn promote_member(
         ));
     }
 
-    let target_user_id = state
+    let target_user_id = request.user_id;
+    state
         .db
-        .get_user_id_by_username(&request.username)?
-        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
+        .get_user_by_id(target_user_id)?
+        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
 
     if !state.db.is_group_member(group_id, target_user_id)? {
         return Err(Error::BadRequest(format!(
-            "user '{}' is not a member of this group",
-            request.username
+            "user with ID {target_user_id} is not a member of this group"
         )));
     }
 
     if state.db.is_group_admin(group_id, target_user_id)? {
         return Err(Error::Conflict(format!(
-            "user '{}' is already an admin",
-            request.username
+            "user with ID {target_user_id} is already an admin"
         )));
     }
 
@@ -241,15 +235,15 @@ pub async fn demote_member(
         ));
     }
 
-    let target_user_id = state
+    let target_user_id = request.user_id;
+    state
         .db
-        .get_user_id_by_username(&request.username)?
-        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.username)))?;
+        .get_user_by_id(target_user_id)?
+        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
 
     if !state.db.is_group_admin(group_id, target_user_id)? {
         return Err(Error::BadRequest(format!(
-            "user '{}' is not an admin",
-            request.username
+            "user with ID {target_user_id} is not an admin"
         )));
     }
 

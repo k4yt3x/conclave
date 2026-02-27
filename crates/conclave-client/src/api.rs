@@ -250,9 +250,9 @@ impl ApiClient {
     pub async fn invite_to_group(
         &self,
         group_id: i64,
-        usernames: Vec<String>,
+        user_ids: Vec<i64>,
     ) -> Result<conclave_proto::InviteToGroupResponse> {
-        let request = conclave_proto::InviteToGroupRequest { usernames };
+        let request = conclave_proto::InviteToGroupRequest { user_ids };
         let bytes = self
             .post(&format!("/api/v1/groups/{group_id}/invite"), &request)
             .await?;
@@ -352,13 +352,13 @@ impl ApiClient {
     pub async fn escrow_invite(
         &self,
         group_id: i64,
-        invitee_username: &str,
+        invitee_id: i64,
         commit_message: Vec<u8>,
         welcome_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
         let request = conclave_proto::EscrowInviteRequest {
-            invitee_username: invitee_username.to_string(),
+            invitee_id,
             commit_message,
             welcome_message,
             group_info,
@@ -392,21 +392,55 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn list_group_pending_invites(
+        &self,
+        group_id: i64,
+    ) -> Result<conclave_proto::ListGroupPendingInvitesResponse> {
+        let bytes = self
+            .get(&format!("/api/v1/groups/{group_id}/invites"))
+            .await?;
+        Ok(conclave_proto::ListGroupPendingInvitesResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
+    pub async fn cancel_invite(&self, group_id: i64, invitee_id: i64) -> Result<()> {
+        let request = conclave_proto::CancelInviteRequest { invitee_id };
+        self.post(
+            &format!("/api/v1/groups/{group_id}/cancel-invite"),
+            &request,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_user_by_username(
+        &self,
+        username: &str,
+    ) -> Result<conclave_proto::UserInfoResponse> {
+        let bytes = self.get(&format!("/api/v1/users/{username}")).await?;
+        Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
+    }
+
+    pub async fn get_user_by_id(
+        &self,
+        user_id: i64,
+    ) -> Result<conclave_proto::UserInfoResponse> {
+        let bytes = self.get(&format!("/api/v1/users/by-id/{user_id}")).await?;
+        Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
+    }
+
     // ── Admin Management ──────────────────────────────────────────
 
-    pub async fn promote_member(&self, group_id: i64, username: &str) -> Result<()> {
-        let request = conclave_proto::PromoteMemberRequest {
-            username: username.to_string(),
-        };
+    pub async fn promote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
+        let request = conclave_proto::PromoteMemberRequest { user_id };
         self.post(&format!("/api/v1/groups/{group_id}/promote"), &request)
             .await?;
         Ok(())
     }
 
-    pub async fn demote_member(&self, group_id: i64, username: &str) -> Result<()> {
-        let request = conclave_proto::DemoteMemberRequest {
-            username: username.to_string(),
-        };
+    pub async fn demote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
+        let request = conclave_proto::DemoteMemberRequest { user_id };
         self.post(&format!("/api/v1/groups/{group_id}/demote"), &request)
             .await?;
         Ok(())
@@ -426,12 +460,12 @@ impl ApiClient {
     pub async fn remove_member(
         &self,
         group_id: i64,
-        username: &str,
+        user_id: i64,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
         let request = conclave_proto::RemoveMemberRequest {
-            username: username.to_string(),
+            user_id,
             commit_message,
             group_info,
         };

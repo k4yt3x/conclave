@@ -1,14 +1,34 @@
 mod error;
+mod notification;
 mod tui;
 
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
 
 use conclave_client::api::ApiClient;
 use conclave_client::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
 use conclave_client::error::Error;
-use conclave_client::operations;
+use conclave_client::operations::{self, AuthResult};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationMethod {
+    #[default]
+    Native,
+    Bell,
+    Both,
+    None,
+}
+
+#[derive(Deserialize)]
+struct CliConfig {
+    #[serde(flatten)]
+    client: ClientConfig,
+    #[serde(default)]
+    notifications: NotificationMethod,
+}
 
 #[derive(Parser)]
 #[command(name = "conclave-cli", about = "Conclave E2EE messaging client")]
@@ -27,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Register a new account on the server.
+    /// Register a new account and login.
     Register {
         #[arg(short, long)]
         server: String,
@@ -99,11 +119,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let mut config: ClientConfig = if let Some(config_path) = &cli.config {
+    let (mut config, notifications) = if let Some(config_path) = &cli.config {
         let contents = std::fs::read_to_string(config_path)?;
-        toml::from_str(&contents)?
+        let cli_config: CliConfig = toml::from_str(&contents)?;
+        (cli_config.client, cli_config.notifications)
     } else {
-        ClientConfig::load()
+        (ClientConfig::load(), NotificationMethod::default())
     };
 
     // CLI --data-dir overrides config file and env var.
@@ -114,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None => {
             // Interactive TUI mode.
-            tui::run(&config).await?;
+            tui::run(&config, &notifications).await?;
         }
         Some(cmd) => {
             run_command(cmd, &config).await?;
@@ -153,8 +174,20 @@ fn resolve_mls_group_id(data_dir: &Path, group_id: i64) -> conclave_client::erro
         .ok_or_else(|| Error::Other(format!("unknown group '{group_id}' -- run join first")))
 }
 
+fn print_auth_result(action: &str, result: &AuthResult) {
+    println!(
+        "{action} as {} (user ID {})",
+        result.username, result.user_id
+    );
+    let count = result.key_packages_uploaded;
+    println!(
+        "{count} key packages uploaded (1 last-resort + {} regular).",
+        count - 1
+    );
+}
+
 async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::error::Result<()> {
-    let mut session = SessionState::load(&config.data_dir);
+    let session = SessionState::load(&config.data_dir);
 
     match cmd {
         Commands::Register {
@@ -162,39 +195,16 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
-            let api = ApiClient::new(&server, config.accept_invalid_certs);
-            let resp = api.register(&username, &password, None).await?;
-
-            let login_resp = api.login(&username, &password).await?;
-            let canonical_username = if login_resp.username.is_empty() {
-                username
-            } else {
-                login_resp.username
-            };
-            let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
-            auth_api.set_token(login_resp.token.clone());
-
-            let count = operations::initialize_mls_and_upload_key_packages(
-                &auth_api,
+            let result = operations::register_and_login(
+                &server,
+                &username,
+                &password,
+                config.accept_invalid_certs,
                 &config.data_dir,
-                resp.user_id,
             )
             .await?;
-
-            session.server_url = Some(server);
-            session.token = Some(login_resp.token);
-            session.user_id = Some(resp.user_id);
-            session.username = Some(canonical_username.clone());
-            session.save(&config.data_dir)?;
-
-            println!(
-                "Registered and logged in as {} (user ID {})",
-                canonical_username, resp.user_id
-            );
-            println!(
-                "{count} key packages uploaded (1 last-resort + {} regular).",
-                count - 1
-            );
+            result.save_session(&config.data_dir)?;
+            print_auth_result("Registered and logged in", &result);
         }
 
         Commands::Login {
@@ -202,30 +212,16 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
-            let api = ApiClient::new(&server, config.accept_invalid_certs);
-            let resp = api.login(&username, &password).await?;
-
-            let mut login_api = ApiClient::new(&server, config.accept_invalid_certs);
-            login_api.set_token(resp.token.clone());
-
-            session.server_url = Some(server);
-            session.token = Some(resp.token);
-            session.user_id = Some(resp.user_id);
-            session.username = Some(resp.username.clone());
-            session.save(&config.data_dir)?;
-
-            let count = operations::initialize_mls_and_upload_key_packages(
-                &login_api,
+            let result = operations::login(
+                &server,
+                &username,
+                &password,
+                config.accept_invalid_certs,
                 &config.data_dir,
-                resp.user_id,
             )
             .await?;
-
-            println!("Logged in as {} (user ID {})", resp.username, resp.user_id);
-            println!(
-                "{count} key packages uploaded (1 last-resort + {} regular).",
-                count - 1
-            );
+            result.save_session(&config.data_dir)?;
+            print_auth_result("Logged in", &result);
         }
 
         Commands::CreateGroup { name } => {
@@ -254,13 +250,20 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
                 return Err(Error::Other("no valid member names provided".into()));
             }
 
+            // Resolve usernames to user IDs at the UI boundary.
+            let mut member_ids = Vec::new();
+            for username in &member_names {
+                let user_info = api.get_user_by_username(username).await?;
+                member_ids.push(user_info.user_id);
+            }
+
             let mls_group_id = resolve_mls_group_id(&config.data_dir, group)?;
 
             let invited = operations::invite_members(
                 &api,
                 group,
                 &mls_group_id,
-                member_names,
+                member_ids.clone(),
                 &config.data_dir,
                 user_id,
             )
@@ -269,7 +272,13 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             if invited.is_empty() {
                 println!("No new members to invite.");
             } else {
-                println!("Invited {} to group {group}", invited.join(", "));
+                let invited_names: Vec<&str> = member_names
+                    .iter()
+                    .zip(member_ids.iter())
+                    .filter(|(_, mid)| invited.contains(mid))
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                println!("Invited {} to group {group}", invited_names.join(", "));
             }
         }
 

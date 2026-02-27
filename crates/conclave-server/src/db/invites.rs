@@ -186,6 +186,57 @@ impl Database {
         })
     }
 
+    pub fn list_pending_invites_for_group(&self, group_id: i64) -> Result<Vec<PendingInviteRow>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
+             FROM pending_invites WHERE group_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![group_id], |row| {
+                Ok(PendingInviteRow {
+                    invite_id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    inviter_id: row.get(2)?,
+                    invitee_id: row.get(3)?,
+                    commit_message: row.get(4)?,
+                    welcome_data: row.get(5)?,
+                    group_info: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_pending_invite_by_group_and_invitee(
+        &self,
+        group_id: i64,
+        invitee_id: i64,
+    ) -> Result<Option<PendingInviteRow>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
+             FROM pending_invites WHERE group_id = ?1 AND invitee_id = ?2",
+        )?;
+        let row = stmt
+            .query_row(params![group_id, invitee_id], |row| {
+                Ok(PendingInviteRow {
+                    invite_id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    inviter_id: row.get(2)?,
+                    invitee_id: row.get(3)?,
+                    commit_message: row.get(4)?,
+                    welcome_data: row.get(5)?,
+                    group_info: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })
+            .optional()?;
+        Ok(row)
+    }
+
     pub fn delete_pending_invite(&self, invite_id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(

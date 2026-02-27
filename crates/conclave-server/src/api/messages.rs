@@ -119,8 +119,6 @@ pub async fn get_messages(
         .map(|row| conclave_proto::StoredMessage {
             sequence_num: row.sequence_num as u64,
             sender_id: row.sender_id,
-            sender_username: row.sender_username,
-            sender_alias: row.sender_alias.unwrap_or_default(),
             mls_message: row.mls_message,
             created_at: row.created_at as u64,
         })

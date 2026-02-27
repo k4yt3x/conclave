@@ -154,22 +154,25 @@ pub enum SseEvent {
     },
     MemberRemoved {
         group_id: i64,
-        removed_username: String,
+        removed_user_id: i64,
     },
     IdentityReset {
         group_id: i64,
-        username: String,
+        user_id: i64,
     },
     InviteReceived {
         invite_id: i64,
         group_id: i64,
         group_name: String,
         group_alias: String,
-        inviter_username: String,
+        inviter_id: i64,
     },
     InviteDeclined {
         group_id: i64,
-        declined_username: String,
+        declined_user_id: i64,
+    },
+    InviteCancelled {
+        group_id: i64,
     },
 }
 
@@ -198,13 +201,13 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
         Some(conclave_proto::server_event::Event::MemberRemoved(removed)) => {
             Ok(SseEvent::MemberRemoved {
                 group_id: removed.group_id,
-                removed_username: removed.removed_username,
+                removed_user_id: removed.removed_user_id,
             })
         }
         Some(conclave_proto::server_event::Event::IdentityReset(reset)) => {
             Ok(SseEvent::IdentityReset {
                 group_id: reset.group_id,
-                username: reset.username,
+                user_id: reset.user_id,
             })
         }
         Some(conclave_proto::server_event::Event::InviteReceived(invite)) => {
@@ -213,13 +216,18 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
                 group_id: invite.group_id,
                 group_name: invite.group_name,
                 group_alias: invite.group_alias,
-                inviter_username: invite.inviter_username,
+                inviter_id: invite.inviter_id,
             })
         }
         Some(conclave_proto::server_event::Event::InviteDeclined(declined)) => {
             Ok(SseEvent::InviteDeclined {
                 group_id: declined.group_id,
-                declined_username: declined.declined_username,
+                declined_user_id: declined.declined_user_id,
+            })
+        }
+        Some(conclave_proto::server_event::Event::InviteCancelled(cancelled)) => {
+            Ok(SseEvent::InviteCancelled {
+                group_id: cancelled.group_id,
             })
         }
         None => Err(Error::Other("empty SSE event".into())),
@@ -431,7 +439,7 @@ mod tests {
             event: Some(conclave_proto::server_event::Event::MemberRemoved(
                 conclave_proto::MemberRemovedEvent {
                     group_id: 2,
-                    removed_username: "charlie".into(),
+                    removed_user_id: 3,
                 },
             )),
         };
@@ -441,13 +449,13 @@ mod tests {
 
         let SseEvent::MemberRemoved {
             group_id,
-            removed_username,
+            removed_user_id,
         } = decode_sse_event(&hex_data).unwrap()
         else {
             panic!("expected MemberRemoved variant");
         };
         assert_eq!(group_id, 2);
-        assert_eq!(removed_username, "charlie");
+        assert_eq!(removed_user_id, 3);
     }
 
     #[test]
@@ -456,7 +464,7 @@ mod tests {
             event: Some(conclave_proto::server_event::Event::IdentityReset(
                 conclave_proto::IdentityResetEvent {
                     group_id: 7,
-                    username: "alice".into(),
+                    user_id: 1,
                 },
             )),
         };
@@ -464,12 +472,12 @@ mod tests {
         event.encode(&mut buf).unwrap();
         let hex_data = hex::encode(&buf);
 
-        let SseEvent::IdentityReset { group_id, username } = decode_sse_event(&hex_data).unwrap()
+        let SseEvent::IdentityReset { group_id, user_id } = decode_sse_event(&hex_data).unwrap()
         else {
             panic!("expected IdentityReset variant");
         };
         assert_eq!(group_id, 7);
-        assert_eq!(username, "alice");
+        assert_eq!(user_id, 1);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 
 use conclave_client::api::ApiClient;
 pub use conclave_client::command::Command;
-use conclave_client::config::{ClientConfig, SessionState, build_group_mapping};
+use conclave_client::config::{ClientConfig, build_group_mapping};
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
 
@@ -42,6 +42,8 @@ pub async fn execute(
         | Command::Promote { .. }
         | Command::Demote { .. }
         | Command::Admins
+        | Command::Invited
+        | Command::Uninvite { .. }
         | Command::Who => execute_member(cmd, api, state, config).await,
         Command::Invites | Command::Accept { .. } | Command::Decline { .. } => {
             execute_invite(cmd, api, state, config).await
@@ -74,50 +76,35 @@ async fn execute_auth(
             username,
             password,
         } => {
-            let reg_api = ApiClient::new(&server, config.accept_invalid_certs);
-            let resp = reg_api.register(&username, &password, None).await?;
-            let user_id = resp.user_id;
-
-            let login_resp = reg_api.login(&username, &password).await?;
-            let canonical_username = if login_resp.username.is_empty() {
-                username
-            } else {
-                login_resp.username
-            };
-
-            let mut auth_api = ApiClient::new(&server, config.accept_invalid_certs);
-            auth_api.set_token(login_resp.token.clone());
-
-            let count = operations::initialize_mls_and_upload_key_packages(
-                &auth_api,
+            let result = operations::register_and_login(
+                &server,
+                &username,
+                &password,
+                config.accept_invalid_certs,
                 &config.data_dir,
-                user_id,
             )
             .await?;
+
+            let count = result.key_packages_uploaded;
             msgs.push(DisplayMessage::system(&format!(
                 "{count} key packages uploaded."
             )));
 
-            *api.lock().await = auth_api;
-            state.username = Some(canonical_username.clone());
-            state.user_id = Some(user_id);
+            *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+            state.username = Some(result.username.clone());
+            state.user_id = Some(result.user_id);
             state.logged_in = true;
 
-            let session = SessionState {
-                server_url: Some(server),
-                token: Some(login_resp.token),
-                user_id: Some(user_id),
-                username: Some(canonical_username.clone()),
-            };
-            session.save(&config.data_dir)?;
+            result.save_session(&config.data_dir)?;
 
-            *mls = Some(MlsManager::new(&config.data_dir, user_id)?);
+            *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
 
             let room_infos = load_rooms(api, state).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
             msgs.push(DisplayMessage::system(&format!(
-                "Registered and logged in as {canonical_username} (user ID {user_id})"
+                "Registered and logged in as {} (user ID {})",
+                result.username, result.user_id
             )));
             start_sse = true;
         }
@@ -127,44 +114,28 @@ async fn execute_auth(
             username,
             password,
         } => {
-            let mut new_api = ApiClient::new(&server, config.accept_invalid_certs);
-            let resp = new_api.login(&username, &password).await?;
+            let result = operations::login(
+                &server,
+                &username,
+                &password,
+                config.accept_invalid_certs,
+                &config.data_dir,
+            )
+            .await?;
 
-            new_api.set_token(resp.token.clone());
-            *api.lock().await = new_api;
+            let count = result.key_packages_uploaded;
+            msgs.push(DisplayMessage::system(&format!(
+                "{count} key packages uploaded."
+            )));
 
-            state.username = Some(resp.username.clone());
-            state.user_id = Some(resp.user_id);
+            *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+            state.username = Some(result.username.clone());
+            state.user_id = Some(result.user_id);
             state.logged_in = true;
 
-            let session = SessionState {
-                server_url: Some(server),
-                token: Some(resp.token),
-                user_id: Some(resp.user_id),
-                username: Some(resp.username),
-            };
-            session.save(&config.data_dir)?;
+            result.save_session(&config.data_dir)?;
 
-            match operations::initialize_mls_and_upload_key_packages(
-                &*api.lock().await,
-                &config.data_dir,
-                resp.user_id,
-            )
-            .await
-            {
-                Ok(count) => {
-                    msgs.push(DisplayMessage::system(&format!(
-                        "{count} key packages uploaded."
-                    )));
-                }
-                Err(e) => {
-                    msgs.push(DisplayMessage::system(&format!(
-                        "Warning: failed to initialize key packages: {e}"
-                    )));
-                }
-            }
-
-            *mls = Some(MlsManager::new(&config.data_dir, resp.user_id)?);
+            *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
 
             let room_infos = load_rooms(api, state).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
@@ -182,8 +153,8 @@ async fn execute_auth(
             }
 
             msgs.push(DisplayMessage::system(&format!(
-                "Logged in as {username} (user ID {})",
-                resp.user_id
+                "Logged in as {} (user ID {})",
+                result.username, result.user_id
             )));
             start_sse = true;
         }
@@ -543,13 +514,22 @@ async fn execute_member(
                 .ok_or_else(|| Error::Other("group mapping not found".into()))?
                 .clone();
 
+            // Resolve usernames to user IDs at the UI boundary.
+            let mut member_ids = Vec::new();
+            let mut member_names = Vec::new();
+            for username in &members {
+                let user_info = api.lock().await.get_user_by_username(username).await?;
+                member_ids.push(user_info.user_id);
+                member_names.push(username.clone());
+            }
+
             let invited = {
                 let api_guard = api.lock().await;
                 operations::invite_members(
                     &api_guard,
                     group_id,
                     &mls_group_id,
-                    members,
+                    member_ids.clone(),
                     &config.data_dir,
                     user_id,
                 )
@@ -559,9 +539,20 @@ async fn execute_member(
             if invited.is_empty() {
                 msgs.push(DisplayMessage::system("No new members to invite."));
             } else {
+                // Map invited user IDs back to usernames for display.
+                let display_names: Vec<&str> = invited
+                    .iter()
+                    .filter_map(|id| {
+                        member_ids
+                            .iter()
+                            .zip(member_names.iter())
+                            .find(|(mid, _)| *mid == id)
+                            .map(|(_, name)| name.as_str())
+                    })
+                    .collect();
                 msgs.push(DisplayMessage::system(&format!(
                     "Invited {} to the room",
-                    invited.join(", ")
+                    display_names.join(", ")
                 )));
             }
 
@@ -597,7 +588,6 @@ async fn execute_member(
                     &api_guard,
                     group_id,
                     &mls_group_id,
-                    &target,
                     target_user_id,
                     &config.data_dir,
                     user_id,
@@ -616,8 +606,23 @@ async fn execute_member(
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let target_user_id = state
+                .rooms
+                .get(&group_id)
+                .and_then(|room| {
+                    room.members
+                        .iter()
+                        .find(|m| m.username == target)
+                        .map(|m| m.user_id)
+                })
+                .ok_or_else(|| {
+                    Error::Other(format!("user '{target}' not found in the room member list"))
+                })?;
 
-            api.lock().await.promote_member(group_id, &target).await?;
+            api.lock()
+                .await
+                .promote_member(group_id, target_user_id)
+                .await?;
             load_rooms(api, state).await?;
             msgs.push(DisplayMessage::system(&format!(
                 "Promoted {target} to admin"
@@ -628,8 +633,23 @@ async fn execute_member(
             let group_id = state
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let target_user_id = state
+                .rooms
+                .get(&group_id)
+                .and_then(|room| {
+                    room.members
+                        .iter()
+                        .find(|m| m.username == target)
+                        .map(|m| m.user_id)
+                })
+                .ok_or_else(|| {
+                    Error::Other(format!("user '{target}' not found in the room member list"))
+                })?;
 
-            api.lock().await.demote_member(group_id, &target).await?;
+            api.lock()
+                .await
+                .demote_member(group_id, target_user_id)
+                .await?;
             load_rooms(api, state).await?;
             msgs.push(DisplayMessage::system(&format!(
                 "Demoted {target} to regular member"
@@ -661,6 +681,70 @@ async fn execute_member(
             msgs.push(DisplayMessage::system(&format!(
                 "Admins of #{room_name}: {}",
                 admin_names.join(", ")
+            )));
+        }
+
+        Command::Invited => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            let invites = {
+                let api_guard = api.lock().await;
+                operations::list_group_pending_invites(&api_guard, group_id).await?
+            };
+
+            if invites.is_empty() {
+                msgs.push(DisplayMessage::system("No pending invites for this room."));
+            } else {
+                let room_name = state
+                    .rooms
+                    .get(&group_id)
+                    .map(|r| r.display_name())
+                    .unwrap_or_default();
+                msgs.push(DisplayMessage::system(&format!(
+                    "Pending invites for #{room_name}:"
+                )));
+                for invite in &invites {
+                    let invitee_name = state
+                        .rooms
+                        .get(&group_id)
+                        .and_then(|room| {
+                            room.members
+                                .iter()
+                                .find(|m| m.user_id == invite.invitee_id)
+                                .map(|m| m.display_name().to_string())
+                        })
+                        .unwrap_or_else(|| format!("user#{}", invite.invitee_id));
+                    msgs.push(DisplayMessage::system(&format!(
+                        "  {invitee_name} — invited by {}",
+                        invite.inviter_username
+                    )));
+                }
+            }
+        }
+
+        Command::Uninvite {
+            username: target_username,
+        } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            // Resolve username → user_id via API lookup.
+            let user_info = api
+                .lock()
+                .await
+                .get_user_by_username(&target_username)
+                .await?;
+
+            {
+                let api_guard = api.lock().await;
+                operations::cancel_invite(&api_guard, group_id, user_info.user_id).await?;
+            }
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Cancelled invitation for {target_username}"
             )));
         }
 

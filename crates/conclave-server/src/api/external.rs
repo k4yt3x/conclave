@@ -52,19 +52,13 @@ pub async fn external_join(
             .filter(|id| *id != auth.user_id)
             .collect();
 
-        let reset_username = state
-            .db
-            .get_user_by_id(auth.user_id)?
-            .map(|(_, username, _)| username)
-            .unwrap_or_else(|| format!("user#{}", auth.user_id));
-
         broadcast_sse(
             &state.sse_tx,
             conclave_proto::ServerEvent {
                 event: Some(conclave_proto::server_event::Event::IdentityReset(
                     conclave_proto::IdentityResetEvent {
                         group_id,
-                        username: reset_username,
+                        user_id: auth.user_id,
                     },
                 )),
             },

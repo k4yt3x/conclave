@@ -7,16 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::mls::MlsManager;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationMethod {
-    #[default]
-    Native,
-    Bell,
-    Both,
-    None,
-}
-
 /// Client configuration stored in a TOML file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientConfig {
@@ -31,10 +21,6 @@ pub struct ClientConfig {
     /// Accept invalid TLS certificates (e.g., self-signed). Default: false.
     #[serde(default)]
     pub accept_invalid_certs: bool,
-
-    /// Notification method: "native", "bell", "both", or "none".
-    #[serde(default)]
-    pub notifications: NotificationMethod,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -67,7 +53,6 @@ impl Default for ClientConfig {
             data_dir: default_data_dir(),
             config_dir: default_config_dir(),
             accept_invalid_certs: false,
-            notifications: NotificationMethod::default(),
         }
     }
 }

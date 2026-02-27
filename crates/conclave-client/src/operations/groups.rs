@@ -49,27 +49,27 @@ pub async fn create_group(
 /// one epoch per invite. The commit + welcome are held in escrow on the server
 /// until the invitee accepts.
 ///
-/// Returns the list of usernames that were actually invited (empty if all were
+/// Returns the list of user IDs that were actually invited (empty if all were
 /// already members or had no key packages).
 pub async fn invite_members(
     api: &ApiClient,
     server_group_id: i64,
     mls_group_id: &str,
-    members: Vec<String>,
+    member_ids: Vec<i64>,
     data_dir: &Path,
     user_id: i64,
-) -> Result<Vec<String>> {
+) -> Result<Vec<i64>> {
     let mut invited = Vec::new();
 
-    for username in &members {
+    for &member_id in &member_ids {
         let response = api
-            .invite_to_group(server_group_id, vec![username.clone()])
+            .invite_to_group(server_group_id, vec![member_id])
             .await;
 
         let response = match response {
             Ok(r) => r,
             Err(error) => {
-                tracing::warn!(%error, username = username, "failed to get key package for invite");
+                tracing::warn!(%error, member_id = member_id, "failed to get key package for invite");
                 continue;
             }
         };
@@ -92,24 +92,24 @@ pub async fn invite_members(
         let result = match result {
             Ok(r) => r,
             Err(error) => {
-                tracing::warn!(%error, username = username, "MLS invite failed");
+                tracing::warn!(%error, member_id = member_id, "MLS invite failed");
                 continue;
             }
         };
 
         // Extract the welcome for this specific user.
-        let welcome_data = result.welcomes.get(username).cloned().unwrap_or_default();
+        let welcome_data = result.welcomes.get(&member_id).cloned().unwrap_or_default();
 
         api.escrow_invite(
             server_group_id,
-            username,
+            member_id,
             result.commit,
             welcome_data,
             result.group_info,
         )
         .await?;
 
-        invited.push(username.clone());
+        invited.push(member_id);
     }
 
     Ok(invited)
@@ -136,6 +136,20 @@ pub async fn accept_invite(
     accept_welcomes(api, data_dir, user_id).await
 }
 
+/// Fetch pending invites for a specific group (admin-only).
+pub async fn list_group_pending_invites(
+    api: &ApiClient,
+    group_id: i64,
+) -> Result<Vec<conclave_proto::PendingInvite>> {
+    let response = api.list_group_pending_invites(group_id).await?;
+    Ok(response.invites)
+}
+
+/// Cancel a pending invite by user ID.
+pub async fn cancel_invite(api: &ApiClient, group_id: i64, user_id: i64) -> Result<()> {
+    api.cancel_invite(group_id, user_id).await
+}
+
 /// Decline a pending invite.
 pub async fn decline_invite(api: &ApiClient, invite_id: i64) -> Result<()> {
     api.decline_pending_invite(invite_id).await
@@ -158,35 +172,29 @@ pub async fn kick_member(
     api: &ApiClient,
     server_group_id: i64,
     mls_group_id: &str,
-    target_username: &str,
     target_user_id: i64,
     data_dir: &Path,
     user_id: i64,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();
-    let target_username = target_username.to_string();
 
-    let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking({
-        let target = target_username.clone();
-        move || {
-            let mls = MlsManager::new(&data_dir, user_id)?;
-            let member_index = mls
-                .find_member_index(&mls_group_id, target_user_id)?
-                .ok_or_else(|| Error::Other(format!("user '{target}' not found in MLS roster")))?;
-            mls.remove_member(&mls_group_id, member_index)
-        }
+    let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking(move || {
+        let mls = MlsManager::new(&data_dir, user_id)?;
+        let member_index = mls
+            .find_member_index(&mls_group_id, target_user_id)?
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "user with ID {target_user_id} not found in MLS roster"
+                ))
+            })?;
+        mls.remove_member(&mls_group_id, member_index)
     })
     .await
     .map_err(super::map_join_error)??;
 
-    api.remove_member(
-        server_group_id,
-        &target_username,
-        commit_bytes,
-        group_info_bytes,
-    )
-    .await?;
+    api.remove_member(server_group_id, target_user_id, commit_bytes, group_info_bytes)
+        .await?;
 
     Ok(())
 }

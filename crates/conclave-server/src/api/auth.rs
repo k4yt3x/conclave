@@ -168,6 +168,26 @@ pub async fn get_user_by_username(
     ))
 }
 
+pub async fn get_user_by_id(
+    State(state): State<Arc<AppState>>,
+    _auth: AuthUser,
+    Path(user_id): Path<i64>,
+) -> Result<impl IntoResponse> {
+    let (uid, username, alias) = state
+        .db
+        .get_user_by_id(user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::UserInfoResponse {
+            user_id: uid,
+            username,
+            alias: alias.unwrap_or_default(),
+        },
+    ))
+}
+
 pub async fn reset_account(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,

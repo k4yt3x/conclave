@@ -25,14 +25,14 @@ use crate::error::{Error, Result};
 pub struct GroupCreationResult {
     pub mls_group_id: String,
     pub commit: Vec<u8>,
-    pub welcomes: HashMap<String, Vec<u8>>,
+    pub welcomes: HashMap<i64, Vec<u8>>,
     pub group_info: Vec<u8>,
 }
 
 /// Result of inviting new members to an existing MLS group.
 pub struct InviteResult {
     pub commit: Vec<u8>,
-    pub welcomes: HashMap<String, Vec<u8>>,
+    pub welcomes: HashMap<i64, Vec<u8>>,
     pub group_info: Vec<u8>,
 }
 
@@ -236,27 +236,27 @@ impl MlsManager {
     /// group state. Returns (commit_bytes, welcome_map, group_info_bytes).
     fn build_commit_with_members(
         group: &mut mls_rs::Group<impl MlsConfig>,
-        member_key_packages: &HashMap<String, Vec<u8>>,
-    ) -> Result<(Vec<u8>, HashMap<String, Vec<u8>>, Vec<u8>)> {
+        member_key_packages: &HashMap<i64, Vec<u8>>,
+    ) -> Result<(Vec<u8>, HashMap<i64, Vec<u8>>, Vec<u8>)> {
         let cipher_suite = OpensslCryptoProvider::default()
             .cipher_suite_provider(CIPHERSUITE)
             .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
 
         let mut builder = group.commit_builder();
-        let mut kp_ref_to_username: HashMap<KeyPackageRef, String> = HashMap::new();
+        let mut kp_ref_to_user_id: HashMap<KeyPackageRef, i64> = HashMap::new();
 
-        for (username, kp_bytes) in member_key_packages {
+        for (&user_id, kp_bytes) in member_key_packages {
             let kp_msg = MlsMessage::from_bytes(kp_bytes)
-                .map_err(|e| Error::Mls(format!("invalid key package from '{username}': {e}")))?;
+                .map_err(|e| Error::Mls(format!("invalid key package from user {user_id}: {e}")))?;
             if let Some(kp_ref) = kp_msg
                 .key_package_reference(&cipher_suite)
-                .map_err(|e| Error::Mls(format!("key package ref for '{username}': {e}")))?
+                .map_err(|e| Error::Mls(format!("key package ref for user {user_id}: {e}")))?
             {
-                kp_ref_to_username.insert(kp_ref, username.clone());
+                kp_ref_to_user_id.insert(kp_ref, user_id);
             }
             builder = builder
                 .add_member(kp_msg)
-                .map_err(|e| Error::Mls(format!("add member '{username}' failed: {e}")))?;
+                .map_err(|e| Error::Mls(format!("add member user {user_id} failed: {e}")))?;
         }
 
         let commit_output = builder
@@ -276,8 +276,8 @@ impl MlsManager {
                 .to_bytes()
                 .map_err(|e| Error::Mls(format!("welcome serialization failed: {e}")))?;
             for kp_ref in welcome_msg.welcome_key_package_references() {
-                if let Some(username) = kp_ref_to_username.get(kp_ref) {
-                    welcome_map.insert(username.clone(), welcome_bytes.clone());
+                if let Some(&user_id) = kp_ref_to_user_id.get(kp_ref) {
+                    welcome_map.insert(user_id, welcome_bytes.clone());
                 }
             }
         }
@@ -304,7 +304,7 @@ impl MlsManager {
     /// Create a new MLS group, add members from their key packages.
     pub fn create_group(
         &self,
-        member_key_packages: &HashMap<String, Vec<u8>>,
+        member_key_packages: &HashMap<i64, Vec<u8>>,
     ) -> Result<GroupCreationResult> {
         let client = self.build_client()?;
         let mut group = client
@@ -328,7 +328,7 @@ impl MlsManager {
     pub fn invite_to_group(
         &self,
         mls_group_id: &str,
-        member_key_packages: &HashMap<String, Vec<u8>>,
+        member_key_packages: &HashMap<i64, Vec<u8>>,
     ) -> Result<InviteResult> {
         let client = self.build_client()?;
         let group_id_bytes =
@@ -822,11 +822,11 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob_kp);
+        members.insert(2, bob_kp);
 
         let result = alice.create_group(&members).unwrap();
 
-        let welcome_bytes = result.welcomes.get("bob").unwrap().clone();
+        let welcome_bytes = result.welcomes.get(&2).unwrap().clone();
 
         (
             _dir_a,
@@ -880,7 +880,7 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob_kp);
+        members.insert(2, bob_kp);
 
         let result = alice.create_group(&members).unwrap();
 
@@ -894,11 +894,11 @@ mod tests {
         );
         assert!(!result.commit.is_empty(), "commit must not be empty");
         assert!(
-            result.welcomes.contains_key("bob"),
+            result.welcomes.contains_key(&2),
             "welcome_map must contain bob"
         );
         assert!(
-            !result.welcomes.get("bob").unwrap().is_empty(),
+            !result.welcomes.get(&2).unwrap().is_empty(),
             "bob's welcome must not be empty"
         );
         assert!(
@@ -961,7 +961,7 @@ mod tests {
         let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
@@ -987,12 +987,12 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
-        bob_members.insert("bob".to_string(), bob_kp);
+        bob_members.insert(2, bob_kp);
 
         let create_result = alice.create_group(&bob_members).unwrap();
 
         let bob_gid = bob
-            .join_group(create_result.welcomes.get("bob").unwrap())
+            .join_group(create_result.welcomes.get(&2).unwrap())
             .unwrap();
         assert_eq!(
             bob_gid, create_result.mls_group_id,
@@ -1001,14 +1001,14 @@ mod tests {
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice
             .invite_to_group(&create_result.mls_group_id, &carol_members)
             .unwrap();
 
         let carol_gid = carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
         assert_eq!(
             carol_gid, create_result.mls_group_id,
@@ -1024,20 +1024,20 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
-        bob_members.insert("bob".to_string(), bob_kp);
+        bob_members.insert(2, bob_kp);
 
         let create_result = alice.create_group(&bob_members).unwrap();
         let group_id = create_result.mls_group_id;
-        bob.join_group(create_result.welcomes.get("bob").unwrap())
+        bob.join_group(create_result.welcomes.get(&2).unwrap())
             .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
         carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
 
         let carol_index = alice
@@ -1295,16 +1295,16 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
-        bob_members.insert("bob".to_string(), bob_kp);
+        bob_members.insert(2, bob_kp);
 
         let create_result = alice.create_group(&bob_members).unwrap();
         let group_id = create_result.mls_group_id;
-        bob.join_group(create_result.welcomes.get("bob").unwrap())
+        bob.join_group(create_result.welcomes.get(&2).unwrap())
             .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
@@ -1312,7 +1312,7 @@ mod tests {
             .unwrap();
 
         carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
 
         let carol_index = alice
@@ -1536,14 +1536,14 @@ mod tests {
         let carol_kp = carol.generate_key_package().unwrap();
 
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob_kp);
-        members.insert("carol".to_string(), carol_kp);
+        members.insert(2, bob_kp);
+        members.insert(3, carol_kp);
 
         let result = alice.create_group(&members).unwrap();
         let group_id = result.mls_group_id;
-        let bob_gid = bob.join_group(result.welcomes.get("bob").unwrap()).unwrap();
+        let bob_gid = bob.join_group(result.welcomes.get(&2).unwrap()).unwrap();
         let carol_gid = carol
-            .join_group(result.welcomes.get("carol").unwrap())
+            .join_group(result.welcomes.get(&3).unwrap())
             .unwrap();
         assert_eq!(bob_gid, group_id);
         assert_eq!(carol_gid, group_id);
@@ -1571,17 +1571,17 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob_kp);
+        members.insert(2, bob_kp);
 
         let create_result = alice.create_group(&members).unwrap();
         let group_id = create_result.mls_group_id;
         let bob_gid = bob
-            .join_group(create_result.welcomes.get("bob").unwrap())
+            .join_group(create_result.welcomes.get(&2).unwrap())
             .unwrap();
 
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
@@ -1589,7 +1589,7 @@ mod tests {
             .unwrap();
 
         let carol_gid = carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
         assert_eq!(carol_gid, group_id);
 
@@ -1733,7 +1733,7 @@ mod tests {
         let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut members = HashMap::new();
-        members.insert("carol".to_string(), carol_kp);
+        members.insert(3, carol_kp);
         alice.invite_to_group(&group_id, &members).unwrap();
 
         let epoch_after_invite = alice.group_info_details(&group_id).unwrap().epoch;
@@ -1874,22 +1874,22 @@ mod tests {
         let eve_kp = eve.generate_key_package().unwrap();
 
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob_kp);
-        members.insert("carol".to_string(), carol_kp);
-        members.insert("dave".to_string(), dave_kp);
-        members.insert("eve".to_string(), eve_kp);
+        members.insert(2, bob_kp);
+        members.insert(3, carol_kp);
+        members.insert(4, dave_kp);
+        members.insert(5, eve_kp);
 
         let result = alice.create_group(&members).unwrap();
         let group_id = result.mls_group_id;
 
-        let bob_gid = bob.join_group(result.welcomes.get("bob").unwrap()).unwrap();
+        let bob_gid = bob.join_group(result.welcomes.get(&2).unwrap()).unwrap();
         let carol_gid = carol
-            .join_group(result.welcomes.get("carol").unwrap())
+            .join_group(result.welcomes.get(&3).unwrap())
             .unwrap();
         let dave_gid = dave
-            .join_group(result.welcomes.get("dave").unwrap())
+            .join_group(result.welcomes.get(&4).unwrap())
             .unwrap();
-        let eve_gid = eve.join_group(result.welcomes.get("eve").unwrap()).unwrap();
+        let eve_gid = eve.join_group(result.welcomes.get(&5).unwrap()).unwrap();
 
         assert_eq!(bob_gid, group_id);
         assert_eq!(carol_gid, group_id);
@@ -1958,7 +1958,7 @@ mod tests {
         let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
 
@@ -1966,7 +1966,7 @@ mod tests {
             .unwrap();
 
         let carol_gid = carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
         assert_eq!(carol_gid, group_id, "carol's group_id must match");
 
@@ -1996,23 +1996,23 @@ mod tests {
 
         let bob_kp = bob.generate_key_package().unwrap();
         let mut bob_members = HashMap::new();
-        bob_members.insert("bob".to_string(), bob_kp);
+        bob_members.insert(2, bob_kp);
 
         let create_result = alice.create_group(&bob_members).unwrap();
         let group_id = create_result.mls_group_id;
-        bob.join_group(create_result.welcomes.get("bob").unwrap())
+        bob.join_group(create_result.welcomes.get(&2).unwrap())
             .unwrap();
 
         // Invite carol.
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
 
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
         bob.decrypt_message(&group_id, &invite_result.commit)
             .unwrap();
         carol
-            .join_group(invite_result.welcomes.get("carol").unwrap())
+            .join_group(invite_result.welcomes.get(&3).unwrap())
             .unwrap();
 
         // Remove carol.
@@ -2025,7 +2025,7 @@ mod tests {
 
         // Carol tries to rejoin using her old welcome message, which should
         // fail because the key package was already consumed and state is stale.
-        let old_welcome = invite_result.welcomes.get("carol").unwrap();
+        let old_welcome = invite_result.welcomes.get(&3).unwrap();
         let rejoin_result = carol.join_group(old_welcome);
         assert!(
             rejoin_result.is_err(),
@@ -2091,21 +2091,21 @@ mod tests {
         // Create group 1 (alice + bob).
         let bob_kp1 = bob.generate_key_package().unwrap();
         let mut members1 = HashMap::new();
-        members1.insert("bob".to_string(), bob_kp1);
+        members1.insert(2, bob_kp1);
         let result1 = alice.create_group(&members1).unwrap();
         let group1_id = result1.mls_group_id;
         let bob_gid1 = bob
-            .join_group(result1.welcomes.get("bob").unwrap())
+            .join_group(result1.welcomes.get(&2).unwrap())
             .unwrap();
 
         // Create group 2 (alice + bob).
         let bob_kp2 = bob.generate_key_package().unwrap();
         let mut members2 = HashMap::new();
-        members2.insert("bob".to_string(), bob_kp2);
+        members2.insert(2, bob_kp2);
         let result2 = alice.create_group(&members2).unwrap();
         let group2_id = result2.mls_group_id;
         let bob_gid2 = bob
-            .join_group(result2.welcomes.get("bob").unwrap())
+            .join_group(result2.welcomes.get(&2).unwrap())
             .unwrap();
 
         assert_ne!(group1_id, group2_id, "two groups must have different IDs");
@@ -2230,11 +2230,11 @@ mod tests {
 
         let bob2_kp = bob2.generate_key_package().unwrap();
         let mut members = HashMap::new();
-        members.insert("bob".to_string(), bob2_kp);
+        members.insert(2, bob2_kp);
         let result2 = alice2.create_group(&members).unwrap();
         let group2_id = result2.mls_group_id;
         let bob2_gid = bob2
-            .join_group(result2.welcomes.get("bob").unwrap())
+            .join_group(result2.welcomes.get(&2).unwrap())
             .unwrap();
 
         let leave_result = bob2.leave_group(&bob2_gid).unwrap();
@@ -2280,7 +2280,7 @@ mod tests {
         let (_dir_c, carol) = create_manager(3);
         let carol_kp = carol.generate_key_package().unwrap();
         let mut carol_members = HashMap::new();
-        carol_members.insert("carol".to_string(), carol_kp);
+        carol_members.insert(3, carol_kp);
         let invite_result = alice.invite_to_group(&group_id, &carol_members).unwrap();
         bob.decrypt_message(&bob_group_id, &invite_result.commit)
             .unwrap();

@@ -207,7 +207,7 @@ impl Conclave {
                             .get(&fetched.group_id)
                             .map(|r| r.display_name())
                             .unwrap_or_else(|| "unknown".to_string());
-                        conclave_client::notification::send_notification(
+                        crate::notification::send_notification(
                             &format!("#{room_name} - {}", msg.sender),
                             &msg.content,
                         );
@@ -467,11 +467,22 @@ impl Conclave {
         Task::perform(
             async move {
                 let api = params.into_client();
+
+                // Resolve usernames to user IDs at the UI boundary.
+                let mut member_ids = Vec::new();
+                for username in &members {
+                    let user_info = api
+                        .get_user_by_username(username)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    member_ids.push(user_info.user_id);
+                }
+
                 let invited = operations::invite_members(
                     &api,
                     group_id,
                     &mls_group_id,
-                    members,
+                    member_ids.clone(),
                     &data_dir,
                     user_id,
                 )
@@ -481,9 +492,17 @@ impl Conclave {
                 if invited.is_empty() {
                     Ok(vec![DisplayMessage::system("No new members to invite.")])
                 } else {
+                    // Map invited user IDs back to usernames for display.
+                    let invited_names: Vec<&str> = members
+                        .iter()
+                        .zip(member_ids.iter())
+                        .filter(|(_, mid)| invited.contains(mid))
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+
                     Ok(vec![DisplayMessage::system(&format!(
                         "Invited {} to the room",
-                        invited.join(", ")
+                        invited_names.join(", ")
                     ))])
                 }
             },
@@ -521,6 +540,81 @@ impl Conclave {
                     ));
                     Ok(messages)
                 }
+            },
+            Message::CommandResult,
+        )
+    }
+
+    pub(crate) fn list_group_invites(&mut self) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first");
+                return Task::none();
+            }
+        };
+
+        let room_name = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.display_name())
+            .unwrap_or_default();
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                let invites = operations::list_group_pending_invites(&api, group_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                if invites.is_empty() {
+                    Ok(vec![DisplayMessage::system(
+                        "No pending invites for this room.",
+                    )])
+                } else {
+                    let mut messages = vec![DisplayMessage::system(&format!(
+                        "Pending invites for #{room_name}:"
+                    ))];
+                    for invite in &invites {
+                        messages.push(DisplayMessage::system(&format!(
+                            "  user#{} — invited by {}",
+                            invite.invitee_id, invite.inviter_username
+                        )));
+                    }
+                    Ok(messages)
+                }
+            },
+            Message::CommandResult,
+        )
+    }
+
+    pub(crate) fn cancel_invite(&mut self, username: String) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first");
+                return Task::none();
+            }
+        };
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                // Resolve username → user_id at the UI boundary.
+                let user_info = api
+                    .get_user_by_username(&username)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                operations::cancel_invite(&api, group_id, user_info.user_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![DisplayMessage::system(&format!(
+                    "Cancelled invitation for {username}"
+                ))])
             },
             Message::CommandResult,
         )
@@ -641,7 +735,6 @@ impl Conclave {
                     &api,
                     group_id,
                     &mls_group_id,
-                    &target,
                     target_user_id,
                     &data_dir,
                     user_id,
@@ -666,12 +759,26 @@ impl Conclave {
             }
         };
 
+        // Resolve username → user_id from local member list.
+        let target_user_id = if let Some(room) = self.rooms.get(&group_id) {
+            match room.members.iter().find(|m| m.username == target) {
+                Some(member) => member.user_id,
+                None => {
+                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    return Task::none();
+                }
+            }
+        } else {
+            self.push_system_message("Room not found");
+            return Task::none();
+        };
+
         let params = self.api_params();
 
         Task::perform(
             async move {
                 let api = params.into_client();
-                api.promote_member(group_id, &target)
+                api.promote_member(group_id, target_user_id)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -692,12 +799,26 @@ impl Conclave {
             }
         };
 
+        // Resolve username → user_id from local member list.
+        let target_user_id = if let Some(room) = self.rooms.get(&group_id) {
+            match room.members.iter().find(|m| m.username == target) {
+                Some(member) => member.user_id,
+                None => {
+                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    return Task::none();
+                }
+            }
+        } else {
+            self.push_system_message("Room not found");
+            return Task::none();
+        };
+
         let params = self.api_params();
 
         Task::perform(
             async move {
                 let api = params.into_client();
-                api.demote_member(group_id, &target)
+                api.demote_member(group_id, target_user_id)
                     .await
                     .map_err(|e| e.to_string())?;
 

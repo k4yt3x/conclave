@@ -432,6 +432,45 @@ async fn test_get_user_by_username_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn test_get_user_by_id_success() {
+    let app = setup();
+    let user_id = register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/users/by-id/{user_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.user_id, user_id);
+    assert_eq!(resp.username, "alice");
+}
+
+#[tokio::test]
+async fn test_get_user_by_id_not_found() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/users/by-id/99999")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Key Package Tests (15-19) ─────────────────────────────────────
 
 #[tokio::test]
@@ -822,7 +861,7 @@ async fn test_invite_no_usernames() {
     let token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &token, "inv_group").await;
 
-    let req_body = conclave_proto::InviteToGroupRequest { usernames: vec![] };
+    let req_body = conclave_proto::InviteToGroupRequest { user_ids: vec![] };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
 
@@ -851,10 +890,10 @@ async fn test_invite_not_member() {
     let bob_token = login_user(&app, "bob", "password123").await;
 
     // Charlie exists to be invited
-    register_user(&app, "charlie", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["charlie".to_string()],
+        user_ids: vec![charlie_id],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -879,15 +918,15 @@ async fn test_remove_member_success() {
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "rm_group").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice removes bob
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
         commit_message: b"remove_commit".to_vec(),
         group_info: b"updated_info".to_vec(),
     };
@@ -927,7 +966,7 @@ async fn test_remove_member_success() {
 #[tokio::test]
 async fn test_remove_member_not_group_member() {
     let app = setup();
-    register_user(&app, "alice", "password123").await;
+    let alice_id = register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "rm_group").await;
 
@@ -936,7 +975,7 @@ async fn test_remove_member_not_group_member() {
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "alice".to_string(),
+        user_id: alice_id,
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -963,10 +1002,10 @@ async fn test_remove_member_target_not_member() {
     let group_id = create_group_for(&app, &alice_token, "rm_group").await;
 
     // Bob exists but is not in the group
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -993,7 +1032,7 @@ async fn test_remove_member_target_not_found() {
     let group_id = create_group_for(&app, &alice_token, "rm_group").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "nonexistent_user".to_string(),
+        user_id: 999999,
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -1020,11 +1059,11 @@ async fn test_leave_group_success() {
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "leave_group").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob leaves the group
     let request = Request::builder()
@@ -1173,9 +1212,9 @@ async fn test_external_join_success() {
     let group_id = create_group_for(&app, &alice_token, "ext_group").await;
 
     // Register Bob and add him to the group via escrow invite.
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Upload group info so external join can proceed.
     let commit_body = conclave_proto::UploadCommitRequest {
@@ -1352,13 +1391,13 @@ async fn test_accept_welcome_success() {
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "welcome_group").await;
 
     // Alice escrow-invites bob (this creates a pending invite with welcome data).
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     // Bob accepts the invite (this creates a pending welcome and adds bob to group).
     let invites = list_pending_invites(&app, &bob_token).await;
@@ -1738,7 +1777,7 @@ async fn test_invite_consumes_key_package() {
 
     // Invite bob (this should consume his key package).
     let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["bob".to_string()],
+        user_ids: vec![bob_id],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1768,16 +1807,16 @@ async fn test_invite_existing_member_conflict() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "dup_invite").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp2")).await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["bob".to_string()],
+        user_ids: vec![bob_id],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1800,7 +1839,7 @@ async fn test_invite_nonexistent_user() {
     let group_id = create_group_for(&app, &alice_token, "ghost_invite").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["ghost_user".to_string()],
+        user_ids: vec![999999],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1822,13 +1861,13 @@ async fn test_escrow_invite_creates_pending_welcome_on_accept() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "welcome_test").await;
 
     // Alice escrow-invites bob.
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     // Bob accepts the invite.
     let invites = list_pending_invites(&app, &bob_token).await;
@@ -1866,11 +1905,11 @@ async fn test_leave_group_stores_commit_message() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "leave_commit").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     let req_body = conclave_proto::LeaveGroupRequest {
         commit_message: b"leave_commit_data".to_vec(),
@@ -1911,14 +1950,14 @@ async fn test_remove_member_stores_group_info() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "rm_gi_group").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
         commit_message: b"removal_commit".to_vec(),
         group_info: b"removal_gi_data".to_vec(),
     };
@@ -2045,10 +2084,10 @@ async fn test_list_groups_includes_members() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "member_group").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     let request = Request::builder()
         .method("GET")
@@ -2258,14 +2297,14 @@ async fn test_malformed_protobuf_body() {
 #[tokio::test]
 async fn test_invite_self_is_skipped() {
     let app = setup();
-    register_user(&app, "alice", "password123").await;
+    let alice_id = register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     upload_key_package_for(&app, &alice_token, &fake_key_package(b"alice_kp")).await;
 
     let group_id = create_group_for(&app, &alice_token, "self_invite").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["alice".to_string()],
+        user_ids: vec![alice_id],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2677,17 +2716,17 @@ async fn test_escrow_invite_multiple_members() {
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
-    register_user(&app, "charlie", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
     let charlie_token = login_user(&app, "charlie", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "multi_welcome").await;
 
     // Add both bob and charlie via escrow invites.
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
-    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, "charlie").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, charlie_id).await;
 
     // Verify both bob and charlie are now group members (can send messages).
     for (token, sender_name) in [(&bob_token, "bob"), (&charlie_token, "charlie")] {
@@ -2719,10 +2758,10 @@ async fn test_leave_group_stores_group_info() {
     let app = setup();
     register_user(&app, "alice", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "leave_gi").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob leaves with group_info attached.
     let req_body = conclave_proto::LeaveGroupRequest {
@@ -2765,10 +2804,10 @@ async fn test_external_join_commit_stored_as_message() {
     let group_id = create_group_for(&app, &alice_token, "ext_msg_group").await;
 
     // Register Bob and add him to the group via escrow invite.
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp")).await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (existing member) performs an external join with a commit_message.
     let req_body = conclave_proto::ExternalJoinRequest {
@@ -3502,7 +3541,7 @@ async fn test_update_profile_broadcasts_to_group_members() {
     let mut rx = app_state.sse_tx.subscribe();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
@@ -3510,7 +3549,7 @@ async fn test_update_profile_broadcasts_to_group_members() {
     let group_id = create_group_for(&app, &alice_token, "test").await;
 
     // Add bob as a group member via escrow invite.
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Drain any events from group creation and escrow invite.
     while rx.try_recv().is_ok() {}
@@ -3579,7 +3618,7 @@ async fn test_update_group_broadcasts_to_members() {
     let mut rx = app_state.sse_tx.subscribe();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
@@ -3587,7 +3626,7 @@ async fn test_update_group_broadcasts_to_members() {
     let group_id = create_group_for(&app, &alice_token, "test").await;
 
     // Add bob as a group member via escrow invite.
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Drain any events from group creation and escrow invite.
     while rx.try_recv().is_ok() {}
@@ -3630,11 +3669,11 @@ async fn add_member_via_escrow(
     admin_token: &str,
     member_token: &str,
     group_id: i64,
-    member_username: &str,
+    member_id: i64,
 ) {
     // Step 1: Admin creates escrow invite
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: member_username.to_string(),
+        invitee_id: member_id,
         commit_message: b"add_member".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: b"gi".to_vec(),
@@ -3686,17 +3725,17 @@ async fn test_promote_member_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_promote").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice promotes Bob.
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3718,19 +3757,19 @@ async fn test_promote_member_not_admin_rejected() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
-    register_user(&app, "charlie", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
     let charlie_token = login_user(&app, "charlie", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "test_promote_nonadmin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
-    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, "charlie").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, charlie_id).await;
 
     // Bob (regular member) tries to promote Charlie.
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "charlie".to_string(),
+        user_id: charlie_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3752,17 +3791,17 @@ async fn test_promote_member_already_admin() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_promote_dup").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3779,7 +3818,7 @@ async fn test_promote_member_already_admin() {
 
     // Promote Bob again — should conflict (409).
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3800,14 +3839,14 @@ async fn test_promote_member_not_member_rejected() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "test_promote_nonmember").await;
 
     // Try to promote Bob who is not a member.
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3829,17 +3868,17 @@ async fn test_demote_member_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_demote").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
     let request_body = conclave_proto::PromoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3854,7 +3893,7 @@ async fn test_demote_member_success() {
 
     // Alice demotes Bob.
     let request_body = conclave_proto::DemoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3875,18 +3914,18 @@ async fn test_demote_member_success() {
 async fn test_demote_member_not_admin_rejected() {
     let app = setup();
 
-    register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let alice_id = register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_demote_nonadmin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (regular member) tries to demote Alice.
     let request_body = conclave_proto::DemoteMemberRequest {
-        username: "alice".to_string(),
+        user_id: alice_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3907,18 +3946,18 @@ async fn test_demote_member_not_admin_rejected() {
 async fn test_demote_last_admin_rejected() {
     let app = setup();
 
-    register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let alice_id = register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_demote_last").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice is the only admin — try to demote herself.
     let request_body = conclave_proto::DemoteMemberRequest {
-        username: "alice".to_string(),
+        user_id: alice_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3940,17 +3979,17 @@ async fn test_demote_regular_member_rejected() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_demote_regular").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice tries to demote Bob who is not an admin.
     let request_body = conclave_proto::DemoteMemberRequest {
-        username: "bob".to_string(),
+        user_id: bob_id,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3972,13 +4011,13 @@ async fn test_list_admins_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_admins").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     let request = Request::builder()
         .method("GET")
@@ -4025,8 +4064,8 @@ async fn test_invite_requires_admin() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
-    register_user(&app, "charlie", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
@@ -4038,11 +4077,11 @@ async fn test_invite_requires_admin() {
     )
     .await;
     let group_id = create_group_for(&app, &alice_token, "test_invite_admin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (regular member) tries to invite Charlie.
     let request_body = conclave_proto::InviteToGroupRequest {
-        usernames: vec!["charlie".to_string()],
+        user_ids: vec![charlie_id],
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4064,19 +4103,19 @@ async fn test_remove_member_requires_admin() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
-    register_user(&app, "charlie", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
     let charlie_token = login_user(&app, "charlie", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "test_remove_admin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
-    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, "charlie").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+    add_member_via_escrow(&app, &alice_token, &charlie_token, group_id, charlie_id).await;
 
     // Bob (regular member) tries to remove Charlie.
     let request_body = conclave_proto::RemoveMemberRequest {
-        username: "charlie".to_string(),
+        user_id: charlie_id,
         commit_message: b"remove".to_vec(),
         group_info: b"gi".to_vec(),
     };
@@ -4100,13 +4139,13 @@ async fn test_update_group_requires_admin() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_update_admin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (regular member) tries to update the group.
     let request_body = conclave_proto::UpdateGroupRequest {
@@ -4133,13 +4172,13 @@ async fn test_group_member_role_in_list_groups() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "test_roles_list").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // List groups and check member roles.
     let request = Request::builder()
@@ -4174,10 +4213,10 @@ async fn create_escrow_invite(
     app: &Router,
     admin_token: &str,
     group_id: i64,
-    invitee_username: &str,
+    invitee_id: i64,
 ) -> StatusCode {
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: invitee_username.to_string(),
+        invitee_id,
         commit_message: b"commit_data".to_vec(),
         welcome_message: b"welcome_data".to_vec(),
         group_info: b"group_info_data".to_vec(),
@@ -4218,12 +4257,12 @@ async fn test_escrow_invite_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_test").await;
 
-    let status = create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -4232,17 +4271,17 @@ async fn test_escrow_invite_not_admin() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
-    register_user(&app, "charlie", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
     let group_id = create_group_for(&app, &alice_token, "escrow_not_admin").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob is a regular member, not an admin.
-    let status = create_escrow_invite(&app, &bob_token, group_id, "charlie").await;
+    let status = create_escrow_invite(&app, &bob_token, group_id, charlie_id).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -4255,7 +4294,7 @@ async fn test_escrow_invite_nonexistent_user() {
 
     let group_id = create_group_for(&app, &alice_token, "escrow_nonexistent").await;
 
-    let status = create_escrow_invite(&app, &alice_token, group_id, "nobody").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, 999999).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -4264,15 +4303,15 @@ async fn test_escrow_invite_already_member() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_already_member").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob is already a member.
-    let status = create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -4281,14 +4320,14 @@ async fn test_escrow_invite_missing_fields() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_missing").await;
 
-    // Empty invitee_username.
+    // Zero invitee_id.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: String::new(),
+        invitee_id: 0,
         commit_message: b"commit".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: b"ginfo".to_vec(),
@@ -4309,7 +4348,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty commit_message.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: "bob".to_string(),
+        invitee_id: bob_id,
         commit_message: vec![],
         welcome_message: b"welcome".to_vec(),
         group_info: b"ginfo".to_vec(),
@@ -4330,7 +4369,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty welcome_message.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: "bob".to_string(),
+        invitee_id: bob_id,
         commit_message: b"commit".to_vec(),
         welcome_message: vec![],
         group_info: b"ginfo".to_vec(),
@@ -4351,7 +4390,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty group_info.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: "bob".to_string(),
+        invitee_id: bob_id,
         commit_message: b"commit".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: vec![],
@@ -4386,14 +4425,14 @@ async fn test_list_pending_invites_empty() {
 async fn test_list_pending_invites_success() {
     let app = setup();
 
-    register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let alice_id = register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_list").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     // Bob should see the invite.
     let invites = list_pending_invites(&app, &bob_token).await;
@@ -4401,6 +4440,7 @@ async fn test_list_pending_invites_success() {
     assert_eq!(invites[0].group_id, group_id);
     assert_eq!(invites[0].group_name, "escrow_list");
     assert_eq!(invites[0].inviter_username, "alice");
+    assert_eq!(invites[0].inviter_id, alice_id);
     assert!(invites[0].invite_id > 0);
 
     // Alice should not see any invites (she is the inviter, not invitee).
@@ -4413,13 +4453,13 @@ async fn test_accept_invite_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_accept").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4462,7 +4502,7 @@ async fn test_accept_invite_not_invitee() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -4470,7 +4510,7 @@ async fn test_accept_invite_not_invitee() {
 
     let group_id = create_group_for(&app, &alice_token, "escrow_not_invitee").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4511,13 +4551,13 @@ async fn test_decline_invite_success() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_decline").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4559,7 +4599,7 @@ async fn test_decline_invite_not_invitee() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     register_user(&app, "charlie", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
@@ -4567,7 +4607,7 @@ async fn test_decline_invite_not_invitee() {
 
     let group_id = create_group_for(&app, &alice_token, "escrow_decline_not_invitee").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4590,17 +4630,17 @@ async fn test_escrow_invite_duplicate() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_duplicate").await;
 
     // First invite should succeed.
-    let status = create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
     assert_eq!(status, StatusCode::OK);
 
     // Second invite for the same group+user should fail due to UNIQUE constraint.
-    let status = create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -4609,13 +4649,13 @@ async fn test_accept_invite_twice() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_double_accept").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4649,13 +4689,13 @@ async fn test_decline_invite_twice() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let group_id = create_group_for(&app, &alice_token, "escrow_double_decline").await;
 
-    create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
@@ -4689,16 +4729,16 @@ async fn test_escrow_invite_already_member_via_creation() {
     let app = setup();
 
     register_user(&app, "alice", "password123").await;
-    register_user(&app, "bob", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
     let alice_token = login_user(&app, "alice", "password123").await;
     let bob_token = login_user(&app, "bob", "password123").await;
 
     // Create a group and add bob via escrow.
     let group_id = create_group_for(&app, &alice_token, "escrow_already_member").await;
-    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, "bob").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Trying to escrow-invite bob should fail because he's already a member.
-    let status = create_escrow_invite(&app, &alice_token, group_id, "bob").await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -4708,7 +4748,7 @@ async fn test_escrow_invite_unauthenticated() {
 
     // Attempt to create escrow invite without auth.
     let request_body = conclave_proto::EscrowInviteRequest {
-        invitee_username: "bob".into(),
+        invitee_id: 999,
         commit_message: vec![1, 2, 3],
         welcome_message: vec![4, 5, 6],
         group_info: vec![7, 8, 9],
@@ -4766,4 +4806,175 @@ async fn test_decline_invite_unauthenticated() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── List group pending invites ───────────────────────────────────
+
+async fn list_group_pending_invites(
+    app: &Router,
+    token: &str,
+    group_id: i64,
+) -> (StatusCode, Vec<conclave_proto::PendingInvite>) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/groups/{group_id}/invites"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    if status != StatusCode::OK {
+        return (status, vec![]);
+    }
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListGroupPendingInvitesResponse::decode(body_bytes).unwrap();
+    (status, resp.invites)
+}
+
+#[tokio::test]
+async fn test_list_group_pending_invites_empty() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "empty_invites").await;
+
+    let (status, invites) = list_group_pending_invites(&app, &alice_token, group_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(invites.is_empty());
+}
+
+#[tokio::test]
+async fn test_list_group_pending_invites_success() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "list_invites").await;
+
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
+
+    let (status, invites) = list_group_pending_invites(&app, &alice_token, group_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].group_id, group_id);
+    assert_eq!(invites[0].invitee_id, bob_id);
+}
+
+#[tokio::test]
+async fn test_list_group_pending_invites_not_admin() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
+    let group_id = create_group_for(&app, &alice_token, "not_admin_list").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+
+    let (status, _) = list_group_pending_invites(&app, &bob_token, group_id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ── Cancel invite ────────────────────────────────────────────────
+
+async fn cancel_invite(app: &Router, token: &str, group_id: i64, invitee_id: i64) -> StatusCode {
+    let req_body = conclave_proto::CancelInviteRequest { invitee_id };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/cancel-invite"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    response.status()
+}
+
+#[tokio::test]
+async fn test_cancel_invite_success() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "cancel_test").await;
+
+    create_escrow_invite(&app, &alice_token, group_id, bob_id).await;
+
+    let status = cancel_invite(&app, &alice_token, group_id, bob_id).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Verify the invite is gone.
+    let (_, invites) = list_group_pending_invites(&app, &alice_token, group_id).await;
+    assert!(invites.is_empty());
+}
+
+#[tokio::test]
+async fn test_cancel_invite_not_found() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "cancel_not_found").await;
+
+    let status = cancel_invite(&app, &alice_token, group_id, bob_id).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_cancel_invite_not_admin() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let charlie_id = register_user(&app, "charlie", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
+    let group_id = create_group_for(&app, &alice_token, "cancel_not_admin").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+
+    create_escrow_invite(&app, &alice_token, group_id, charlie_id).await;
+
+    let charlie_id = {
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/users/charlie")
+            .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        conclave_proto::UserInfoResponse::decode(body_bytes)
+            .unwrap()
+            .user_id
+    };
+
+    // Bob is a regular member, not admin.
+    let status = cancel_invite(&app, &bob_token, group_id, charlie_id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_cancel_invite_nonexistent_user() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &alice_token, "cancel_nouser").await;
+
+    let status = cancel_invite(&app, &alice_token, group_id, 99999).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

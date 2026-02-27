@@ -87,12 +87,10 @@ pub struct GroupMemberRow {
     pub role: String,
 }
 
-/// A row from the `messages` table joined with sender info.
+/// A row from the `messages` table.
 pub struct StoredMessageRow {
     pub sequence_num: i64,
     pub sender_id: i64,
-    pub sender_username: String,
-    pub sender_alias: Option<String>,
     pub mls_message: Vec<u8>,
     pub created_at: i64,
 }

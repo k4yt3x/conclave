@@ -20,23 +20,24 @@ pub enum SseUpdate {
     GroupUpdate,
     MemberRemoved {
         group_id: i64,
-        username: String,
+        removed_user_id: i64,
     },
     IdentityReset {
         group_id: i64,
-        username: String,
+        user_id: i64,
     },
     InviteReceived {
         invite_id: i64,
         group_id: i64,
         group_name: String,
         group_alias: String,
-        inviter_username: String,
+        inviter_id: i64,
     },
     InviteDeclined {
         group_id: i64,
-        declined_username: String,
+        declined_user_id: i64,
     },
+    InviteCancelled,
 }
 
 /// State key for the SSE subscription. Keyed by token so the subscription
@@ -142,33 +143,36 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
         conclave_client::operations::SseEvent::GroupUpdate { .. } => Some(SseUpdate::GroupUpdate),
         conclave_client::operations::SseEvent::MemberRemoved {
             group_id,
-            removed_username,
+            removed_user_id,
         } => Some(SseUpdate::MemberRemoved {
             group_id,
-            username: removed_username,
+            removed_user_id,
         }),
-        conclave_client::operations::SseEvent::IdentityReset { group_id, username } => {
-            Some(SseUpdate::IdentityReset { group_id, username })
+        conclave_client::operations::SseEvent::IdentityReset { group_id, user_id } => {
+            Some(SseUpdate::IdentityReset { group_id, user_id })
         }
         conclave_client::operations::SseEvent::InviteReceived {
             invite_id,
             group_id,
             group_name,
             group_alias,
-            inviter_username,
+            inviter_id,
         } => Some(SseUpdate::InviteReceived {
             invite_id,
             group_id,
             group_name,
             group_alias,
-            inviter_username,
+            inviter_id,
         }),
         conclave_client::operations::SseEvent::InviteDeclined {
             group_id,
-            declined_username,
+            declined_user_id,
         } => Some(SseUpdate::InviteDeclined {
             group_id,
-            declined_username,
+            declined_user_id,
         }),
+        conclave_client::operations::SseEvent::InviteCancelled { .. } => {
+            Some(SseUpdate::InviteCancelled)
+        }
     }
 }

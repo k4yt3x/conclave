@@ -35,7 +35,7 @@ This file provides guidance to AI agents when working with code in this reposito
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release                    # Release build (LTO, stripped symbols)
-cargo test --workspace                   # Run all tests (~497 tests across 9 suites)
+cargo test --workspace                   # Run all tests (~507 tests across 9 suites)
 cargo test -p conclave-server --test "*" # Server integration tests only
 cargo test -p conclave-client             # Client library tests only
 cargo clippy --workspace                 # Lint
@@ -68,6 +68,18 @@ Five crates in `crates/`:
 - **conclave-cli** — CLI one-shot commands (clap) + interactive TUI (crossterm + SSE). The `tui/` module has: `mod.rs` (event loop via `tokio::select!`), `commands.rs` (dispatcher + category helpers: auth, room, member, invite, messaging, profile), `events.rs`, `input.rs`, `render.rs`.
 - **conclave-gui** — iced 0.14 GUI with Elm-style architecture. Screens: login, dashboard (three-panel chat). Custom theme system with configurable colors. `app.rs` + `app/` sub-modules: `login.rs` (auth flow), `commands.rs` (dashboard input dispatch), `sse.rs` (SSE event handling), `rooms.rs` (room/group/message operations).
 
+## ID-First Referencing Convention
+
+Users and groups are always referenced by their integer IDs (`user_id`, `group_id`) throughout the codebase:
+
+* **API request bodies and path parameters** use IDs for all operations (invite, kick, promote, demote, message, etc.). The only exceptions are authentication endpoints (register/login accept usernames) and group creation (accepts a group name).
+* **Usernames and group names** are human-readable shortcuts. They are never passed in API calls except through the dedicated lookup endpoints: `GET /api/v1/users/{username}` (name→ID) and `GET /api/v1/users/by-id/{user_id}` (ID→name).
+* **Client command handling**: When a user types a command with a username (e.g., `/invite alice`), the CLI/GUI resolves the name to a user ID via the lookup endpoint at the UI boundary, then passes only the ID to the operations layer.
+* **Display name resolution**: Clients resolve user IDs to display names from their local member cache (populated by `ListGroupsResponse`). For cache misses (e.g., users who left the group), clients use the `GET /api/v1/users/by-id/{user_id}` endpoint. The fallback is `user#<id>`.
+* **API responses** that list members or groups (e.g., `ListGroupsResponse`, `PendingInvite`, `InviteReceivedEvent`) include names alongside IDs as a batch-lookup convenience for display. Operational responses do not include names.
+* **MLS layer** uses `user_id` exclusively — the credential embeds user_id as big-endian i64 bytes.
+* **SSE events** reference users and groups by ID only, except `InviteReceivedEvent` and `PendingInvite` which include group name/alias because the invitee is not yet a member and cannot resolve the name from their local cache.
+
 ## Key Architecture Details
 
 **MLS integration**: mls-rs runs in sync mode (not async). CPU-bound crypto is wrapped in `tokio::task::spawn_blocking` where needed. Cipher suite: CURVE448_CHACHA (256-bit security). `BasicCredential` stores user_id as big-endian i64 bytes (8 bytes). Per-user MLS state stored in `data_dir/users/<username>/` with SQLite-backed persistence via mls-rs-provider-sqlite.
@@ -82,7 +94,7 @@ Five crates in `crates/`:
 
 ## Testing Patterns
 
-- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 151 tests covering registration, auth, key packages, groups, messages, invites, removal, external join, profile/group updates, admin roles, validation edge cases.
+- **Server API tests** (`crates/conclave-server/tests/api_tests.rs`): Use `tower::ServiceExt::oneshot()` with in-memory SQLite — no TCP listener. Each test calls `setup()` for a fresh router. 158 tests covering registration, auth, key packages, groups, messages, invites, invite cancellation, removal, external join, profile/group updates, admin roles, validation edge cases.
 - **End-to-end protocol flow tests** (`crates/conclave-server/tests/protocol_flow_tests.rs`): Combine real MLS cryptographic operations (via `conclave-client::MlsManager`) with server API calls through tower::oneshot. Tests full protocol flows: group creation, welcome processing, encrypted messaging, member removal, key rotation, external rejoin.
 - **Client MLS tests** (`crates/conclave-client/src/mls.rs`): Use `tempfile::TempDir` for isolated crypto state. Real cryptographic operations, no mocking. 74 tests covering key package generation, group lifecycle, message encryption/decryption, epoch management, member operations.
 - **All tests use real protobuf encoding/decoding** — match production wire format.

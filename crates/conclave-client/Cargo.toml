@@ -7,6 +7,10 @@ license.workspace = true
 [lib]
 path = "src/conclave_client.rs"
 
+[features]
+default = ["command"]
+command = []
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 conclave-proto = { workspace = true }
@@ -17,7 +21,6 @@ mls-rs-codec = "0.7"
 mls-rs-core = "0.25"
 mls-rs-crypto-openssl = "0.19"
 mls-rs-provider-sqlite = { version = "0.21", features = ["sqlite-bundled"] }
-notify-rust = "4.11"
 prost = { workspace = true }
 reqwest = { version = "0.12", features = ["http2"] }
 reqwest-eventsource = "0.6"

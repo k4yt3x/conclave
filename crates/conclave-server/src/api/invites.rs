@@ -19,8 +19,8 @@ pub async fn escrow_invite(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::EscrowInviteRequest>(&body)?;
 
-    if request.invitee_username.is_empty() {
-        return Err(Error::BadRequest("invitee username is required".into()));
+    if request.invitee_id == 0 {
+        return Err(Error::BadRequest("invitee_id is required".into()));
     }
 
     if request.commit_message.is_empty()
@@ -38,15 +38,15 @@ pub async fn escrow_invite(
         ));
     }
 
-    let invitee_id = state
+    let invitee_id = request.invitee_id;
+    state
         .db
-        .get_user_id_by_username(&request.invitee_username)?
-        .ok_or_else(|| Error::NotFound(format!("user '{}' not found", request.invitee_username)))?;
+        .get_user_by_id(invitee_id)?
+        .ok_or_else(|| Error::NotFound(format!("user with ID {invitee_id} not found")))?;
 
     if state.db.is_group_member(group_id, invitee_id)? {
         return Err(Error::Conflict(format!(
-            "user '{}' is already a member of this group",
-            request.invitee_username
+            "user with ID {invitee_id} is already a member of this group"
         )));
     }
 
@@ -61,11 +61,6 @@ pub async fn escrow_invite(
 
     let group_alias = state.db.get_group_alias(group_id)?;
     let group_name = state.db.get_group_name(group_id)?.unwrap_or_default();
-    let inviter_username = state
-        .db
-        .get_user_by_id(auth.user_id)?
-        .map(|(_, username, _)| username)
-        .unwrap_or_default();
 
     broadcast_sse(
         &state.sse_tx,
@@ -76,7 +71,7 @@ pub async fn escrow_invite(
                     group_id,
                     group_name,
                     group_alias: group_alias.unwrap_or_default(),
-                    inviter_username,
+                    inviter_id: auth.user_id,
                 },
             )),
         },
@@ -112,6 +107,8 @@ pub async fn list_pending_invites(
             group_alias,
             inviter_username,
             created_at: row.created_at as u64,
+            invitee_id: row.invitee_id,
+            inviter_id: row.inviter_id,
         });
     }
 
@@ -170,6 +167,100 @@ pub async fn accept_invite(
     ))
 }
 
+pub async fn list_group_pending_invites(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+) -> Result<impl IntoResponse> {
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can list pending invites".into(),
+        ));
+    }
+
+    let rows = state.db.list_pending_invites_for_group(group_id)?;
+
+    let mut invites = Vec::new();
+    for row in rows {
+        let inviter_username = state
+            .db
+            .get_user_by_id(row.inviter_id)?
+            .map(|(_, username, _)| username)
+            .unwrap_or_default();
+        let group_name = state.db.get_group_name(row.group_id)?.unwrap_or_default();
+        let group_alias = state.db.get_group_alias(row.group_id)?.unwrap_or_default();
+
+        invites.push(conclave_proto::PendingInvite {
+            invite_id: row.invite_id,
+            group_id: row.group_id,
+            group_name,
+            group_alias,
+            inviter_username,
+            created_at: row.created_at as u64,
+            invitee_id: row.invitee_id,
+            inviter_id: row.inviter_id,
+        });
+    }
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ListGroupPendingInvitesResponse { invites },
+    ))
+}
+
+pub async fn cancel_invite(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::CancelInviteRequest>(&body)?;
+
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can cancel invites".into(),
+        ));
+    }
+
+    let invite = state
+        .db
+        .get_pending_invite_by_group_and_invitee(group_id, request.invitee_id)?
+        .ok_or_else(|| Error::NotFound("pending invite not found".into()))?;
+
+    state.db.delete_pending_invite(invite.invite_id)?;
+
+    // Notify the invitee that their invite was cancelled.
+    broadcast_sse(
+        &state.sse_tx,
+        conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::InviteCancelled(
+                conclave_proto::InviteCancelledEvent { group_id },
+            )),
+        },
+        vec![invite.invitee_id],
+    );
+
+    // Notify the inviter so they can clean up the phantom MLS leaf
+    // (same mechanism as when invitee declines).
+    broadcast_sse(
+        &state.sse_tx,
+        conclave_proto::ServerEvent {
+            event: Some(conclave_proto::server_event::Event::InviteDeclined(
+                conclave_proto::InviteDeclinedEvent {
+                    group_id,
+                    declined_user_id: invite.invitee_id,
+                },
+            )),
+        },
+        vec![invite.inviter_id],
+    );
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::CancelInviteResponse {},
+    ))
+}
+
 pub async fn decline_invite(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
@@ -186,12 +277,6 @@ pub async fn decline_invite(
         ));
     }
 
-    let declined_username = state
-        .db
-        .get_user_by_id(auth.user_id)?
-        .map(|(_, username, _)| username)
-        .unwrap_or_default();
-
     state.db.delete_pending_invite(invite_id)?;
 
     // Notify the inviter so they can clean up the phantom MLS leaf.
@@ -201,7 +286,7 @@ pub async fn decline_invite(
             event: Some(conclave_proto::server_event::Event::InviteDeclined(
                 conclave_proto::InviteDeclinedEvent {
                     group_id: invite.group_id,
-                    declined_username,
+                    declined_user_id: auth.user_id,
                 },
             )),
         },

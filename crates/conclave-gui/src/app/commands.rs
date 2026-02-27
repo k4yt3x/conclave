@@ -327,6 +327,8 @@ impl Conclave {
                     Message::CommandResult,
                 )
             }
+            Ok(Command::Invited) => self.list_group_invites(),
+            Ok(Command::Uninvite { username }) => self.cancel_invite(username),
             Ok(Command::Invites) => self.list_invites(),
             Ok(Command::Accept { invite_id }) => self.accept_invites(invite_id),
             Ok(Command::Decline { invite_id }) => self.decline_invite(invite_id),

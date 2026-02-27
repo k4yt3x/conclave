@@ -2,7 +2,6 @@ use iced::Task;
 use iced::widget::operation::focus;
 
 use conclave_client::api::{ApiClient, normalize_server_url};
-use conclave_client::config::{SessionState, generate_initial_key_packages};
 use conclave_client::mls::MlsManager;
 use conclave_client::state::{ConnectionStatus, DisplayMessage};
 use conclave_client::store::MessageStore;
@@ -46,6 +45,7 @@ impl Conclave {
                 let username = login.username.clone();
                 let password = login.password.clone();
                 let mode = login.mode.clone();
+                let data_dir = self.config.data_dir.clone();
 
                 if username.is_empty() || password.is_empty() {
                     login.status =
@@ -55,69 +55,44 @@ impl Conclave {
 
                 login.status = screen::login::Status::Loading;
 
-                // Both login and register are async — the result comes back
-                // through Message::LoginResult / Message::RegisterResult.
                 match mode {
                     screen::login::Mode::Login => Task::perform(
                         async move {
-                            let api = ApiClient::new(&server_url, accept_invalid_certs);
-                            let resp = api
-                                .login(&username, &password)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            let canonical_username = if resp.username.is_empty() {
-                                username
-                            } else {
-                                resp.username
-                            };
+                            let result = conclave_client::operations::login(
+                                &server_url,
+                                &username,
+                                &password,
+                                accept_invalid_certs,
+                                &data_dir,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
                             Ok(LoginInfo {
-                                server_url,
-                                token: resp.token,
-                                user_id: resp.user_id,
-                                username: canonical_username,
+                                server_url: result.server_url,
+                                token: result.token,
+                                user_id: result.user_id,
+                                username: result.username,
                             })
                         },
                         Message::LoginResult,
                     ),
                     screen::login::Mode::Register => Task::perform(
-                        {
-                            let data_dir = self.config.data_dir.clone();
-                            async move {
-                                let api = ApiClient::new(&server_url, accept_invalid_certs);
-                                let resp = api
-                                    .register(&username, &password, None)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-                                let user_id = resp.user_id;
-
-                                let login_resp = api
-                                    .login(&username, &password)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-                                let canonical_username = if login_resp.username.is_empty() {
-                                    username
-                                } else {
-                                    login_resp.username
-                                };
-                                let token = login_resp.token;
-
-                                let mut auth_api =
-                                    ApiClient::new(&server_url, accept_invalid_certs);
-                                auth_api.set_token(token.clone());
-
-                                conclave_client::operations::initialize_mls_and_upload_key_packages(
-                                    &auth_api, &data_dir, user_id,
-                                )
-                                .await
-                                .map_err(|e| e.to_string())?;
-
-                                Ok(LoginInfo {
-                                    server_url,
-                                    token,
-                                    user_id,
-                                    username: canonical_username,
-                                })
-                            }
+                        async move {
+                            let result = conclave_client::operations::register_and_login(
+                                &server_url,
+                                &username,
+                                &password,
+                                accept_invalid_certs,
+                                &data_dir,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                            Ok(LoginInfo {
+                                server_url: result.server_url,
+                                token: result.token,
+                                user_id: result.user_id,
+                                username: result.username,
+                            })
                         },
                         Message::RegisterResult,
                     ),
@@ -141,13 +116,15 @@ impl Conclave {
                 self.user_id = Some(info.user_id);
                 self.token = Some(info.token.clone());
 
-                let session = SessionState {
-                    server_url: Some(info.server_url),
-                    token: Some(info.token),
-                    user_id: Some(info.user_id),
-                    username: Some(info.username.clone()),
-                };
-                if let Err(error) = session.save(&self.config.data_dir) {
+                if let Err(error) = (conclave_client::operations::AuthResult {
+                    server_url: info.server_url.clone(),
+                    token: info.token.clone(),
+                    user_id: info.user_id,
+                    username: info.username.clone(),
+                    key_packages_uploaded: 0,
+                })
+                .save_session(&self.config.data_dir)
+                {
                     tracing::warn!(%error, "failed to save session");
                 }
 
@@ -170,29 +147,7 @@ impl Conclave {
 
                 let rooms_task = self.load_rooms_task();
                 let alias_task = self.fetch_user_alias();
-
-                // Registration already generated and uploaded key packages,
-                // so skip the duplicate keygen on the subsequent login.
-                if self.skip_keygen {
-                    self.skip_keygen = false;
-                    Task::batch([rooms_task, alias_task])
-                } else {
-                    let data_dir = self.config.data_dir.clone();
-                    let keygen_user_id = info.user_id;
-                    let keygen_task = Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                let mls = MlsManager::new(&data_dir, keygen_user_id)
-                                    .map_err(|e| e.to_string())?;
-                                generate_initial_key_packages(&mls).map_err(|e| e.to_string())
-                            })
-                            .await
-                            .map_err(|e| e.to_string())?
-                        },
-                        Message::KeygenDone,
-                    );
-                    Task::batch([keygen_task, rooms_task, alias_task])
-                }
+                Task::batch([rooms_task, alias_task])
             }
             Err(e) => {
                 if let screen::Screen::Login(login) = &mut self.screen {
@@ -208,41 +163,11 @@ impl Conclave {
         result: Result<LoginInfo, String>,
     ) -> Task<Message> {
         match result {
-            Ok(info) => {
-                // Registration already uploaded key packages, so tell
-                // handle_login_result to skip the redundant keygen step.
-                self.skip_keygen = true;
-                self.handle_login_result(Ok(info))
-            }
+            Ok(info) => self.handle_login_result(Ok(info)),
             Err(e) => {
                 if let screen::Screen::Login(login) = &mut self.screen {
                     login.status = screen::login::Status::Error(e);
                 }
-                Task::none()
-            }
-        }
-    }
-
-    pub(crate) fn handle_keygen_done(
-        &mut self,
-        result: Result<Vec<(Vec<u8>, bool)>, String>,
-    ) -> Task<Message> {
-        match result {
-            Ok(entries) => {
-                let params = self.api_params();
-                Task::perform(
-                    async move {
-                        params
-                            .into_client()
-                            .upload_key_packages(entries)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    Message::KeyPackageUploaded,
-                )
-            }
-            Err(e) => {
-                self.push_system_message(&format!("Key generation failed: {e}"));
                 Task::none()
             }
         }

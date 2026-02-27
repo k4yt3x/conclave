@@ -20,9 +20,10 @@ use tokio::sync::Mutex;
 
 use conclave_client::api::ApiClient;
 use conclave_client::config::{
-    ClientConfig, NotificationMethod, SessionState, build_group_mapping,
-    generate_initial_key_packages,
+    ClientConfig, SessionState, build_group_mapping, generate_initial_key_packages,
 };
+
+use crate::NotificationMethod;
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
 
@@ -32,7 +33,10 @@ use self::state::{AppState, ConnectionStatus, DisplayMessage};
 use self::store::MessageStore;
 
 /// Run the interactive TUI.
-pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
+pub async fn run(
+    config: &ClientConfig,
+    notifications: &NotificationMethod,
+) -> crate::error::Result<()> {
     // Load session state.
     let session = SessionState::load(&config.data_dir);
     let initial_url = session.server_url.as_deref().unwrap_or("");
@@ -177,6 +181,7 @@ pub async fn run(config: &ClientConfig) -> crate::error::Result<()> {
         &mut term_events,
         &mut sse_source,
         &mut msg_store,
+        notifications,
     )
     .await;
 
@@ -208,6 +213,7 @@ async fn main_loop(
     term_events: &mut EventStream,
     sse_source: &mut Option<EventSource>,
     msg_store: &mut Option<MessageStore>,
+    notifications: &NotificationMethod,
 ) -> crate::error::Result<()> {
     loop {
         tokio::select! {
@@ -217,14 +223,14 @@ async fn main_loop(
                     CtEvent::Key(key_event) => {
                         match handle_key_event(
                             key_event, stdout, state, input, api, mls, config, sse_source,
-                            msg_store,
+                            msg_store, notifications,
                         ).await {
                             Ok(LoopAction::Quit) => break,
                             Ok(LoopAction::Continue) => {}
                             Err(e) => {
                                 let msg = DisplayMessage::system(&format!("Error: {e}"));
                                 add_and_render_message(stdout, state, input, None, msg,
-                                    msg_store, &config.notifications);
+                                    msg_store, notifications);
                             }
                         }
                     }
@@ -282,7 +288,7 @@ async fn main_loop(
                                         add_and_render_message(
                                             stdout, state, input,
                                             Some(group_id), display_msg,
-                                            msg_store, &config.notifications,
+                                            msg_store, notifications,
                                         );
                                     }
                                 }
@@ -292,7 +298,7 @@ async fn main_loop(
                                     &format!("SSE processing error: {e}"),
                                 );
                                 add_and_render_message(stdout, state, input, None, msg,
-                                    msg_store, &config.notifications);
+                                    msg_store, notifications);
                             }
                         }
                     }
@@ -345,6 +351,7 @@ async fn handle_key_event(
     config: &ClientConfig,
     sse_source: &mut Option<EventSource>,
     msg_store: &mut Option<MessageStore>,
+    notifications: &NotificationMethod,
 ) -> crate::error::Result<LoopAction> {
     // Handle keys that have special control flow (quit, command dispatch,
     // scrolling) before falling through to the common input-editing path.
@@ -353,7 +360,15 @@ async fn handle_key_event(
 
         (KeyCode::Enter, _) => {
             return handle_enter(
-                stdout, state, input, api, mls, config, sse_source, msg_store,
+                stdout,
+                state,
+                input,
+                api,
+                mls,
+                config,
+                sse_source,
+                msg_store,
+                notifications,
             )
             .await;
         }
@@ -482,6 +497,7 @@ async fn handle_enter(
     config: &ClientConfig,
     sse_source: &mut Option<EventSource>,
     msg_store: &mut Option<MessageStore>,
+    notifications: &NotificationMethod,
 ) -> crate::error::Result<LoopAction> {
     if input.is_empty() {
         return Ok(LoopAction::Continue);
@@ -503,7 +519,7 @@ async fn handle_enter(
                             None,
                             msg,
                             msg_store,
-                            &config.notifications,
+                            notifications,
                         );
                     }
                     if should_start_sse {
@@ -531,7 +547,7 @@ async fn handle_enter(
                         None,
                         msg,
                         msg_store,
-                        &config.notifications,
+                        notifications,
                     );
                 }
             }
@@ -539,15 +555,7 @@ async fn handle_enter(
         }
         Err(e) => {
             let msg = DisplayMessage::system(&format!("{e}"));
-            add_and_render_message(
-                stdout,
-                state,
-                input,
-                None,
-                msg,
-                msg_store,
-                &config.notifications,
-            );
+            add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
             let _ = render::render_full(stdout, state, input);
         }
     }
@@ -617,7 +625,7 @@ fn add_and_render_message(
             NotificationMethod::Bell | NotificationMethod::Both
         );
         if use_native {
-            conclave_client::notification::send_notification(
+            crate::notification::send_notification(
                 &format!("#{room_name} - {}", msg.sender),
                 &msg.content,
             );

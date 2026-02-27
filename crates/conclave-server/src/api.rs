@@ -63,6 +63,14 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/invites", get(invites::list_pending_invites))
         .route(
+            "/api/v1/groups/{group_id}/invites",
+            get(invites::list_group_pending_invites),
+        )
+        .route(
+            "/api/v1/groups/{group_id}/cancel-invite",
+            post(invites::cancel_invite),
+        )
+        .route(
             "/api/v1/invites/{invite_id}/accept",
             post(invites::accept_invite),
         )
@@ -101,6 +109,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/reset-account", post(auth::reset_account))
         .route("/api/v1/logout", post(auth::logout))
         .route("/api/v1/events", get(sse::sse_stream))
+        .route(
+            "/api/v1/users/by-id/{user_id}",
+            get(auth::get_user_by_id),
+        )
         .route(
             "/api/v1/users/{username}",
             get(auth::get_user_by_username),

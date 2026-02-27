@@ -51,7 +51,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         category: CommandCategory::Account,
         usage: "/register <server> <user> <pass>",
-        description: "Register a new account",
+        description: "Register a new account and login",
     },
     CommandSpec {
         name: "login",
@@ -187,6 +187,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         description: "List admins of active room",
     },
     CommandSpec {
+        name: "invited",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/invited",
+        description: "List pending invites for active room",
+    },
+    CommandSpec {
+        name: "uninvite",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/uninvite <username>",
+        description: "Cancel a pending invite",
+    },
+    CommandSpec {
         name: "invites",
         aliases: &[],
         category: CommandCategory::Invites,
@@ -241,10 +255,11 @@ pub fn help_categories() -> Vec<HelpCategory> {
     CommandCategory::ALL
         .iter()
         .map(|category| {
-            let commands = COMMANDS
+            let mut commands: Vec<&CommandSpec> = COMMANDS
                 .iter()
                 .filter(|spec| spec.category == *category)
                 .collect();
+            commands.sort_by_key(|spec| spec.name);
             HelpCategory {
                 label: category.label(),
                 commands,
@@ -322,6 +337,12 @@ pub enum Command {
         username: String,
     },
     Admins,
+    /// List pending invites for the active room (admin-only).
+    Invited,
+    /// Cancel a pending invite. /uninvite <username>
+    Uninvite {
+        username: String,
+    },
     /// Leave the room (MLS removal). IRC: /part
     Part,
     /// Switch away from the active room without leaving. IRC: /close
@@ -458,6 +479,15 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             })
         }
         "admins" => Ok(Command::Admins),
+        "invited" => Ok(Command::Invited),
+        "uninvite" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /uninvite <username>".into()));
+            }
+            Ok(Command::Uninvite {
+                username: parts[1].to_string(),
+            })
+        }
         "invites" => Ok(Command::Invites),
         "accept" => {
             let invite_id = parts.get(1).map(|s| {
@@ -826,6 +856,26 @@ mod tests {
     #[test]
     fn test_parse_demote_missing_username() {
         assert!(parse("/demote").is_err());
+    }
+
+    #[test]
+    fn test_parse_invited() {
+        let cmd = parse("/invited").unwrap();
+        assert!(matches!(cmd, Command::Invited));
+    }
+
+    #[test]
+    fn test_parse_uninvite() {
+        let cmd = parse("/uninvite alice").unwrap();
+        let Command::Uninvite { username } = cmd else {
+            panic!("expected Uninvite variant");
+        };
+        assert_eq!(username, "alice");
+    }
+
+    #[test]
+    fn test_parse_uninvite_missing_args() {
+        assert!(parse("/uninvite").is_err());
     }
 
     #[test]

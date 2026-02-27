@@ -52,18 +52,32 @@ impl Conclave {
             }
             SseUpdate::Welcome => self.accept_welcomes(),
             SseUpdate::GroupUpdate => self.load_rooms_task(),
-            SseUpdate::IdentityReset { group_id, username } => {
+            SseUpdate::IdentityReset { group_id, user_id } => {
+                let display_name = self
+                    .rooms
+                    .get(&group_id)
+                    .and_then(|room| {
+                        room.members
+                            .iter()
+                            .find(|m| m.user_id == user_id)
+                            .map(|m| m.display_name().to_string())
+                    })
+                    .unwrap_or_else(|| format!("user#{user_id}"));
+
                 self.add_message_to_room(
                     group_id,
                     DisplayMessage::system(&format!(
-                        "{username} has reset their encryption identity. \
+                        "{display_name} has reset their encryption identity. \
                          New messages are secured with their new keys."
                     )),
                 );
                 self.handle_sse_event(SseUpdate::NewMessage { group_id })
             }
-            SseUpdate::MemberRemoved { group_id, username } => {
-                let is_self = self.username.as_deref() == Some(&username);
+            SseUpdate::MemberRemoved {
+                group_id,
+                removed_user_id,
+            } => {
+                let is_self = self.user_id == Some(removed_user_id);
 
                 if is_self {
                     let room_name = self
@@ -102,12 +116,25 @@ impl Conclave {
                         Task::none()
                     }
                 } else {
+                    let removed_name = self
+                        .rooms
+                        .get(&group_id)
+                        .and_then(|room| {
+                            room.members
+                                .iter()
+                                .find(|m| m.user_id == removed_user_id)
+                                .map(|m| m.display_name().to_string())
+                        })
+                        .unwrap_or_else(|| format!("user#{removed_user_id}"));
+
                     if let Some(room) = self.rooms.get_mut(&group_id) {
-                        room.members.retain(|m| m.username != username);
+                        room.members.retain(|m| m.user_id != removed_user_id);
                     }
                     self.add_message_to_room(
                         group_id,
-                        DisplayMessage::system(&format!("{username} was removed from the group")),
+                        DisplayMessage::system(&format!(
+                            "{removed_name} was removed from the group"
+                        )),
                     );
 
                     self.handle_sse_event(SseUpdate::NewMessage { group_id })
@@ -118,24 +145,40 @@ impl Conclave {
                 group_id,
                 group_name,
                 group_alias,
-                inviter_username,
+                inviter_id,
             } => {
                 let display = if group_alias.is_empty() {
                     &group_name
                 } else {
                     &group_alias
                 };
+                let inviter_name = format!("user#{inviter_id}");
                 self.push_system_message(&format!(
-                    "Invitation from {inviter_username} to join #{display} ({group_id}). \
+                    "Invitation from {inviter_name} to join #{display} ({group_id}). \
                      Use /accept {invite_id} or /decline {invite_id}."
                 ));
                 Task::none()
             }
+            SseUpdate::InviteCancelled => {
+                self.push_system_message("An invitation to a room was cancelled.");
+                Task::none()
+            }
             SseUpdate::InviteDeclined {
                 group_id,
-                declined_username,
+                declined_user_id,
             } => {
-                self.push_system_message(&format!("{declined_username} declined the invitation."));
+                let declined_name = self
+                    .rooms
+                    .get(&group_id)
+                    .and_then(|room| {
+                        room.members
+                            .iter()
+                            .find(|m| m.user_id == declined_user_id)
+                            .map(|m| m.display_name().to_string())
+                    })
+                    .unwrap_or_else(|| format!("user#{declined_user_id}"));
+
+                self.push_system_message(&format!("{declined_name} declined the invitation."));
 
                 // Auto-rotate keys to clean up the phantom MLS leaf.
                 let user_id = match self.user_id {
