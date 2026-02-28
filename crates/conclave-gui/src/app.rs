@@ -97,6 +97,9 @@ pub enum Message {
     EscapePressed,
     CopySelection,
     Quit,
+    PreviousRoom,
+    NextRoom,
+    GoToRoom(u8),
     WindowFocused,
     WindowUnfocused,
 
@@ -332,6 +335,42 @@ impl Conclave {
                 Task::none()
             }
             Message::Quit => iced::exit(),
+            Message::PreviousRoom | Message::NextRoom => {
+                if matches!(self.screen, screen::Screen::Dashboard(_)) {
+                    let sorted = self.sorted_room_ids();
+                    if !sorted.is_empty() {
+                        let current_idx = self
+                            .active_room
+                            .and_then(|id| sorted.iter().position(|&r| r == id));
+                        let target_idx = match message {
+                            Message::PreviousRoom => match current_idx {
+                                Some(0) | None => sorted.len() - 1,
+                                Some(i) => i - 1,
+                            },
+                            _ => match current_idx {
+                                Some(i) if i + 1 < sorted.len() => i + 1,
+                                _ => 0,
+                            },
+                        };
+                        self.select_room(sorted[target_idx]);
+                    }
+                }
+                Task::none()
+            }
+            Message::GoToRoom(n) => {
+                if matches!(self.screen, screen::Screen::Dashboard(_)) {
+                    let sorted = self.sorted_room_ids();
+                    if !sorted.is_empty() {
+                        let index = if n == 9 {
+                            sorted.len() - 1
+                        } else {
+                            (n as usize).saturating_sub(1).min(sorted.len() - 1)
+                        };
+                        self.select_room(sorted[index]);
+                    }
+                }
+                Task::none()
+            }
             Message::WindowFocused => {
                 self.window_focused = true;
                 Task::none()
@@ -407,6 +446,39 @@ impl Conclave {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
             }) => Some(Message::EscapePressed),
+            // Ctrl+PageUp or Alt+Up: previous room
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::PageUp),
+                modifiers,
+                ..
+            }) if modifiers.control() => Some(Message::PreviousRoom),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+                modifiers,
+                ..
+            }) if modifiers.alt() => Some(Message::PreviousRoom),
+            // Ctrl+PageDown or Alt+Down: next room
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::PageDown),
+                modifiers,
+                ..
+            }) if modifiers.control() => Some(Message::NextRoom),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+                modifiers,
+                ..
+            }) if modifiers.alt() => Some(Message::NextRoom),
+            // Alt+1..9: jump to room by position
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(c),
+                modifiers,
+                ..
+            }) if modifiers.alt()
+                && c.len() == 1
+                && matches!(c.as_bytes()[0], b'1'..=b'9') =>
+            {
+                Some(Message::GoToRoom(c.as_bytes()[0] - b'0'))
+            }
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
             _ => None,
@@ -436,6 +508,27 @@ impl Conclave {
     }
 
     // ── Helpers ───────────────────────────────────────────────────
+
+    /// Return room IDs sorted by display name (matches sidebar order).
+    pub(crate) fn sorted_room_ids(&self) -> Vec<i64> {
+        let mut rooms: Vec<_> = self.rooms.values().collect();
+        rooms.sort_by_key(|r| r.display_name());
+        rooms.iter().map(|r| r.server_group_id).collect()
+    }
+
+    /// Select a room: set active, close popover, mark read.
+    pub(crate) fn select_room(&mut self, room_id: i64) {
+        self.active_room = Some(room_id);
+        if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+            dashboard.show_user_popover = false;
+        }
+        if let Some(room) = self.rooms.get_mut(&room_id) {
+            room.last_read_seq = room.last_seen_seq;
+            if let Some(store) = &self.msg_store {
+                store.set_last_read_seq(room_id, room.last_read_seq);
+            }
+        }
+    }
 
     pub(crate) fn load_rooms_task(&self) -> Task<Message> {
         let params = self.api_params();

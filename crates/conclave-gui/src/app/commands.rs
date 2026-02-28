@@ -15,19 +15,7 @@ impl Conclave {
     ) -> Task<Message> {
         match msg {
             screen::dashboard::Message::RoomSelected(room_id) => {
-                self.active_room = Some(room_id);
-
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.show_user_popover = false;
-                }
-
-                if let Some(room) = self.rooms.get_mut(&room_id) {
-                    room.last_read_seq = room.last_seen_seq;
-                    if let Some(store) = &self.msg_store {
-                        store.set_last_read_seq(room_id, room.last_read_seq);
-                    }
-                }
-
+                self.select_room(room_id);
                 Task::none()
             }
             screen::dashboard::Message::InputAction(action) => {
