@@ -1,5 +1,20 @@
 use conclave_client::sanitize_control_chars;
 
+/// Check whether a notification daemon is reachable.
+///
+/// On Linux this queries the D-Bus `org.freedesktop.Notifications` interface.
+/// On other platforms the native OS notification API is always available.
+pub fn is_daemon_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        notify_rust::get_server_information().is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 const MAX_SUMMARY_LENGTH: usize = 256;
 const MAX_BODY_LENGTH: usize = 1024;
 
