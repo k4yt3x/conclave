@@ -681,7 +681,7 @@ impl Conclave {
                         let id_string = result.group_id.to_string();
                         let display = result.group_alias.as_deref().unwrap_or(&id_string);
                         messages.push(DisplayMessage::system(&format!(
-                            "Joined #{display} ({})",
+                            "Accepted invitation to #{display} ({})",
                             result.group_id
                         )));
                     }

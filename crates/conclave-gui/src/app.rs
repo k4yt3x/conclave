@@ -3,7 +3,7 @@ mod login;
 mod rooms;
 mod sse;
 
-use iced::widget::operation::focus_next;
+use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
 
@@ -228,7 +228,9 @@ impl Conclave {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
+        let on_dashboard = matches!(self.screen, screen::Screen::Dashboard(_));
+
+        let task = match message {
             // Screen navigation
             Message::Login(msg) => self.handle_login_message(msg),
             Message::Dashboard(msg) => self.handle_dashboard_message(msg),
@@ -355,6 +357,12 @@ impl Conclave {
                 }
                 Task::none()
             }
+        };
+
+        if on_dashboard {
+            Task::batch([task, focus("chat_input")])
+        } else {
+            task
         }
     }
 

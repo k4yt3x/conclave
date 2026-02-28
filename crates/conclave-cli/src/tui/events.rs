@@ -12,12 +12,14 @@ use super::state::{AppState, DisplayMessage};
 
 /// Handle an SSE message (hex-encoded protobuf ServerEvent).
 /// Returns a list of (group_id, DisplayMessage) pairs to render.
+/// `None` group_id means the message is not tied to a specific room
+/// (e.g., invite notifications for groups the user hasn't joined yet).
 pub async fn handle_sse_message(
     hex_data: &str,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(i64, DisplayMessage)>> {
+) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let event = operations::decode_sse_event(hex_data)?;
 
     match event {
@@ -55,7 +57,7 @@ pub async fn handle_sse_message(
                 .unwrap_or_else(|| format!("user#{user_id}"));
 
             Ok(vec![(
-                group_id,
+                Some(group_id),
                 DisplayMessage::system(&format!(
                     "Caution: {display_name} has reset their encryption identity."
                 )),
@@ -63,7 +65,7 @@ pub async fn handle_sse_message(
         }
         SseEvent::InviteReceived {
             invite_id,
-            group_id,
+            group_id: _,
             group_name,
             group_alias,
             inviter_id,
@@ -75,15 +77,15 @@ pub async fn handle_sse_message(
             };
             let inviter_name = format!("user#{inviter_id}");
             Ok(vec![(
-                group_id,
+                None,
                 DisplayMessage::system(&format!(
                     "Invitation from {inviter_name} to join #{display}. \
                      Use /accept {invite_id} or /decline {invite_id}."
                 )),
             )])
         }
-        SseEvent::InviteCancelled { group_id } => Ok(vec![(
-            group_id,
+        SseEvent::InviteCancelled { group_id: _ } => Ok(vec![(
+            None,
             DisplayMessage::system("An invitation to this room was cancelled."),
         )]),
         SseEvent::InviteDeclined {
@@ -120,7 +122,7 @@ pub async fn handle_sse_message(
                 .unwrap_or_else(|| format!("user#{declined_user_id}"));
 
             Ok(vec![(
-                group_id,
+                Some(group_id),
                 DisplayMessage::system(&format!("{declined_name} declined the invitation.")),
             )])
         }
@@ -132,7 +134,7 @@ async fn handle_new_message(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(i64, DisplayMessage)>> {
+) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let last_seq = state
         .rooms
         .get(&group_id)
@@ -178,7 +180,7 @@ async fn handle_new_message(
         };
         display_msg.sequence_num = Some(msg.sequence_num);
         display_msg.epoch = Some(msg.epoch);
-        results.push((group_id, display_msg));
+        results.push((Some(group_id), display_msg));
 
         if let Some(room) = state.rooms.get_mut(&group_id) {
             room.last_seen_seq = room.last_seen_seq.max(msg.sequence_num);
@@ -194,7 +196,7 @@ async fn handle_welcome(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(i64, DisplayMessage)>> {
+) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let user_id = match state.user_id {
         Some(id) => id,
         None => return Ok(vec![]),
@@ -235,7 +237,7 @@ async fn handle_welcome(
         group_alias.to_string()
     };
     let msg = DisplayMessage::system(&format!("You have been invited to #{display} ({group_id})"));
-    display_results.push((group_id, msg));
+    display_results.push((Some(group_id), msg));
 
     Ok(display_results)
 }
@@ -246,7 +248,7 @@ async fn handle_member_removed(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(i64, DisplayMessage)>> {
+) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let mut results = Vec::new();
 
     let is_self = state.user_id == Some(removed_user_id);
@@ -275,7 +277,7 @@ async fn handle_member_removed(
         }
 
         results.push((
-            group_id,
+            Some(group_id),
             DisplayMessage::system(&format!("You were removed from #{room_name}")),
         ));
     } else {
@@ -332,7 +334,7 @@ async fn handle_member_removed(
         }
 
         results.push((
-            group_id,
+            Some(group_id),
             DisplayMessage::system(&format!("{removed_name} was removed from the group")),
         ));
 

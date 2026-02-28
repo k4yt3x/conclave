@@ -301,10 +301,12 @@ async fn main_loop(
                                 } else {
                                     let mut cleanup_groups = std::collections::HashSet::new();
                                     for (group_id, display_msg) in messages {
-                                        cleanup_groups.insert(group_id);
+                                        if let Some(gid) = group_id {
+                                            cleanup_groups.insert(gid);
+                                        }
                                         add_and_render_message(
                                             stdout, state, input,
-                                            Some(group_id), display_msg,
+                                            group_id, display_msg,
                                             msg_store, notifications,
                                         );
                                     }
