@@ -1,5 +1,30 @@
 # Conclave Work Log
 
+## 2026-02-28: Multi-Line Message Input in GUI
+
+Replaced the single-line `text_input` widget with iced's multi-line `text_editor` widget for the chat message input. Enter submits the message, Shift+Enter inserts a newline (matching Telegram/Discord conventions). The input area grows dynamically as lines are added, capped at 120px max height. Also changed the tooltip position from `Bottom` (centered below the message) to `FollowCursor` (follows the mouse pointer).
+
+### Changes
+
+- **New file**: `crates/conclave-gui/src/theme/text_editor.rs` — `text_editor::Catalog` implementation for the custom `Theme`, with `primary` and `chat_input` style functions matching the existing `text_input` styling (minus the `icon` field which `text_editor::Style` does not have).
+- **`theme.rs`**: Added `pub mod text_editor;`.
+- **`screen/dashboard.rs`**: Replaced `pub input_value: String` with `pub input_content: text_editor::Content` in the `Dashboard` struct. Replaced `InputChanged(String)` with `InputAction(text_editor::Action)` in the `Message` enum. Replaced the `text_input` widget in `view_input()` with `text_editor`, using `.key_binding()` to map bare Enter to `Binding::Custom(Message::InputSubmitted)` and Shift+Enter to `Binding::Enter` (newline). Input height set to `Length::Shrink` with a 120px `max_height` on the container.
+- **`app/commands.rs`**: `InputAction` handler calls `dashboard.input_content.perform(action)`. `InputSubmitted` handler reads text via `dashboard.input_content.text()` and clears by replacing with `text_editor::Content::new()`. Trailing newline trimmed before submission.
+- **`theme/text_input.rs`**: Removed unused `chat_input` function and `Color` import (only the login screen still uses `text_input`).
+- **`widget/message_view.rs`**: Changed tooltip position from `tooltip::Position::Bottom` to `tooltip::Position::FollowCursor`.
+
+### Files Created
+
+- `crates/conclave-gui/src/theme/text_editor.rs`
+
+### Files Modified
+
+- `crates/conclave-gui/src/theme.rs`
+- `crates/conclave-gui/src/theme/text_input.rs`
+- `crates/conclave-gui/src/screen/dashboard.rs`
+- `crates/conclave-gui/src/app/commands.rs`
+- `crates/conclave-gui/src/widget/message_view.rs`
+
 ## 2026-02-27: Add Mouse-Based Text Selection in GUI Chat History
 
 Replaced iced's built-in `rich_text` widget (which has no text selection support) with a custom `SelectableRichText` widget that supports click-and-drag text selection and Ctrl+C copy. Previously, clicking a message copied its entire content via a link callback workaround. Now users can select arbitrary text spans across messages by dragging, with visual highlight feedback using the theme's `selection` color. Selected text is copied to the clipboard with Ctrl+C.

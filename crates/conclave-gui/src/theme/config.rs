@@ -48,6 +48,7 @@ pub struct ThemeConfig {
     scrollbar: Option<HexColor>,
     selection: Option<HexColor>,
     title_bar: Option<HexColor>,
+    input_area: Option<HexColor>,
 }
 
 /// Wrapper to extract the `[theme]` section from config.toml.
@@ -121,6 +122,9 @@ impl ThemeConfig {
         }
         if let Some(c) = self.title_bar {
             theme.title_bar = c.0;
+        }
+        if let Some(c) = self.input_area {
+            theme.input_area = c.0;
         }
         theme
     }

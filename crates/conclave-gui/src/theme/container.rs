@@ -87,7 +87,7 @@ pub fn tooltip(theme: &Theme) -> Style {
 
 pub fn input_area(theme: &Theme) -> Style {
     Style {
-        background: Some(Background::Color(theme.surface)),
+        background: Some(Background::Color(theme.input_area)),
         border: Border {
             color: theme.border,
             width: 1.0,

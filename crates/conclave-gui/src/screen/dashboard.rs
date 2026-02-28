@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use iced::alignment::{Horizontal, Vertical};
+use iced::keyboard;
 use iced::widget::{
-    button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
+    button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_editor,
 };
 use iced::Length;
 
@@ -25,7 +26,7 @@ pub enum DragTarget {
 #[derive(Debug, Clone)]
 pub enum Message {
     RoomSelected(i64),
-    InputChanged(String),
+    InputAction(text_editor::Action),
     InputSubmitted,
     ToggleUserPopover,
     CloseUserPopover,
@@ -38,7 +39,7 @@ pub enum Message {
 }
 
 pub struct Dashboard {
-    pub input_value: String,
+    pub input_content: text_editor::Content,
     pub show_user_popover: bool,
     pub show_members_sidebar: bool,
     pub left_sidebar_width: f32,
@@ -50,7 +51,7 @@ pub struct Dashboard {
 impl Dashboard {
     pub fn new() -> Self {
         Self {
-            input_value: String::new(),
+            input_content: text_editor::Content::new(),
             show_user_popover: false,
             show_members_sidebar: false,
             left_sidebar_width: 200.0,
@@ -511,15 +512,28 @@ impl Dashboard {
     }
 
     fn view_input(&self) -> Element<'_, Message> {
-        let input = text_input("Type a message or /command...", &self.input_value)
-            .on_input(Message::InputChanged)
-            .on_submit(Message::InputSubmitted)
+        let editor = text_editor(&self.input_content)
+            .placeholder("Type a message or /command...")
+            .on_action(Message::InputAction)
+            .key_binding(|key_press| {
+                let keyboard::Key::Named(keyboard::key::Named::Enter) = key_press.key else {
+                    return text_editor::Binding::from_key_press(key_press);
+                };
+
+                if key_press.modifiers.shift() {
+                    Some(text_editor::Binding::Enter)
+                } else {
+                    Some(text_editor::Binding::Custom(Message::InputSubmitted))
+                }
+            })
             .padding(10)
             .size(14)
-            .class(Box::new(theme::text_input::chat_input) as Box<dyn Fn(&theme::Theme, _) -> _>);
+            .height(Length::Shrink)
+            .class(Box::new(theme::text_editor::chat_input) as Box<dyn Fn(&theme::Theme, _) -> _>);
 
-        container(input)
+        container(editor)
             .width(Length::Fill)
+            .max_height(120)
             .class(Box::new(theme::container::input_area) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
     }

@@ -3,6 +3,7 @@ pub mod config;
 pub mod container;
 pub mod scrollable;
 pub mod text;
+pub mod text_editor;
 pub mod text_input;
 
 use iced::Color;
@@ -26,6 +27,7 @@ pub struct Theme {
     pub scrollbar: Color,
     pub selection: Color,
     pub title_bar: Color,
+    pub input_area: Color,
 }
 
 impl Default for Theme {
@@ -47,6 +49,7 @@ impl Default for Theme {
             scrollbar: Color::from_rgb8(0x31, 0x31, 0x31),
             selection: Color::from_rgb8(0x3f, 0x3f, 0x3f),
             title_bar: Color::from_rgb8(0x20, 0x20, 0x20),
+            input_area: Color::from_rgb8(0x20, 0x20, 0x20),
         }
     }
 }

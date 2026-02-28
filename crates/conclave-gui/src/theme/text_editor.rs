@@ -1,5 +1,5 @@
-use iced::widget::text_input::{Catalog, Status, Style};
-use iced::{Background, Border};
+use iced::widget::text_editor::{Catalog, Status, Style};
+use iced::{Background, Border, Color};
 
 use super::Theme;
 
@@ -23,7 +23,6 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
             width: 1.0,
             color: theme.border,
         },
-        icon: theme.text_muted,
         placeholder: theme.text_muted,
         value: theme.text,
         selection: theme.selection,
@@ -47,6 +46,28 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
         },
         Status::Disabled => Style {
             background: Background::Color(theme.surface),
+            value: theme.text_muted,
+            ..base
+        },
+    }
+}
+
+pub fn chat_input(theme: &Theme, status: Status) -> Style {
+    let base = Style {
+        background: Background::Color(theme.input_area),
+        border: Border {
+            radius: 0.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        placeholder: theme.text_muted,
+        value: theme.text,
+        selection: theme.selection,
+    };
+
+    match status {
+        Status::Active | Status::Hovered | Status::Focused { .. } => base,
+        Status::Disabled => Style {
             value: theme.text_muted,
             ..base
         },

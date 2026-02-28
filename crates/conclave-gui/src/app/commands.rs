@@ -30,20 +30,23 @@ impl Conclave {
 
                 Task::none()
             }
-            screen::dashboard::Message::InputChanged(value) => {
+            screen::dashboard::Message::InputAction(action) => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.input_value = value;
+                    dashboard.input_content.perform(action);
                 }
                 Task::none()
             }
             screen::dashboard::Message::InputSubmitted => {
                 let text = if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    let t = dashboard.input_value.clone();
-                    dashboard.input_value.clear();
+                    let t = dashboard.input_content.text();
+                    dashboard.input_content =
+                        iced::widget::text_editor::Content::new();
                     t
                 } else {
                     return Task::none();
                 };
+
+                let text = text.trim_end_matches('\n').to_owned();
 
                 if text.is_empty() {
                     return Task::none();
