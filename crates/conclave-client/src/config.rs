@@ -10,15 +10,21 @@ use crate::mls::MlsManager;
 /// Client configuration stored in a TOML file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientConfig {
-    /// Path to the client's local data directory (SQLite DBs, keys, etc.).
+    /// Path to the client's local data directory for SQLite databases, MLS keys,
+    /// session state, and group mappings.
+    /// Default: $CONCLAVE_DATA_DIR, or $XDG_DATA_HOME/conclave
+    /// (typically ~/.local/share/conclave).
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
 
     /// Path to the client's configuration directory (config.toml, etc.).
+    /// Default: $CONCLAVE_CONFIG_DIR, or $XDG_CONFIG_HOME/conclave
+    /// (typically ~/.config/conclave).
     #[serde(default = "default_config_dir")]
     pub config_dir: PathBuf,
 
     /// Accept invalid TLS certificates (e.g., self-signed). Default: false.
+    /// Only enable this for development or testing environments.
     #[serde(default)]
     pub accept_invalid_certs: bool,
 }

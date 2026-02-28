@@ -43,13 +43,16 @@ pub async fn register_and_login(
     server_url: &str,
     username: &str,
     password: &str,
+    registration_token: Option<&str>,
     accept_invalid_certs: bool,
     data_dir: &Path,
 ) -> Result<AuthResult> {
     let server_url = normalize_server_url(server_url);
     let api = ApiClient::new(&server_url, accept_invalid_certs);
 
-    let register_response = api.register(username, password, None).await?;
+    let register_response = api
+        .register(username, password, None, registration_token)
+        .await?;
     let user_id = register_response.user_id;
 
     let login_response = api.login(username, password).await?;

@@ -51,7 +51,7 @@ cargo test -p conclave-server test_register_and_login
 Run the server/clients:
 
 ```bash
-cargo run --bin conclave-server -- -c conclave-server.toml
+cargo run --bin conclave-server -- -c conclave.toml
 cargo run --bin conclave-cli        # Interactive TUI (no subcommand)
 cargo run --bin conclave-gui        # GUI client
 ```
@@ -93,6 +93,8 @@ Users and groups are always referenced by their integer IDs (`user_id`, `group_i
 **SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent, IdentityResetEvent, InviteReceivedEvent, InviteDeclinedEvent. **Sender inclusion**: Metadata operations (`update_group`, `update_profile`, `promote_member`, `demote_member`) include the sender in SSE broadcasts (`None` exclude) so all clients — including the sender — receive the event and refresh via `load_rooms()`. MLS operations (`send_message`, `upload_commit`, `accept_invite`) exclude the sender (`Some(user_id)`) to avoid re-processing MLS state changes. This means metadata command handlers only need to make the API call and show a confirmation message; the SSE event handles the state refresh.
 
 **Protobuf over HTTP**: Requests use `Content-Type: application/x-protobuf` with raw protobuf bytes. Server helpers: `proto_response()` encodes, `decode_proto()` decodes.
+
+**Registration control**: Server config includes `registration_enabled` (bool, default `true`) and `registration_token` (optional string). When `registration_enabled` is `true`, anyone can register and the token check is bypassed. When `false`, only callers providing the correct token can register; if no token is configured, registration is entirely disabled. Token format: `[a-zA-Z0-9_-]`, validated at config load time. Token comparison uses constant-time `subtle::ConstantTimeEq`. Returns HTTP 403 when disabled or token is invalid. Clients support an optional token via `/register <server> [token] <user> <pass>` (TUI) and a conditional "Registration Token" field (GUI, visible only in Register mode).
 
 **Message expiration**: Two layers — server-wide `message_retention` config (e.g., `"30d"`, `"-1"` disabled, `"0"` delete-after-fetch) and per-group `message_expiry_seconds` (set by admins via `/expire`). Server runs a periodic background cleanup task at a configurable interval (`cleanup_interval` config, default `"1h"`). Clients run a 1-second timer to remove expired messages from the in-memory display (via `state::remove_expired_messages()`). Duration format: `15s`, `2h`, `7d`, `4w`, `1m`, `1y`. Parsing is in `duration.rs` modules in both server and client crates.
 
@@ -142,4 +144,5 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
 - Config lives in `~/.config/conclave/`, data in `~/.local/share/conclave/` (XDG).
 - Server URL is specified at login time, not in config files — stored in `session.toml`.
 - Theme presets in `themes/` directory; users copy `[theme]` section into their config.
-- Server config includes a `message_retention` field (string, default `"-1"`) for global message retention policy. Tests that need custom server config use `setup_with_config()` instead of `setup()`.
+- Server config includes a `message_retention` field (string, default `"-1"`) for global message retention policy, `registration_enabled` (bool, default `true`) for controlling public registration, and `registration_token` (optional string) for invite-only registration. Tests that need custom server config use `setup_with_config()` instead of `setup()`.
+- When changing config fields (adding, removing, renaming, or updating descriptions), update the example config files in `configs/` and ensure the doc comments on the config struct fields match the comments in the example files.

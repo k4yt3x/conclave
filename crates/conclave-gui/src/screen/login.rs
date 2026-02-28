@@ -23,6 +23,7 @@ pub enum Message {
     ServerUrlChanged(String),
     UsernameChanged(String),
     PasswordChanged(String),
+    RegistrationTokenChanged(String),
     Submit,
     ToggleMode,
     FocusUsername,
@@ -33,6 +34,7 @@ pub struct Login {
     pub server_url: String,
     pub username: String,
     pub password: String,
+    pub registration_token: String,
     pub status: Status,
     pub mode: Mode,
 }
@@ -43,6 +45,7 @@ impl Login {
             server_url,
             username: String::new(),
             password: String::new(),
+            registration_token: String::new(),
             status: Status::Idle,
             mode: Mode::Login,
         }
@@ -135,7 +138,7 @@ impl Login {
                 .into(),
         };
 
-        let form = column![
+        let mut form = column![
             title,
             subtitle,
             Space::new().height(16),
@@ -153,13 +156,31 @@ impl Login {
                 .size(12)
                 .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
             password_input,
-            Space::new().height(16),
-            row![submit_button, toggle_button].spacing(8),
-            Space::new().height(8),
-            status_text,
         ]
         .spacing(4)
         .max_width(400);
+
+        if self.mode == Mode::Register {
+            let token_input =
+                text_input("Registration Token (optional)", &self.registration_token)
+                    .id("login_registration_token")
+                    .on_input(Message::RegistrationTokenChanged)
+                    .on_submit(Message::Submit)
+                    .padding(10)
+                    .size(14);
+            form = form.push(Space::new().height(8));
+            form = form.push(
+                text("Registration Token (optional)")
+                    .size(12)
+                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+            form = form.push(token_input);
+        }
+
+        form = form.push(Space::new().height(16));
+        form = form.push(row![submit_button, toggle_button].spacing(8));
+        form = form.push(Space::new().height(8));
+        form = form.push(status_text);
 
         let card = container(form)
             .padding(32)

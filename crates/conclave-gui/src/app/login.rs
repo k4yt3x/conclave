@@ -29,6 +29,10 @@ impl Conclave {
                 login.password = pw;
                 Task::none()
             }
+            screen::login::Message::RegistrationTokenChanged(token) => {
+                login.registration_token = token;
+                Task::none()
+            }
             screen::login::Message::FocusUsername => focus("login_username"),
             screen::login::Message::FocusPassword => focus("login_password"),
             screen::login::Message::ToggleMode => {
@@ -37,6 +41,7 @@ impl Conclave {
                     screen::login::Mode::Register => screen::login::Mode::Login,
                 };
                 login.status = screen::login::Status::Idle;
+                login.registration_token.clear();
                 Task::none()
             }
             screen::login::Message::Submit => {
@@ -76,26 +81,35 @@ impl Conclave {
                         },
                         Message::LoginResult,
                     ),
-                    screen::login::Mode::Register => Task::perform(
-                        async move {
-                            let result = conclave_client::operations::register_and_login(
-                                &server_url,
-                                &username,
-                                &password,
-                                accept_invalid_certs,
-                                &data_dir,
-                            )
-                            .await
-                            .map_err(|e| e.to_string())?;
-                            Ok(LoginInfo {
-                                server_url: result.server_url,
-                                token: result.token,
-                                user_id: result.user_id,
-                                username: result.username,
-                            })
-                        },
-                        Message::RegisterResult,
-                    ),
+                    screen::login::Mode::Register => {
+                        let registration_token = if login.registration_token.is_empty() {
+                            None
+                        } else {
+                            Some(login.registration_token.clone())
+                        };
+
+                        Task::perform(
+                            async move {
+                                let result = conclave_client::operations::register_and_login(
+                                    &server_url,
+                                    &username,
+                                    &password,
+                                    registration_token.as_deref(),
+                                    accept_invalid_certs,
+                                    &data_dir,
+                                )
+                                .await
+                                .map_err(|e| e.to_string())?;
+                                Ok(LoginInfo {
+                                    server_url: result.server_url,
+                                    token: result.token,
+                                    user_id: result.user_id,
+                                    username: result.username,
+                                })
+                            },
+                            Message::RegisterResult,
+                        )
+                    }
                 }
             }
         }

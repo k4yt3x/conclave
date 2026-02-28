@@ -51,7 +51,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "register",
         aliases: &[],
         category: CommandCategory::Account,
-        usage: "/register <server> <user> <pass>",
+        usage: "/register <server> [token] <user> <pass>",
         description: "Register a new account and login",
     },
     CommandSpec {
@@ -330,6 +330,7 @@ pub enum Command {
     // Account
     Register {
         server: String,
+        token: Option<String>,
         username: String,
         password: String,
     },
@@ -436,17 +437,24 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
     match name {
         // Account
         "register" => {
-            let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
-            if parts.len() < 4 {
-                return Err(Error::Other(
-                    "Usage: /register <server> <username> <password>".into(),
-                ));
+            let parts: Vec<&str> = full_input.splitn(5, ' ').collect();
+            match parts.len() {
+                4 => Ok(Command::Register {
+                    server: parts[1].to_string(),
+                    token: None,
+                    username: parts[2].to_string(),
+                    password: parts[3].to_string(),
+                }),
+                5 => Ok(Command::Register {
+                    server: parts[1].to_string(),
+                    token: Some(parts[2].to_string()),
+                    username: parts[3].to_string(),
+                    password: parts[4].to_string(),
+                }),
+                _ => Err(Error::Other(
+                    "Usage: /register <server> [token] <username> <password>".into(),
+                )),
             }
-            Ok(Command::Register {
-                server: parts[1].to_string(),
-                username: parts[2].to_string(),
-                password: parts[3].to_string(),
-            })
         }
         "login" => {
             let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
@@ -619,6 +627,7 @@ mod tests {
         let cmd = parse("/register example.com alice pass1234").unwrap();
         let Command::Register {
             server,
+            token,
             username,
             password,
         } = cmd
@@ -626,8 +635,45 @@ mod tests {
             panic!("expected Register variant");
         };
         assert_eq!(server, "example.com");
+        assert_eq!(token, None);
         assert_eq!(username, "alice");
         assert_eq!(password, "pass1234");
+    }
+
+    #[test]
+    fn test_parse_register_with_token() {
+        let cmd = parse("/register example.com mytoken alice pass1234").unwrap();
+        let Command::Register {
+            server,
+            token,
+            username,
+            password,
+        } = cmd
+        else {
+            panic!("expected Register variant");
+        };
+        assert_eq!(server, "example.com");
+        assert_eq!(token, Some("mytoken".to_string()));
+        assert_eq!(username, "alice");
+        assert_eq!(password, "pass1234");
+    }
+
+    #[test]
+    fn test_parse_register_with_token_password_with_spaces() {
+        let cmd = parse("/register example.com tok user pass word here").unwrap();
+        let Command::Register {
+            server,
+            token,
+            username,
+            password,
+        } = cmd
+        else {
+            panic!("expected Register variant");
+        };
+        assert_eq!(server, "example.com");
+        assert_eq!(token, Some("tok".to_string()));
+        assert_eq!(username, "user");
+        assert_eq!(password, "pass word here");
     }
 
     #[test]

@@ -135,7 +135,7 @@ conclave/
 
 ### 3.1 Configuration
 
-Server configuration is loaded from a TOML file (default: `conclave-server.toml`). If the file does not exist, defaults are used.
+Server configuration is loaded from a TOML file. When no `--config` flag is given, the server searches `./conclave.toml` then `/etc/conclave/config.toml`, falling back to built-in defaults if neither exists. A path can be specified explicitly with `conclave-server -c /path/to/config.toml`.
 
 ```toml
 # Address to listen on (default: "0.0.0.0").
@@ -160,6 +160,16 @@ token_ttl_seconds = 604800
 # Interval between message cleanup runs. Same duration format as above.
 # Default: "1h". Set lower for faster expiration enforcement.
 # cleanup_interval = "1h"
+
+# Whether public registration is enabled (default: true).
+# When false, registration requires a valid registration token (if set)
+# or is entirely disabled (if no token is configured).
+# registration_enabled = true
+
+# Optional registration token for invite-only registration.
+# Only checked when registration_enabled is false.
+# Must contain only ASCII letters, digits, underscores, and hyphens.
+# registration_token = "your-secret-token"
 
 # TLS certificate and key paths (PEM format).
 # If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
@@ -271,7 +281,8 @@ CREATE TABLE message_fetch_watermarks (
 
 ### 3.3 Authentication
 
-- **Registration**: Client sends username + password. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$` (ASCII alphanumeric start, max 64 chars, only letters, digits, and underscores) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored. After registration, all clients (CLI, TUI, GUI) automatically log in, upload initial key packages, and establish a full session — the user does not need to log in separately.
+- **Registration**: Client sends username + password + optional registration token. Server validates the username against `^[a-zA-Z0-9][a-zA-Z0-9_]{0,63}$` (ASCII alphanumeric start, max 64 chars, only letters, digits, and underscores) and requires a minimum password length of 8 characters. An optional alias (display name) can be provided, subject to validation: max 64 characters, no ASCII control characters (0x00-0x1F, 0x7F). Password is hashed with Argon2id and stored. After registration, all clients (CLI, TUI, GUI) automatically log in, upload initial key packages, and establish a full session — the user does not need to log in separately.
+- **Registration control**: The server has two config options controlling registration access. `registration_enabled` (bool, default `true`) controls whether public registration is open. When `true`, anyone can register and the token check is bypassed. When `false`, registration requires a valid `registration_token`. If no token is configured, registration is entirely disabled. The registration token must contain only `[a-zA-Z0-9_-]` characters and is validated at config load time. Token comparison uses constant-time equality (`subtle::ConstantTimeEq`) to prevent timing attacks. Returns HTTP 403 when registration is disabled or the token is invalid.
 - **Login**: Client sends username + password. Server verifies against stored hash, generates a 256-bit random opaque token (hex-encoded, 64 characters), stores it with an expiry, and returns it. To prevent username enumeration via timing analysis, the server runs `verify_password()` against a precomputed dummy Argon2id hash when the requested username does not exist, ensuring both code paths have equivalent computational profiles.
 - **Change password**: Authenticated endpoint. Client sends current password and new password. Server verifies the current password against the stored hash, validates the new password (minimum 8 characters), hashes it with Argon2id, and updates the stored hash. Existing sessions remain valid after the change.
 - **Authenticated requests**: Client sends `Authorization: Bearer <token>` header. Server validates against the `sessions` table, checking expiry. An `AuthUser` axum extractor handles this transparently for all protected endpoints.
@@ -286,7 +297,7 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 
 | Method | Path                | Request Body      | Response Body      | Description                |
 |--------|---------------------|-------------------|--------------------|----------------------------|
-| POST   | `/api/v1/register`  | RegisterRequest   | RegisterResponse   | Register a new user        |
+| POST   | `/api/v1/register`  | RegisterRequest   | RegisterResponse   | Register a new user (403 if disabled or invalid token) |
 | POST   | `/api/v1/login`     | LoginRequest      | LoginResponse      | Login, receive auth token  |
 
 #### Authenticated Endpoints
@@ -541,7 +552,8 @@ The GUI client (`conclave-gui`) is built with [iced](https://iced.rs/) 0.14 and 
 ```
 Client                              Server
   |                                   |
-  |--- POST /register (user, pass) -->|  Store user with Argon2id hash
+  |--- POST /register (user, pass,  ->|  Check registration_enabled/token
+  |        optional token)            |  Store user with Argon2id hash
   |<-- RegisterResponse (user_id) ----|
   |                                   |
   |--- POST /login (user, pass) ----->|  Verify hash, generate token
@@ -664,4 +676,4 @@ Admin                               Server                              Target
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping, `message_expiry_seconds` for per-group message expiration), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response` (with `message_expiry_seconds` and `update_message_expiry` flag for per-group expiration updates), `GetRetentionPolicyResponse` (with `max_retention_seconds` for server-wide retention policy), `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response` (with optional `registration_token` for gated registration), `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping, `message_expiry_seconds` for per-group message expiration), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response` (with `message_expiry_seconds` and `update_message_expiry` flag for per-group expiration updates), `GetRetentionPolicyResponse` (with `max_retention_seconds` for server-wide retention policy), `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.

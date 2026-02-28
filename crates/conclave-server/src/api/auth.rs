@@ -5,6 +5,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
+use subtle::ConstantTimeEq;
+
 use crate::auth::{self, AuthUser};
 use crate::error::{Error, Result};
 use crate::state::AppState;
@@ -17,6 +19,24 @@ pub async fn register(
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::RegisterRequest>(&body)?;
+
+    if !state.config.registration_enabled {
+        match &state.config.registration_token {
+            None => {
+                return Err(Error::Forbidden("registration is disabled".into()));
+            }
+            Some(configured_token) => {
+                if !bool::from(
+                    request
+                        .registration_token
+                        .as_bytes()
+                        .ct_eq(configured_token.as_bytes()),
+                ) {
+                    return Err(Error::Forbidden("invalid registration token".into()));
+                }
+            }
+        }
+    }
 
     if request.username.is_empty() || request.password.is_empty() {
         return Err(Error::BadRequest(

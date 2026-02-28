@@ -28,6 +28,7 @@ async fn register_and_login(app: &Router, username: &str) -> (i64, String) {
         username: username.to_string(),
         password: password.clone(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();

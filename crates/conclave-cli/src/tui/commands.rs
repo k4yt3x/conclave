@@ -76,6 +76,7 @@ async fn execute_auth(
     match cmd {
         Command::Register {
             server,
+            token,
             username,
             password,
         } => {
@@ -83,6 +84,7 @@ async fn execute_auth(
                 &server,
                 &username,
                 &password,
+                token.as_deref(),
                 config.accept_invalid_certs,
                 &config.data_dir,
             )

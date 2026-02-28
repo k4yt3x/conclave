@@ -11,30 +11,46 @@ pub struct ServerConfig {
     /// Port to listen on. Defaults to 8443 when TLS is configured, 8080 otherwise.
     pub listen_port: Option<u16>,
 
-    /// Path to the SQLite database file.
+    /// Path to the SQLite database file (default: "conclave.db").
     #[serde(default = "default_db_path")]
     pub database_path: PathBuf,
 
-    /// Session token lifetime in seconds (default: 7 days).
+    /// Session token lifetime in seconds (default: 604800 = 7 days).
     #[serde(default = "default_token_ttl")]
     pub token_ttl_seconds: i64,
 
-    /// Pending invite expiration in seconds (default: 7 days).
+    /// Pending invite expiration in seconds (default: 604800 = 7 days).
     #[serde(default = "default_invite_ttl")]
     pub invite_ttl_seconds: i64,
 
-    /// Server-wide maximum message age. Accepts duration format: `-1` (disabled, default),
-    /// `0` (delete after all members fetch), or `<number><unit>` (e.g., `30d`, `1w`).
+    /// Global message retention policy. Determines the maximum age of messages stored
+    /// on the server. Special values: "-1" (default) disables retention (messages kept
+    /// indefinitely), "0" deletes messages after all group members have fetched them.
+    /// Duration format: "15s", "2h", "7d", "4w", "1m" (30d), "1y" (365d).
     #[serde(default = "default_message_retention")]
     pub message_retention: String,
 
-    /// Interval between message cleanup runs. Accepts duration format (e.g., `1h`, `30s`).
-    /// Default: `1h`.
+    /// Interval between cleanup runs for expired sessions, invites, and messages.
+    /// Duration format (e.g., "1h", "30s"). Default: "1h".
     #[serde(default = "default_cleanup_interval")]
     pub cleanup_interval: String,
 
+    /// Whether public (open) registration is enabled (default: true).
+    /// When true, anyone can register and the registration token is ignored.
+    /// When false, registration requires a valid registration_token (if set)
+    /// or is entirely disabled (if no token is configured).
+    #[serde(default = "default_registration_enabled")]
+    pub registration_enabled: bool,
+
+    /// Registration token for invite-only registration. Only checked when
+    /// registration_enabled is false. Must contain only ASCII letters, digits,
+    /// underscores, and hyphens ([a-zA-Z0-9_-]).
+    pub registration_token: Option<String>,
+
     /// Path to the TLS certificate file (PEM format).
-    /// If both `tls_cert_path` and `tls_key_path` are set, the server serves HTTPS.
+    /// If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
+    /// If omitted, the server listens on plain HTTP on port 8080 by default.
+    /// When running behind a TLS-terminating reverse proxy, leave these unset.
     pub tls_cert_path: Option<PathBuf>,
 
     /// Path to the TLS private key file (PEM format).
@@ -65,6 +81,10 @@ fn default_cleanup_interval() -> String {
     "1h".to_string()
 }
 
+fn default_registration_enabled() -> bool {
+    true
+}
+
 impl ServerConfig {
     /// Parse the `message_retention` config string into seconds.
     pub fn message_retention_seconds(&self) -> i64 {
@@ -76,6 +96,24 @@ impl ServerConfig {
         crate::duration::parse_duration(&self.cleanup_interval)
             .unwrap_or(3600)
             .max(1) as u64
+    }
+
+    /// Validate configuration values. Returns an error message if invalid.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(ref token) = self.registration_token {
+            if token.is_empty() {
+                return Err("registration_token must not be empty when set".into());
+            }
+            if !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(
+                    "registration_token must contain only ASCII letters, digits, underscores, and hyphens".into(),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Returns the socket address string (e.g., "0.0.0.0:8443") by combining listen_address
@@ -103,6 +141,8 @@ impl Default for ServerConfig {
             invite_ttl_seconds: default_invite_ttl(),
             message_retention: default_message_retention(),
             cleanup_interval: default_cleanup_interval(),
+            registration_enabled: default_registration_enabled(),
+            registration_token: None,
             tls_cert_path: None,
             tls_key_path: None,
         }

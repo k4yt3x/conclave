@@ -6,12 +6,17 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
+/// Default config search paths, checked in order.
+const CONFIG_SEARCH_PATHS: &[&str] = &["./conclave.toml", "/etc/conclave/config.toml"];
+
 #[derive(Parser)]
 #[command(name = "conclave-server", about = "Conclave E2EE messaging server")]
 struct Cli {
-    /// Path to the server configuration file.
-    #[arg(short, long, default_value = "conclave-server.toml")]
-    config: PathBuf,
+    /// Path to the server configuration file. If omitted, searches
+    /// ./conclave.toml then /etc/conclave/config.toml, falling back to
+    /// built-in defaults.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -25,16 +30,26 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let config: config::ServerConfig = if cli.config.exists() {
-        let contents = std::fs::read_to_string(&cli.config)?;
+    let config: config::ServerConfig = if let Some(ref path) = cli.config {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {e}", path.display()))?;
+        toml::from_str(&contents)?
+    } else if let Some(path) = CONFIG_SEARCH_PATHS
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+    {
+        info!("loading config from {}", path.display());
+        let contents = std::fs::read_to_string(&path)?;
         toml::from_str(&contents)?
     } else {
-        info!(
-            "config file {} not found, using defaults",
-            cli.config.display()
-        );
+        info!("no config file found, using defaults");
         config::ServerConfig::default()
     };
+
+    if let Err(error) = config.validate() {
+        anyhow::bail!("invalid configuration: {error}");
+    }
 
     info!("opening database at {}", config.database_path.display());
     let database = db::Database::open(&config.database_path)?;

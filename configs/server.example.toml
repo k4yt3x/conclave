@@ -1,0 +1,51 @@
+# Conclave Server Configuration
+#
+# Copy this file to one of the following locations:
+#   ./conclave.toml              (current working directory, checked first)
+#   /etc/conclave/config.toml    (system-wide, checked second)
+# Or specify a path explicitly:  conclave-server -c /path/to/config.toml
+# All fields have sensible defaults and can be omitted.
+
+# Address to listen on (default: "0.0.0.0").
+#listen_address = "0.0.0.0"
+
+# Port to listen on. Defaults to 8443 when TLS is configured, 8080 otherwise.
+#listen_port = 8443
+
+# Path to the SQLite database file (default: "conclave.db").
+#database_path = "conclave.db"
+
+# Session token lifetime in seconds (default: 604800 = 7 days).
+#token_ttl_seconds = 604800
+
+# Pending invite expiration in seconds (default: 604800 = 7 days).
+#invite_ttl_seconds = 604800
+
+# Global message retention policy. Determines the maximum age of messages
+# stored on the server. Special values:
+#   "-1" (default) — disabled, messages kept indefinitely
+#   "0"            — delete messages after all group members have fetched them
+# Duration format: "15s", "2h", "7d", "4w", "1m" (30d), "1y" (365d).
+#message_retention = "-1"
+
+# Interval between cleanup runs for expired sessions, invites, and messages.
+# Same duration format as above. Default: "1h".
+#cleanup_interval = "1h"
+
+# Whether public (open) registration is enabled (default: true).
+# When true, anyone can register and the registration token is ignored.
+# When false, registration requires a valid registration_token (if set)
+# or is entirely disabled (if no token is configured).
+#registration_enabled = true
+
+# Registration token for invite-only registration. Only checked when
+# registration_enabled is false. Must contain only ASCII letters, digits,
+# underscores, and hyphens ([a-zA-Z0-9_-]).
+#registration_token = "change-me-to-a-secret-value"
+
+# TLS certificate and key paths (PEM format).
+# If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
+# If omitted, the server listens on plain HTTP on port 8080 by default.
+# When running behind a TLS-terminating reverse proxy, leave these unset.
+#tls_cert_path = "/path/to/cert.pem"
+#tls_key_path = "/path/to/key.pem"

@@ -122,11 +122,13 @@ impl ApiClient {
         username: &str,
         password: &str,
         alias: Option<&str>,
+        registration_token: Option<&str>,
     ) -> Result<conclave_proto::RegisterResponse> {
         let request = conclave_proto::RegisterRequest {
             username: username.to_string(),
             password: password.to_string(),
             alias: alias.unwrap_or_default().to_string(),
+            registration_token: registration_token.unwrap_or_default().to_string(),
         };
         let bytes = self.post("/api/v1/register", &request).await?;
         Ok(conclave_proto::RegisterResponse::decode(bytes.as_slice())?)

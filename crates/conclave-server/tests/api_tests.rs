@@ -38,6 +38,7 @@ async fn register_user(app: &Router, username: &str, password: &str) -> i64 {
         username: username.to_string(),
         password: password.to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -166,6 +167,7 @@ async fn test_register_duplicate_username() {
         username: "alice".to_string(),
         password: "password456".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -189,6 +191,7 @@ async fn test_register_empty_username() {
         username: "".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -212,6 +215,7 @@ async fn test_register_short_password() {
         username: "alice".to_string(),
         password: "short".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -236,6 +240,7 @@ async fn test_register_long_username() {
         username: long_name,
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1782,6 +1787,7 @@ async fn test_register_unicode_username_rejected() {
         username: "héllo_wörld".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let body = req_body.encode_to_vec();
     let request = Request::builder()
@@ -1801,6 +1807,7 @@ async fn test_register_username_with_spaces() {
         username: "has spaces".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1821,6 +1828,7 @@ async fn test_register_username_with_control_chars() {
         username: "user\x00name".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2584,6 +2592,7 @@ async fn test_register_username_starting_with_underscore() {
         username: "_underscored".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2606,6 +2615,7 @@ async fn test_register_username_starting_with_dot() {
         username: ".dotted".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2628,6 +2638,7 @@ async fn test_register_username_starting_with_hyphen() {
         username: "-hyphenated".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2657,6 +2668,7 @@ async fn test_register_username_with_dot_rejected() {
         username: "user.name".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2679,6 +2691,7 @@ async fn test_register_username_with_hyphen_rejected() {
         username: "user-name".to_string(),
         password: "password123".to_string(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2701,6 +2714,7 @@ async fn test_register_empty_password() {
         username: "validuser".to_string(),
         password: String::new(),
         alias: String::new(),
+        registration_token: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2714,6 +2728,153 @@ async fn test_register_empty_password() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── Registration Control ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_register_disabled_no_token_configured() {
+    let config = config::ServerConfig {
+        registration_enabled: false,
+        registration_token: None,
+        ..Default::default()
+    };
+    let app = setup_with_config(config);
+
+    let req_body = conclave_proto::RegisterRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+        registration_token: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_register_disabled_valid_token() {
+    let config = config::ServerConfig {
+        registration_enabled: false,
+        registration_token: Some("secret-token_123".to_string()),
+        ..Default::default()
+    };
+    let app = setup_with_config(config);
+
+    let req_body = conclave_proto::RegisterRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+        registration_token: "secret-token_123".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_register_disabled_invalid_token() {
+    let config = config::ServerConfig {
+        registration_enabled: false,
+        registration_token: Some("correct-token".to_string()),
+        ..Default::default()
+    };
+    let app = setup_with_config(config);
+
+    let req_body = conclave_proto::RegisterRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+        registration_token: "wrong-token".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_register_disabled_empty_token_sent() {
+    let config = config::ServerConfig {
+        registration_enabled: false,
+        registration_token: Some("secret-token".to_string()),
+        ..Default::default()
+    };
+    let app = setup_with_config(config);
+
+    let req_body = conclave_proto::RegisterRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+        registration_token: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_register_enabled_ignores_token() {
+    let config = config::ServerConfig {
+        registration_enabled: true,
+        registration_token: Some("secret-token".to_string()),
+        ..Default::default()
+    };
+    let app = setup_with_config(config);
+
+    let req_body = conclave_proto::RegisterRequest {
+        username: "alice".to_string(),
+        password: "password123".to_string(),
+        alias: String::new(),
+        registration_token: String::new(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/register")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
 }
 
 // ── Key Package Edge Cases ────────────────────────────────────────
