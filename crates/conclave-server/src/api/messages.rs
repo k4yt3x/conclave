@@ -68,6 +68,14 @@ pub async fn send_message(
         .db
         .store_message(group_id, auth.user_id, &request.mls_message)?;
 
+    // Update sender's fetch watermark for fetch-then-delete groups.
+    let group_expiry = state.db.get_group_expiry(group_id)?;
+    if group_expiry == 0 {
+        state
+            .db
+            .update_fetch_watermark(group_id, auth.user_id, sequence_num)?;
+    }
+
     notify_group_members(
         &state,
         group_id,
@@ -112,6 +120,8 @@ pub async fn get_messages(
     let limit = query.limit.min(500);
     let messages = state.db.get_messages(group_id, query.after, limit)?;
 
+    let max_seq = messages.last().map(|m| m.sequence_num);
+
     let stored_messages: Vec<conclave_proto::StoredMessage> = messages
         .into_iter()
         .map(|row| conclave_proto::StoredMessage {
@@ -121,6 +131,16 @@ pub async fn get_messages(
             created_at: row.created_at as u64,
         })
         .collect();
+
+    // Update fetch watermark for fetch-then-delete groups.
+    if let Some(seq) = max_seq {
+        let group_expiry = state.db.get_group_expiry(group_id)?;
+        if group_expiry == 0 {
+            state
+                .db
+                .update_fetch_watermark(group_id, auth.user_id, seq)?;
+        }
+    }
 
     Ok(proto_response(
         StatusCode::OK,

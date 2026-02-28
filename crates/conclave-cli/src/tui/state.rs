@@ -119,6 +119,7 @@ mod tests {
             }],
             last_seen_seq: 0,
             last_read_seq: 0,
+            message_expiry_seconds: -1,
         }
     }
 

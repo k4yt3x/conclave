@@ -69,6 +69,7 @@ pub struct UserGroupRow {
     pub alias: Option<String>,
     pub created_at: i64,
     pub mls_group_id: Option<String>,
+    pub message_expiry_seconds: i64,
 }
 
 /// A group member row from the `group_members` table joined with user info.
@@ -153,7 +154,8 @@ impl Database {
                 group_name TEXT UNIQUE NOT NULL,
                 alias TEXT,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                mls_group_id TEXT
+                mls_group_id TEXT,
+                message_expiry_seconds INTEGER NOT NULL DEFAULT -1
             );
 
             CREATE TABLE IF NOT EXISTS group_members (
@@ -203,6 +205,13 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_pending_invites_invitee
                 ON pending_invites(invitee_id);
+
+            CREATE TABLE IF NOT EXISTS message_fetch_watermarks (
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                last_fetched_seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (group_id, user_id)
+            );
             ",
         )?;
 
@@ -211,6 +220,16 @@ impl Database {
             let message = error.to_string();
             if !message.contains("duplicate column") {
                 tracing::warn!(%error, "migration failed: add mls_group_id column");
+            }
+        }
+
+        // Migration: add message_expiry_seconds column to existing databases.
+        if let Err(error) = conn.execute_batch(
+            "ALTER TABLE groups ADD COLUMN message_expiry_seconds INTEGER NOT NULL DEFAULT -1;",
+        ) {
+            let message = error.to_string();
+            if !message.contains("duplicate column") {
+                tracing::warn!(%error, "migration failed: add message_expiry_seconds column");
             }
         }
 

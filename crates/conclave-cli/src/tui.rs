@@ -215,6 +215,9 @@ async fn main_loop(
     msg_store: &mut Option<MessageStore>,
     notifications: &NotificationMethod,
 ) -> crate::error::Result<()> {
+    let mut expiry_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    expiry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             // Terminal key events.
@@ -284,13 +287,32 @@ async fn main_loop(
                                 if messages.is_empty() {
                                     let _ = render::render_full(stdout, state, input);
                                 } else {
+                                    let mut cleanup_groups = std::collections::HashSet::new();
                                     for (group_id, display_msg) in messages {
+                                        cleanup_groups.insert(group_id);
                                         add_and_render_message(
                                             stdout, state, input,
                                             Some(group_id), display_msg,
                                             msg_store, notifications,
                                         );
                                     }
+
+                                    // Clean up locally cached messages that
+                                    // exceed each group's expiry policy.
+                                    if let Some(store) = msg_store {
+                                        for gid in cleanup_groups {
+                                            if let Some(room) = state.rooms.get(&gid) {
+                                                store.cleanup_expired_messages(
+                                                    gid,
+                                                    room.message_expiry_seconds,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    conclave_client::state::remove_expired_messages(
+                                        &state.rooms,
+                                        &mut state.room_messages,
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -334,6 +356,32 @@ async fn main_loop(
                 let _ = render::render_input_line(
                     stdout, state, input, state.terminal_rows.saturating_sub(1),
                 );
+            }
+
+            // Message expiry cleanup timer (1-second tick).
+            _ = expiry_interval.tick(),
+                if state.logged_in
+                    && conclave_client::state::has_expiring_rooms(&state.rooms) =>
+            {
+                let removed = conclave_client::state::remove_expired_messages(
+                    &state.rooms,
+                    &mut state.room_messages,
+                );
+
+                if let Some(store) = msg_store {
+                    for (group_id, room) in &state.rooms {
+                        if room.message_expiry_seconds > 0 {
+                            store.cleanup_expired_messages(
+                                *group_id,
+                                room.message_expiry_seconds,
+                            );
+                        }
+                    }
+                }
+
+                if removed {
+                    let _ = render::render_full(stdout, state, input);
+                }
             }
         }
     }
@@ -752,6 +800,9 @@ async fn fetch_missed_messages(
 
         if let Some(room) = state.rooms.get(group_id) {
             store.set_last_seen_seq(*group_id, room.last_seen_seq);
+
+            // Clean up locally cached messages that exceed the group's expiry policy.
+            store.cleanup_expired_messages(*group_id, room.message_expiry_seconds);
         }
     }
 }

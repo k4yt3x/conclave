@@ -197,10 +197,36 @@ impl ApiClient {
         let request = conclave_proto::UpdateGroupRequest {
             alias: alias.unwrap_or_default().to_string(),
             group_name: String::new(),
+            message_expiry_seconds: 0,
+            update_message_expiry: false,
         };
         self.patch(&format!("/api/v1/groups/{group_id}"), &request)
             .await?;
         Ok(())
+    }
+
+    pub async fn set_group_expiry(&self, group_id: i64, seconds: i64) -> Result<()> {
+        let request = conclave_proto::UpdateGroupRequest {
+            alias: String::new(),
+            group_name: String::new(),
+            message_expiry_seconds: seconds,
+            update_message_expiry: true,
+        };
+        self.patch(&format!("/api/v1/groups/{group_id}"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_retention_policy(
+        &self,
+        group_id: i64,
+    ) -> Result<conclave_proto::GetRetentionPolicyResponse> {
+        let bytes = self
+            .get(&format!("/api/v1/groups/{group_id}/retention"))
+            .await?;
+        Ok(conclave_proto::GetRetentionPolicyResponse::decode(
+            bytes.as_slice(),
+        )?)
     }
 
     // ── Key Packages ──────────────────────────────────────────────

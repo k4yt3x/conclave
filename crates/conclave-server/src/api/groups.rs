@@ -65,6 +65,7 @@ pub async fn list_groups(
             members: member_protos,
             created_at: row.created_at as u64,
             mls_group_id: row.mls_group_id.unwrap_or_default(),
+            message_expiry_seconds: row.message_expiry_seconds,
         });
     }
 
@@ -101,11 +102,28 @@ pub async fn update_group(
             .db
             .update_group_name(group_id, Some(&request.group_name))?;
     }
+    if request.update_message_expiry {
+        let seconds = request.message_expiry_seconds;
+        if seconds < -1 {
+            return Err(Error::BadRequest(
+                "message_expiry_seconds must be -1, 0, or positive".into(),
+            ));
+        }
+
+        let server_retention = state.config.message_retention_seconds();
+        if server_retention > 0 && seconds > 0 && seconds > server_retention {
+            return Err(Error::BadRequest(format!(
+                "group expiry ({seconds}s) cannot exceed server retention ({server_retention}s)"
+            )));
+        }
+
+        state.db.set_group_expiry(group_id, seconds)?;
+    }
 
     notify_group_members(
         &state,
         group_id,
-        Some(auth.user_id),
+        None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id,
             update_type: "group_settings".into(),
@@ -115,6 +133,27 @@ pub async fn update_group(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UpdateGroupResponse {},
+    ))
+}
+
+pub async fn get_retention_policy(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+) -> Result<impl IntoResponse> {
+    if !state.db.is_group_member(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized("not a member of this group".into()));
+    }
+
+    let group_expiry = state.db.get_group_expiry(group_id)?;
+    let server_retention = state.config.message_retention_seconds();
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::GetRetentionPolicyResponse {
+            server_retention_seconds: server_retention,
+            group_expiry_seconds: group_expiry,
+        },
     ))
 }
 

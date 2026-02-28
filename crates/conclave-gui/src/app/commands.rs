@@ -308,9 +308,11 @@ impl Conclave {
                             .update_group(group_id, Some(&topic))
                             .await
                             .map_err(|e| e.to_string())?;
-                        Ok(topic)
+                        Ok(vec![DisplayMessage::system(&format!(
+                            "Room alias set to: {topic}"
+                        ))])
                     },
-                    Message::TopicResult,
+                    Message::CommandResult,
                 )
             }
 
@@ -376,6 +378,76 @@ impl Conclave {
             Ok(Command::Invites) => self.list_invites(),
             Ok(Command::Accept { invite_id }) => self.accept_invites(invite_id),
             Ok(Command::Decline { invite_id }) => self.decline_invite(invite_id),
+
+            // Retention policy
+            Ok(Command::Expire { duration: None }) => {
+                let group_id = match self.active_room {
+                    Some(id) => id,
+                    None => {
+                        self.push_system_message("No active room — use /join first");
+                        return Task::none();
+                    }
+                };
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let policy = api
+                            .get_retention_policy(group_id)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let server =
+                            conclave_client::duration::format_duration(policy.server_retention_seconds);
+                        let group =
+                            conclave_client::duration::format_duration(policy.group_expiry_seconds);
+                        let effective = conclave_client::duration::compute_effective(
+                            policy.server_retention_seconds,
+                            policy.group_expiry_seconds,
+                        );
+                        Ok(vec![
+                            DisplayMessage::system(&format!("Server retention: {server}")),
+                            DisplayMessage::system(&format!("Room expiry: {group}")),
+                            DisplayMessage::system(&format!(
+                                "Effective: {}",
+                                conclave_client::duration::format_duration(effective)
+                            )),
+                        ])
+                    },
+                    Message::CommandResult,
+                )
+            }
+            Ok(Command::Expire {
+                duration: Some(dur),
+            }) => {
+                let group_id = match self.active_room {
+                    Some(id) => id,
+                    None => {
+                        self.push_system_message("No active room — use /join first");
+                        return Task::none();
+                    }
+                };
+                let seconds = match conclave_client::duration::parse_duration(&dur) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.push_system_message(&format!("{e}"));
+                        return Task::none();
+                    }
+                };
+                let formatted = conclave_client::duration::format_duration(seconds);
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        api.set_group_expiry(group_id, seconds)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(vec![DisplayMessage::system(&format!(
+                            "Message expiry set to {formatted}"
+                        ))])
+                    },
+                    Message::CommandResult,
+                )
+            }
 
             // Leave / messaging / reset
             Ok(Command::Part) => self.leave_group(),

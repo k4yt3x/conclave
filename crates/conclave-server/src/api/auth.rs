@@ -129,7 +129,7 @@ pub async fn update_profile(
         notify_group_members(
             &state,
             group_row.group_id,
-            Some(auth.user_id),
+            None,
             conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
                 group_id: group_row.group_id,
                 update_type: "member_profile".into(),

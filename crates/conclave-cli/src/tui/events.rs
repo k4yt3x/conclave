@@ -29,18 +29,11 @@ pub async fn handle_sse_message(
             group_alias,
         } => handle_welcome(group_id, &group_alias, api, state, data_dir).await,
         SseEvent::GroupUpdate {
-            group_id,
-            update_type,
+            group_id: _,
+            update_type: _,
         } => {
             commands::load_rooms(api, state).await?;
-
-            if update_type == "member_profile" {
-                Ok(vec![])
-            } else {
-                let msg =
-                    DisplayMessage::system(&format!("Group {group_id} updated ({update_type})"));
-                Ok(vec![(group_id, msg)])
-            }
+            Ok(vec![])
         }
         SseEvent::MemberRemoved {
             group_id,

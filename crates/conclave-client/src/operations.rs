@@ -28,6 +28,7 @@ pub struct RoomInfo {
     pub alias: Option<String>,
     pub members: Vec<MemberInfo>,
     pub mls_group_id: Option<String>,
+    pub message_expiry_seconds: i64,
 }
 
 impl RoomInfo {
@@ -269,6 +270,7 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
             } else {
                 Some(group.mls_group_id)
             },
+            message_expiry_seconds: group.message_expiry_seconds,
         })
         .collect())
 }
@@ -286,6 +288,7 @@ mod tests {
             alias: Some("Dev Team".into()),
             members: vec![],
             mls_group_id: None,
+            message_expiry_seconds: -1,
         };
         assert_eq!(info.display_name(), "Dev Team");
     }
@@ -298,6 +301,7 @@ mod tests {
             alias: None,
             members: vec![],
             mls_group_id: None,
+            message_expiry_seconds: -1,
         };
         assert_eq!(info.display_name(), "devs");
     }
@@ -310,6 +314,7 @@ mod tests {
             alias: Some(String::new()),
             members: vec![],
             mls_group_id: None,
+            message_expiry_seconds: -1,
         };
         assert_eq!(info.display_name(), "devs");
     }

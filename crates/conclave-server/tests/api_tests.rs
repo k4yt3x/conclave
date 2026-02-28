@@ -3227,6 +3227,8 @@ async fn test_update_group_alias_by_creator() {
     let group_id = create_group_for(&app, &token, "original_alias").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "updated_alias".to_string(),
         group_name: "alias_update_group".to_string(),
     };
@@ -3268,6 +3270,8 @@ async fn test_update_group_name_by_creator() {
     let group_id = create_group_for(&app, &token, "my_group").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: String::new(),
         group_name: "new_group_name".to_string(),
     };
@@ -3313,6 +3317,8 @@ async fn test_update_group_non_creator_rejected() {
     let group_id = create_group_for(&app, &alice_token, "alice_group").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "hijacked".to_string(),
         group_name: "non_creator_update_group".to_string(),
     };
@@ -3338,6 +3344,8 @@ async fn test_update_group_not_found() {
     let token = login_user(&app, "alice", "password123").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "phantom".to_string(),
         group_name: "not_found_update_group".to_string(),
     };
@@ -3385,6 +3393,8 @@ async fn test_update_group_duplicate_group_name() {
     let second_group_id = create_group_for(&app, &token, "second").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: String::new(),
         group_name: "unique_name".to_string(),
     };
@@ -3411,6 +3421,8 @@ async fn test_update_group_invalid_alias() {
     let group_id = create_group_for(&app, &token, "my_group").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "a".repeat(65),
         group_name: "invalid_alias_group".to_string(),
     };
@@ -3457,6 +3469,8 @@ async fn test_update_group_removed_admin_rejected() {
 
     // Alice (removed admin) tries to update the group — should be rejected.
     let update_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "hijacked".to_string(),
         group_name: String::new(),
     };
@@ -3666,6 +3680,8 @@ async fn test_update_group_name_with_dot_rejected() {
     let group_id = create_group_for(&app, &token, "my_group").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: String::new(),
         group_name: "new.name".to_string(),
     };
@@ -3692,6 +3708,8 @@ async fn test_update_group_name_with_hyphen_rejected() {
     let group_id = create_group_for(&app, &token, "my_group2").await;
 
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: String::new(),
         group_name: "new-name".to_string(),
     };
@@ -3808,6 +3826,8 @@ async fn test_update_group_broadcasts_to_members() {
 
     // Alice updates the group alias.
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "new_topic".to_string(),
         group_name: "broadcast_update_group".to_string(),
     };
@@ -4306,6 +4326,8 @@ async fn test_update_group_requires_admin() {
 
     // Bob (regular member) tries to update the group.
     let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
         alias: "new_alias".to_string(),
         group_name: "new_name".to_string(),
     };
@@ -5134,4 +5156,481 @@ async fn test_cancel_invite_nonexistent_user() {
 
     let status = cancel_invite(&app, &alice_token, group_id, 99999).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── Message Expiration & Retention Tests ─────────────────────────
+
+fn setup_with_config(config: config::ServerConfig) -> Router {
+    let database = db::Database::open_in_memory().unwrap();
+    let app_state = Arc::new(state::AppState::new(database, config));
+    api::router().with_state(app_state)
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_via_update_group() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "expiry_group").await;
+
+    // Set expiry to 3600 seconds (1 hour).
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 3600,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "expiry_group".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify via list_groups.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(groups_response.groups.len(), 1);
+    assert_eq!(groups_response.groups[0].message_expiry_seconds, 3600);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_fetch_then_delete() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "ftd_group").await;
+
+    // Set expiry to 0 (fetch-then-delete).
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 0,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "ftd_group".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify via list_groups.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(groups_response.groups[0].message_expiry_seconds, 0);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_disabled() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "disable_group").await;
+
+    // First set an expiry.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 3600,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "disable_group".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Then disable it by setting to -1.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: -1,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "disable_group".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let groups_response = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(groups_response.groups[0].message_expiry_seconds, -1);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_invalid_value_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "invalid_exp").await;
+
+    // Attempt to set expiry to -2 (invalid).
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: -2,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "invalid_exp".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_exceeds_server_retention_rejected() {
+    let mut config = config::ServerConfig::default();
+    config.message_retention = "1h".to_string(); // 3600s
+    let app = setup_with_config(config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "over_retention").await;
+
+    // Attempt to set group expiry > server retention.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 7200, // 2 hours > 1 hour
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "over_retention".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_within_server_retention_ok() {
+    let mut config = config::ServerConfig::default();
+    config.message_retention = "1h".to_string(); // 3600s
+    let app = setup_with_config(config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "within_ret").await;
+
+    // Set group expiry ≤ server retention.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 1800, // 30 min ≤ 1 hour
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "within_ret".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_set_group_expiry_non_admin_rejected() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob1")).await;
+    let group_id = create_group_for(&app, &alice_token, "admin_only_exp").await;
+    add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
+
+    // Bob (regular member) tries to set expiry.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 3600,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "admin_only_exp".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_get_retention_policy() {
+    let mut config = config::ServerConfig::default();
+    config.message_retention = "7d".to_string(); // 604800s
+    let app = setup_with_config(config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "retention_pol").await;
+
+    // Set group expiry to 1 hour.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 3600,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "retention_pol".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Get retention policy.
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/groups/{group_id}/retention"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let policy = conclave_proto::GetRetentionPolicyResponse::decode(body_bytes).unwrap();
+    assert_eq!(policy.server_retention_seconds, 604800);
+    assert_eq!(policy.group_expiry_seconds, 3600);
+}
+
+#[tokio::test]
+async fn test_get_retention_policy_defaults() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "ret_defaults").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/groups/{group_id}/retention"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let policy = conclave_proto::GetRetentionPolicyResponse::decode(body_bytes).unwrap();
+    assert_eq!(policy.server_retention_seconds, -1);
+    assert_eq!(policy.group_expiry_seconds, -1);
+}
+
+#[tokio::test]
+async fn test_get_retention_policy_non_member_rejected() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    register_user(&app, "bob", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    let group_id = create_group_for(&app, &alice_token, "ret_nonmember").await;
+
+    // Bob is not a member.
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/groups/{group_id}/retention"))
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_list_groups_includes_message_expiry() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "expiry_list").await;
+
+    // Default should be -1.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.groups[0].message_expiry_seconds, -1);
+
+    // Set expiry and check again.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 86400,
+        update_message_expiry: true,
+        alias: String::new(),
+        group_name: "expiry_list".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.groups[0].message_expiry_seconds, 86400);
+}
+
+#[tokio::test]
+async fn test_update_group_expiry_not_applied_when_flag_false() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+    let group_id = create_group_for(&app, &token, "no_apply_exp").await;
+
+    // Send a non-zero expiry but with update_message_expiry = false.
+    let request_body = conclave_proto::UpdateGroupRequest {
+        message_expiry_seconds: 3600,
+        update_message_expiry: false,
+        alias: String::new(),
+        group_name: "no_apply_exp".to_string(),
+    };
+    let mut body = Vec::new();
+    request_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Expiry should still be -1 (unchanged).
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
+    assert_eq!(resp.groups[0].message_expiry_seconds, -1);
 }

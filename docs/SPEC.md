@@ -150,6 +150,17 @@ database_path = "conclave.db"
 # Session token lifetime in seconds (default: 7 days).
 token_ttl_seconds = 604800
 
+# Global message retention policy. Determines the maximum age of messages
+# stored on the server. Special values: "-1" (default) disables retention
+# (messages kept indefinitely), "0" deletes messages after all group members
+# have fetched them. Duration format: "15s", "2h", "7d", "4w", "1m" (30d),
+# "1y" (365d).
+# message_retention = "-1"
+
+# Interval between message cleanup runs. Same duration format as above.
+# Default: "1h". Set lower for faster expiration enforcement.
+# cleanup_interval = "1h"
+
 # TLS certificate and key paths (PEM format).
 # If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
 # If omitted, the server listens on plain HTTP on port 8080 by default.
@@ -200,6 +211,7 @@ CREATE TABLE groups (
     group_name TEXT UNIQUE NOT NULL,
     alias TEXT,
     mls_group_id TEXT,
+    message_expiry_seconds INTEGER NOT NULL DEFAULT -1,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -248,6 +260,13 @@ CREATE TABLE pending_invites (
     UNIQUE(group_id, invitee_id)
 );
 CREATE INDEX idx_pending_invites_invitee ON pending_invites(invitee_id);
+
+CREATE TABLE message_fetch_watermarks (
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_fetched_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, user_id)
+);
 ```
 
 ### 3.3 Authentication
@@ -283,7 +302,8 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 | POST   | `/api/v1/key-packages`              | UploadKeyPackageReq   | UploadKeyPackageResp        | Upload MLS key package(s)                |
 | GET    | `/api/v1/key-packages/{user_id}`    | —                     | GetKeyPackageResponse       | Fetch (consume) a user's key package     |
 | POST   | `/api/v1/groups`                    | CreateGroupRequest    | CreateGroupResponse         | Create group (creator only)              |
-| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name (admin only)     |
+| PATCH  | `/api/v1/groups/{id}`               | UpdateGroupRequest    | UpdateGroupResponse         | Update group alias/name/expiry (admin)   |
+| GET    | `/api/v1/groups/{id}/retention`     | —                     | GetRetentionPolicyResponse  | Get server retention policy for group    |
 | GET    | `/api/v1/groups`                    | —                     | ListGroupsResponse          | List user's groups                       |
 | POST   | `/api/v1/groups/{id}/invite`        | InviteToGroupRequest  | InviteToGroupResponse       | Invite members (admin only)              |
 | POST   | `/api/v1/groups/{id}/commit`        | UploadCommitRequest   | UploadCommitResponse        | Upload MLS commit + group info           |
@@ -323,6 +343,8 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 - **`POST /api/v1/invites/{id}/decline`**: Invitee-only. Deletes the pending invite and sends `InviteDeclinedEvent` to the inviter. The inviter's client auto-rotates keys (empty MLS commit) to evict the phantom leaf from the MLS tree.
 - **`GET /api/v1/groups/{id}/invites`**: Admin-only. Returns all pending invites for the specified group, including `invitee_id`, `inviter_username`, `group_name`, `group_alias`, and `created_at`.
 - **`POST /api/v1/groups/{id}/cancel-invite`**: Admin-only. Accepts a `CancelInviteRequest` containing the `invitee_id`. Looks up the pending invite by `(group_id, invitee_id)`, deletes it, sends `InviteCancelledEvent` to the invitee, and sends `InviteDeclinedEvent` to the original inviter (triggering phantom MLS leaf cleanup via key rotation — same mechanism as when the invitee declines).
+- **`PATCH /api/v1/groups/{id}`**: Admin-only. Supports updating the group alias, group name, and message expiry. When `update_message_expiry` is true, the `message_expiry_seconds` field is applied: must be `-1` (disabled), `0` (delete after fetch), or positive. If the server has a non-disabled retention policy (`message_retention` is not `-1`), the group expiry cannot exceed the server retention — the server rejects the request with a 400 error.
+- **`GET /api/v1/groups/{id}/retention`**: Requires group membership. Returns the server-wide retention policy as `max_retention_seconds` (int64). Returns `-1` if the server has no retention limit.
 
 ### 3.5 SSE Events
 
@@ -340,6 +362,24 @@ Event types:
 - **lagged** (transport-level): Sent when the client's SSE stream falls behind the broadcast channel buffer. The `event` field is `"lagged"` and the `data` field contains the number of dropped events as a string. Clients should treat this as a signal to re-fetch group state. This is not a protobuf `ServerEvent` — it is a raw SSE event emitted by the transport layer.
 
 The server uses a `tokio::sync::broadcast` channel internally to fan out events.
+
+### 3.6 Message Expiration and Retention
+
+Conclave provides two layers of message lifecycle control:
+
+1. **Server-wide retention** (`message_retention` config field): Sets a global maximum message age for the entire server. Messages older than this limit are periodically deleted. Default is `"-1"` (disabled). The duration format supports `15s`, `2h`, `7d`, `4w`, `1m` (30 days), `1y` (365 days). Special values: `"-1"` disables retention (messages kept indefinitely), `"0"` enables delete-after-fetch mode server-wide.
+
+2. **Per-group expiration** (`message_expiry_seconds` column in `groups` table): Group admins can set a stricter expiration policy per room via the `/expire` command. The per-group expiry cannot exceed the server-wide retention when server retention is enabled. Default is `-1` (disabled, inherits server policy).
+
+**Delete-after-fetch mode** (`0` expiry): When a group's effective expiry is `0`, the server tracks each member's fetch progress in the `message_fetch_watermarks` table. A message is deleted only after all current group members have fetched past its sequence number. The watermark is updated on each `GET /groups/{id}/messages` request.
+
+**Background cleanup**: The server runs a periodic background task (spawned in `main.rs`) that performs two types of cleanup:
+- **Time-based deletion**: For groups with a positive `message_expiry_seconds`, messages older than the configured duration are deleted.
+- **Watermark-based deletion**: For groups with `message_expiry_seconds = 0`, messages whose sequence number is below the minimum watermark of all group members are deleted.
+
+The effective expiry for a group is determined by comparing the group's own `message_expiry_seconds` with the server-wide `message_retention`. If both are set (neither is `-1`), the stricter (smaller positive) value applies.
+
+**Client-side cleanup**: After fetching messages, clients also delete locally stored messages that exceed the group's expiry from their message history database.
 
 ## 4. Client
 
@@ -457,6 +497,7 @@ ROOMS:
   /part                             Leave the room (MLS removal)
   /info                             Show MLS group details
   /topic <text>                     Set active room's display name
+  /expire [duration]                Set message expiration (admin only)
   /unread                           Check rooms for new messages
 
 MEMBERS:
@@ -623,4 +664,4 @@ Admin                               Server                              Target
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response`, `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response`, `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping, `message_expiry_seconds` for per-group message expiration), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response` (with `message_expiry_seconds` and `update_message_expiry` flag for per-group expiration updates), `GetRetentionPolicyResponse` (with `max_retention_seconds` for server-wide retention policy), `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.

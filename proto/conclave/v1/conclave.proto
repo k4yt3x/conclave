@@ -70,6 +70,7 @@ message GroupInfo {
   uint64 created_at = 5;
   string group_name = 6;
   string mls_group_id = 7;
+  int64 message_expiry_seconds = 8;  // -1=disabled, 0=fetch-then-delete, >0=seconds
 }
 
 message GroupMember {
@@ -255,9 +256,16 @@ message UpdateProfileResponse {}
 message UpdateGroupRequest {
   string alias = 1;
   string group_name = 2;
+  int64 message_expiry_seconds = 3;
+  bool update_message_expiry = 4;  // true when expiry field should be applied
 }
 
 message UpdateGroupResponse {}
+
+message GetRetentionPolicyResponse {
+  int64 server_retention_seconds = 1;  // -1=disabled, 0=fetch-then-delete, >0=seconds
+  int64 group_expiry_seconds = 2;      // -1=disabled, 0=fetch-then-delete, >0=seconds
+}
 
 message ChangePasswordRequest {
   string new_password = 2;

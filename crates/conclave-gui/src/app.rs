@@ -91,7 +91,6 @@ pub enum Message {
     ResetComplete(Result<operations::ResetResult, String>),
     UserAliasLoaded(Result<Option<String>, String>),
     NickResult(Result<String, String>),
-    TopicResult(Result<String, String>),
 
     // Keyboard / window events
     TabPressed,
@@ -100,6 +99,9 @@ pub enum Message {
     Quit,
     WindowFocused,
     WindowUnfocused,
+
+    // Periodic expiry cleanup
+    ExpiryTick,
 }
 
 #[derive(Debug, Clone)]
@@ -285,20 +287,10 @@ impl Conclave {
                 Ok(alias) => {
                     self.user_alias = Some(alias.clone());
                     self.push_system_message(&format!("Alias set to: {alias}"));
-                    self.load_rooms_task()
+                    Task::none()
                 }
                 Err(e) => {
                     self.push_system_message(&format!("Failed to set alias: {e}"));
-                    Task::none()
-                }
-            },
-            Message::TopicResult(result) => match result {
-                Ok(topic) => {
-                    self.push_system_message(&format!("Room alias set to: {topic}"));
-                    self.load_rooms_task()
-                }
-                Err(e) => {
-                    self.push_system_message(&format!("Failed to set topic: {e}"));
                     Task::none()
                 }
             },
@@ -344,6 +336,23 @@ impl Conclave {
             }
             Message::WindowUnfocused => {
                 self.window_focused = false;
+                Task::none()
+            }
+            Message::ExpiryTick => {
+                conclave_client::state::remove_expired_messages(
+                    &self.rooms,
+                    &mut self.room_messages,
+                );
+                if let Some(store) = &self.msg_store {
+                    for (group_id, room) in &self.rooms {
+                        if room.message_expiry_seconds > 0 {
+                            store.cleanup_expired_messages(
+                                *group_id,
+                                room.message_expiry_seconds,
+                            );
+                        }
+                    }
+                }
                 Task::none()
             }
         }
@@ -395,17 +404,27 @@ impl Conclave {
             _ => None,
         });
 
+        let mut subs = vec![events];
+
         if let Some(token) = &self.token {
-            let sse = subscription::sse(
-                self.server_url.clone().unwrap_or_default(),
-                token.clone(),
-                self.config.accept_invalid_certs,
-            )
-            .map(Message::SseEvent);
-            Subscription::batch([sse, events])
-        } else {
-            events
+            subs.push(
+                subscription::sse(
+                    self.server_url.clone().unwrap_or_default(),
+                    token.clone(),
+                    self.config.accept_invalid_certs,
+                )
+                .map(Message::SseEvent),
+            );
         }
+
+        if conclave_client::state::has_expiring_rooms(&self.rooms) {
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(1))
+                    .map(|_| Message::ExpiryTick),
+            );
+        }
+
+        Subscription::batch(subs)
     }
 
     // ── Helpers ───────────────────────────────────────────────────

@@ -72,6 +72,7 @@ impl Conclave {
                             members: info.members.iter().map(|m| m.to_room_member()).collect(),
                             last_seen_seq: seq,
                             last_read_seq: read,
+                            message_expiry_seconds: info.message_expiry_seconds,
                         },
                     );
 
@@ -199,6 +200,21 @@ impl Conclave {
                         store.set_last_read_seq(fetched.group_id, room.last_read_seq);
                     }
                 }
+
+                // Clean up locally cached messages that exceed the group's
+                // expiry policy (both SQLite store and in-memory display).
+                if let Some(store) = &self.msg_store
+                    && let Some(room) = self.rooms.get(&fetched.group_id)
+                {
+                    store.cleanup_expired_messages(
+                        fetched.group_id,
+                        room.message_expiry_seconds,
+                    );
+                }
+                conclave_client::state::remove_expired_messages(
+                    &self.rooms,
+                    &mut self.room_messages,
+                );
 
                 // Desktop notification for messages received while unfocused.
                 if !self.window_focused {
@@ -792,7 +808,7 @@ impl Conclave {
                     "Promoted {target} to admin"
                 ))])
             },
-            Message::RefreshRooms,
+            Message::CommandResult,
         )
     }
 
@@ -832,7 +848,7 @@ impl Conclave {
                     "Demoted {target} to regular member"
                 ))])
             },
-            Message::RefreshRooms,
+            Message::CommandResult,
         )
     }
 

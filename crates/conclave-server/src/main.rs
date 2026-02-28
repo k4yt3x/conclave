@@ -50,7 +50,9 @@ async fn main() -> anyhow::Result<()> {
     {
         let state = app_state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let cleanup_secs = state.config.cleanup_interval_seconds();
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(cleanup_secs));
             loop {
                 interval.tick().await;
                 match state.db.cleanup_expired_sessions() {
@@ -65,6 +67,19 @@ async fn main() -> anyhow::Result<()> {
                 {
                     Ok(count) if count > 0 => {
                         info!("cleaned up {count} expired invite(s)");
+                    }
+                    _ => {}
+                }
+                let retention = state.config.message_retention_seconds();
+                match state.db.cleanup_expired_messages(retention) {
+                    Ok(count) if count > 0 => {
+                        info!("cleaned up {count} expired message(s)");
+                    }
+                    _ => {}
+                }
+                match state.db.cleanup_fully_fetched_messages() {
+                    Ok(count) if count > 0 => {
+                        info!("cleaned up {count} fully-fetched message(s)");
                     }
                     _ => {}
                 }

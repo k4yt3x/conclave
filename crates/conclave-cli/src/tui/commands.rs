@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 use conclave_client::api::ApiClient;
 pub use conclave_client::command::Command;
 use conclave_client::config::{ClientConfig, build_group_mapping};
+use conclave_client::duration::{compute_effective, format_duration, parse_duration};
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
 
@@ -36,7 +37,8 @@ pub async fn execute(
         | Command::Close
         | Command::Part
         | Command::Unread
-        | Command::Info => execute_room(cmd, api, state, mls, config, msg_store).await,
+        | Command::Info
+        | Command::Expire { .. } => execute_room(cmd, api, state, mls, config, msg_store).await,
         Command::Invite { .. }
         | Command::Kick { .. }
         | Command::Promote { .. }
@@ -464,6 +466,42 @@ async fn execute_room(
             }
         }
 
+        Command::Expire { duration: None } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let policy = api.lock().await.get_retention_policy(group_id).await?;
+            let server = format_duration(policy.server_retention_seconds);
+            let group = format_duration(policy.group_expiry_seconds);
+            msgs.push(DisplayMessage::system(&format!("Server retention: {server}")));
+            msgs.push(DisplayMessage::system(&format!("Room expiry: {group}")));
+            let effective = compute_effective(
+                policy.server_retention_seconds,
+                policy.group_expiry_seconds,
+            );
+            msgs.push(DisplayMessage::system(&format!(
+                "Effective: {}",
+                format_duration(effective)
+            )));
+        }
+
+        Command::Expire {
+            duration: Some(dur),
+        } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let seconds = parse_duration(&dur)?;
+            api.lock()
+                .await
+                .set_group_expiry(group_id, seconds)
+                .await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "Message expiry set to {}",
+                format_duration(seconds)
+            )));
+        }
+
         Command::List => {
             load_rooms(api, state).await?;
 
@@ -624,7 +662,6 @@ async fn execute_member(
                 .await
                 .promote_member(group_id, target_user_id)
                 .await?;
-            load_rooms(api, state).await?;
             msgs.push(DisplayMessage::system(&format!(
                 "Promoted {target} to admin"
             )));
@@ -651,7 +688,6 @@ async fn execute_member(
                 .await
                 .demote_member(group_id, target_user_id)
                 .await?;
-            load_rooms(api, state).await?;
             msgs.push(DisplayMessage::system(&format!(
                 "Demoted {target} to regular member"
             )));
@@ -951,21 +987,6 @@ async fn execute_profile(
         Command::Nick { alias } => {
             api.lock().await.update_profile(&alias).await?;
             msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
-
-            let rooms = {
-                let api_guard = api.lock().await;
-                operations::load_rooms(&api_guard).await?
-            };
-            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
-            for room_info in &rooms {
-                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
-                    room.members = room_info
-                        .members
-                        .iter()
-                        .map(|m| m.to_room_member())
-                        .collect();
-                }
-            }
         }
 
         Command::Topic { topic } => {
@@ -980,18 +1001,6 @@ async fn execute_profile(
             msgs.push(DisplayMessage::system(&format!(
                 "Room alias set to: {topic}"
             )));
-
-            let rooms = {
-                let api_guard = api.lock().await;
-                operations::load_rooms(&api_guard).await?
-            };
-            state.group_mapping = build_group_mapping(&rooms, &config.data_dir);
-            for room_info in rooms {
-                if let Some(room) = state.rooms.get_mut(&room_info.group_id) {
-                    room.alias = room_info.alias;
-                    room.group_name = room_info.group_name;
-                }
-            }
         }
 
         Command::Whois => {
@@ -1088,6 +1097,7 @@ pub async fn load_rooms(
                     .collect(),
                 last_seen_seq: existing_seq,
                 last_read_seq: existing_read,
+                message_expiry_seconds: room_info.message_expiry_seconds,
             },
         );
     }

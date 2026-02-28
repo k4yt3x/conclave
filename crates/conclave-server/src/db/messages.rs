@@ -47,4 +47,70 @@ impl Database {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    /// Delete messages that exceed the server-wide retention or per-group expiry.
+    /// Returns the total number of rows deleted.
+    pub fn cleanup_expired_messages(&self, server_retention_seconds: i64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut total: u64 = 0;
+
+        // Server-wide retention (when > 0).
+        if server_retention_seconds > 0 {
+            let count = conn.execute(
+                "DELETE FROM messages WHERE created_at < (unixepoch() - ?1)",
+                params![server_retention_seconds],
+            )?;
+            total += count as u64;
+        }
+
+        // Per-group expiry (when > 0).
+        let count = conn.execute(
+            "DELETE FROM messages WHERE group_id IN (
+                SELECT id FROM groups WHERE message_expiry_seconds > 0
+            ) AND created_at < (
+                unixepoch() - (SELECT message_expiry_seconds FROM groups WHERE groups.id = messages.group_id)
+            )",
+            [],
+        )?;
+        total += count as u64;
+
+        Ok(total)
+    }
+
+    /// Delete messages in groups with `message_expiry_seconds = 0` where all current
+    /// members have fetched past that sequence number.
+    pub fn cleanup_fully_fetched_messages(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let count = conn.execute(
+            "DELETE FROM messages WHERE group_id IN (
+                SELECT id FROM groups WHERE message_expiry_seconds = 0
+            ) AND sequence_num <= (
+                SELECT MIN(COALESCE(mfw.last_fetched_seq, 0))
+                FROM group_members gm
+                LEFT JOIN message_fetch_watermarks mfw
+                    ON mfw.group_id = gm.group_id AND mfw.user_id = gm.user_id
+                WHERE gm.group_id = messages.group_id
+            )",
+            [],
+        )?;
+        Ok(count as u64)
+    }
+
+    /// Upsert the fetch watermark for a user in a group.
+    pub fn update_fetch_watermark(
+        &self,
+        group_id: i64,
+        user_id: i64,
+        sequence_num: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO message_fetch_watermarks (group_id, user_id, last_fetched_seq)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(group_id, user_id) DO UPDATE SET
+                last_fetched_seq = MAX(last_fetched_seq, excluded.last_fetched_seq)",
+            params![group_id, user_id, sequence_num],
+        )?;
+        Ok(())
+    }
 }

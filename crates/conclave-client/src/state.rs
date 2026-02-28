@@ -36,6 +36,8 @@ pub struct Room {
     pub last_seen_seq: u64,
     /// Highest sequence number the user has actually viewed (room was active).
     pub last_read_seq: u64,
+    /// Message expiry policy: -1=disabled, 0=fetch-then-delete, >0=seconds.
+    pub message_expiry_seconds: i64,
 }
 
 impl Room {
@@ -91,6 +93,37 @@ impl DisplayMessage {
             is_system: true,
         }
     }
+}
+
+/// Remove expired messages from in-memory `room_messages` based on each room's
+/// expiry policy. Returns `true` if any messages were removed.
+pub fn remove_expired_messages(
+    rooms: &std::collections::HashMap<i64, Room>,
+    room_messages: &mut std::collections::HashMap<i64, Vec<DisplayMessage>>,
+) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    let mut any_removed = false;
+
+    for (group_id, room) in rooms {
+        if room.message_expiry_seconds <= 0 {
+            continue;
+        }
+        let cutoff = now - room.message_expiry_seconds;
+        if let Some(messages) = room_messages.get_mut(group_id) {
+            let before = messages.len();
+            messages.retain(|msg| msg.is_system || msg.timestamp >= cutoff);
+            if messages.len() < before {
+                any_removed = true;
+            }
+        }
+    }
+    any_removed
+}
+
+/// Check whether any room has a positive `message_expiry_seconds`, meaning
+/// periodic expiry cleanup is needed.
+pub fn has_expiring_rooms(rooms: &std::collections::HashMap<i64, Room>) -> bool {
+    rooms.values().any(|r| r.message_expiry_seconds > 0)
 }
 
 /// Resolve a message's sender display name from the room member list.
@@ -153,6 +186,7 @@ mod tests {
             members: vec![],
             last_seen_seq: 0,
             last_read_seq: 0,
+            message_expiry_seconds: -1,
         };
         assert_eq!(room.display_name(), "Dev Team");
     }
@@ -166,6 +200,7 @@ mod tests {
             members: vec![],
             last_seen_seq: 0,
             last_read_seq: 0,
+            message_expiry_seconds: -1,
         };
         assert_eq!(room.display_name(), "devs");
     }
@@ -179,6 +214,7 @@ mod tests {
             members: vec![],
             last_seen_seq: 0,
             last_read_seq: 0,
+            message_expiry_seconds: -1,
         };
         assert_eq!(room.display_name(), "devs");
     }
@@ -236,5 +272,130 @@ mod tests {
     fn test_resolve_sender_name_system_message() {
         let msg = DisplayMessage::system("joined");
         assert_eq!(resolve_sender_name(&msg, &[]), "");
+    }
+
+    fn make_room(group_id: i64, expiry: i64) -> Room {
+        Room {
+            server_group_id: group_id,
+            group_name: format!("room{group_id}"),
+            alias: None,
+            members: vec![],
+            last_seen_seq: 0,
+            last_read_seq: 0,
+            message_expiry_seconds: expiry,
+        }
+    }
+
+    #[test]
+    fn test_has_expiring_rooms_none() {
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, -1));
+        rooms.insert(2, make_room(2, 0));
+        assert!(!has_expiring_rooms(&rooms));
+    }
+
+    #[test]
+    fn test_has_expiring_rooms_some() {
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, -1));
+        rooms.insert(2, make_room(2, 60));
+        assert!(has_expiring_rooms(&rooms));
+    }
+
+    #[test]
+    fn test_remove_expired_messages_removes_old() {
+        let now = chrono::Utc::now().timestamp();
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, 10));
+
+        let mut room_messages = std::collections::HashMap::new();
+        room_messages.insert(
+            1i64,
+            vec![
+                DisplayMessage::user(1, "alice", "old", now - 20),
+                DisplayMessage::system("old system msg"),
+                DisplayMessage::user(1, "alice", "recent", now - 5),
+                DisplayMessage::user(1, "alice", "new", now),
+            ],
+        );
+
+        // Backdate the system message so it would be expired if not protected.
+        room_messages.get_mut(&1).unwrap()[1].timestamp = now - 20;
+
+        let removed = remove_expired_messages(&rooms, &mut room_messages);
+        assert!(removed);
+        assert_eq!(room_messages[&1].len(), 3);
+        assert!(room_messages[&1][0].is_system);
+        assert_eq!(room_messages[&1][0].content, "old system msg");
+        assert_eq!(room_messages[&1][1].content, "recent");
+        assert_eq!(room_messages[&1][2].content, "new");
+    }
+
+    #[test]
+    fn test_remove_expired_messages_preserves_system() {
+        let now = chrono::Utc::now().timestamp();
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, 10));
+
+        let mut room_messages = std::collections::HashMap::new();
+        let mut sys_msg = DisplayMessage::system("help output");
+        sys_msg.timestamp = now - 100;
+        room_messages.insert(1i64, vec![sys_msg]);
+
+        let removed = remove_expired_messages(&rooms, &mut room_messages);
+        assert!(!removed);
+        assert_eq!(room_messages[&1].len(), 1);
+        assert!(room_messages[&1][0].is_system);
+    }
+
+    #[test]
+    fn test_remove_expired_messages_skips_disabled() {
+        let now = chrono::Utc::now().timestamp();
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, -1));
+
+        let mut room_messages = std::collections::HashMap::new();
+        room_messages.insert(
+            1i64,
+            vec![DisplayMessage::user(1, "alice", "old", now - 9999)],
+        );
+
+        let removed = remove_expired_messages(&rooms, &mut room_messages);
+        assert!(!removed);
+        assert_eq!(room_messages[&1].len(), 1);
+    }
+
+    #[test]
+    fn test_remove_expired_messages_skips_fetch_then_delete() {
+        let now = chrono::Utc::now().timestamp();
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, 0));
+
+        let mut room_messages = std::collections::HashMap::new();
+        room_messages.insert(
+            1i64,
+            vec![DisplayMessage::user(1, "alice", "old", now - 9999)],
+        );
+
+        let removed = remove_expired_messages(&rooms, &mut room_messages);
+        assert!(!removed);
+        assert_eq!(room_messages[&1].len(), 1);
+    }
+
+    #[test]
+    fn test_remove_expired_messages_nothing_to_remove() {
+        let now = chrono::Utc::now().timestamp();
+        let mut rooms = std::collections::HashMap::new();
+        rooms.insert(1, make_room(1, 60));
+
+        let mut room_messages = std::collections::HashMap::new();
+        room_messages.insert(
+            1i64,
+            vec![DisplayMessage::user(1, "alice", "recent", now)],
+        );
+
+        let removed = remove_expired_messages(&rooms, &mut room_messages);
+        assert!(!removed);
+        assert_eq!(room_messages[&1].len(), 1);
     }
 }

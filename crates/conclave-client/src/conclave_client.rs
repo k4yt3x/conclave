@@ -2,6 +2,7 @@ pub mod api;
 #[cfg(feature = "command")]
 pub mod command;
 pub mod config;
+pub mod duration;
 pub mod error;
 pub mod mls;
 pub mod operations;

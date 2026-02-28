@@ -153,6 +153,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/unread",
         description: "Check rooms for new messages",
     },
+    CommandSpec {
+        name: "expire",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/expire [duration]",
+        description: "Set or view message expiration policy",
+    },
     // Members
     CommandSpec {
         name: "who",
@@ -357,6 +364,9 @@ pub enum Command {
         topic: String,
     },
     Unread,
+    Expire {
+        duration: Option<String>,
+    },
 
     // Members
     Who,
@@ -498,6 +508,15 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             Ok(Command::Topic { topic })
         }
         "unread" => Ok(Command::Unread),
+        "expire" => {
+            let duration = if parts.len() >= 2 {
+                let prefix = format!("/{name} ");
+                Some(full_input[prefix.len()..].to_string())
+            } else {
+                None
+            };
+            Ok(Command::Expire { duration })
+        }
 
         // Members
         "who" => Ok(Command::Who),

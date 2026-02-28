@@ -208,7 +208,7 @@ pub async fn promote_member(
     notify_group_members(
         &state,
         group_id,
-        Some(auth.user_id),
+        None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id,
             update_type: "role_change".into(),
@@ -257,7 +257,7 @@ pub async fn demote_member(
     notify_group_members(
         &state,
         group_id,
-        Some(auth.user_id),
+        None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id,
             update_type: "role_change".into(),

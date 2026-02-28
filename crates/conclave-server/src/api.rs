@@ -72,6 +72,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/groups/{group_id}", patch(groups::update_group))
         // Fetch the MLS GroupInfo message for external joins.
         .route("/api/v1/groups/{group_id}/group-info", get(groups::get_group_info))
+        // Fetch the retention policy for a group (server + group expiry).
+        .route("/api/v1/groups/{group_id}/retention", get(groups::get_retention_policy))
 
         //
         // Members

@@ -196,6 +196,26 @@ impl MessageStore {
             .unwrap_or(0)
     }
 
+    /// Delete locally cached messages for a group based on its expiry policy.
+    pub fn cleanup_expired_messages(&self, group_id: i64, expiry_seconds: i64) {
+        if expiry_seconds == 0 {
+            if let Err(error) = self
+                .conn
+                .execute("DELETE FROM messages WHERE group_id = ?1 AND is_system = 0", params![group_id])
+            {
+                tracing::trace!(%error, "failed to cleanup expired messages from local store");
+            }
+        } else if expiry_seconds > 0 {
+            let cutoff = chrono::Utc::now().timestamp() - expiry_seconds;
+            if let Err(error) = self.conn.execute(
+                "DELETE FROM messages WHERE group_id = ?1 AND timestamp < ?2 AND is_system = 0",
+                params![group_id, cutoff],
+            ) {
+                tracing::trace!(%error, "failed to cleanup expired messages from local store");
+            }
+        }
+    }
+
     /// Update the last read sequence number for a room.
     pub fn set_last_read_seq(&self, group_id: i64, sequence_number: u64) {
         if let Err(error) = self.conn.execute(

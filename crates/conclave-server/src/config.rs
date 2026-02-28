@@ -23,6 +23,16 @@ pub struct ServerConfig {
     #[serde(default = "default_invite_ttl")]
     pub invite_ttl_seconds: i64,
 
+    /// Server-wide maximum message age. Accepts duration format: `-1` (disabled, default),
+    /// `0` (delete after all members fetch), or `<number><unit>` (e.g., `30d`, `1w`).
+    #[serde(default = "default_message_retention")]
+    pub message_retention: String,
+
+    /// Interval between message cleanup runs. Accepts duration format (e.g., `1h`, `30s`).
+    /// Default: `1h`.
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval: String,
+
     /// Path to the TLS certificate file (PEM format).
     /// If both `tls_cert_path` and `tls_key_path` are set, the server serves HTTPS.
     pub tls_cert_path: Option<PathBuf>,
@@ -47,7 +57,27 @@ fn default_invite_ttl() -> i64 {
     7 * 24 * 60 * 60 // 7 days
 }
 
+fn default_message_retention() -> String {
+    "-1".to_string()
+}
+
+fn default_cleanup_interval() -> String {
+    "1h".to_string()
+}
+
 impl ServerConfig {
+    /// Parse the `message_retention` config string into seconds.
+    pub fn message_retention_seconds(&self) -> i64 {
+        crate::duration::parse_duration(&self.message_retention).unwrap_or(-1)
+    }
+
+    /// Parse the `cleanup_interval` config string into seconds (minimum 1).
+    pub fn cleanup_interval_seconds(&self) -> u64 {
+        crate::duration::parse_duration(&self.cleanup_interval)
+            .unwrap_or(3600)
+            .max(1) as u64
+    }
+
     /// Returns the socket address string (e.g., "0.0.0.0:8443") by combining listen_address
     /// and listen_port. When listen_port is not set, defaults to 8443 for TLS or 8080 for
     /// plain HTTP.
@@ -71,6 +101,8 @@ impl Default for ServerConfig {
             database_path: default_db_path(),
             token_ttl_seconds: default_token_ttl(),
             invite_ttl_seconds: default_invite_ttl(),
+            message_retention: default_message_retention(),
+            cleanup_interval: default_cleanup_interval(),
             tls_cert_path: None,
             tls_key_path: None,
         }

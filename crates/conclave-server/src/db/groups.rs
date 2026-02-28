@@ -69,7 +69,8 @@ impl Database {
     pub fn list_user_groups(&self, user_id: i64) -> Result<Vec<UserGroupRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id
+            "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id,
+                    g.message_expiry_seconds
              FROM groups g
              JOIN group_members gm ON g.id = gm.group_id
              WHERE gm.user_id = ?1
@@ -83,6 +84,7 @@ impl Database {
                     alias: row.get(2)?,
                     created_at: row.get(3)?,
                     mls_group_id: row.get(4)?,
+                    message_expiry_seconds: row.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -176,6 +178,27 @@ impl Database {
             }
             other => Error::Database(other),
         })?;
+        Ok(())
+    }
+
+    /// Get the message expiry setting for a group.
+    pub fn get_group_expiry(&self, group_id: i64) -> Result<i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let expiry: i64 = conn
+            .prepare("SELECT message_expiry_seconds FROM groups WHERE id = ?1")?
+            .query_row(params![group_id], |row| row.get(0))
+            .optional()?
+            .unwrap_or(-1);
+        Ok(expiry)
+    }
+
+    /// Set the message expiry setting for a group.
+    pub fn set_group_expiry(&self, group_id: i64, seconds: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE groups SET message_expiry_seconds = ?2 WHERE id = ?1",
+            params![group_id, seconds],
+        )?;
         Ok(())
     }
 
