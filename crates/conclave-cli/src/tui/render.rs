@@ -15,6 +15,70 @@ fn sanitize_for_terminal(input: &str) -> String {
     conclave_client::sanitize_control_chars(input)
 }
 
+fn format_time(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_else(|| "??:??".to_string())
+}
+
+/// Approximate display width using character count.
+fn display_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+/// Number of terminal rows needed to display a line of given width.
+fn rows_for_width(width: usize, cols: usize) -> u16 {
+    if cols == 0 || width == 0 {
+        return 1;
+    }
+    ((width + cols - 1) / cols) as u16
+}
+
+/// Width of the message prefix in terminal columns.
+fn message_prefix_width(msg: &DisplayMessage, members: &[RoomMember]) -> usize {
+    // "[HH:MM] " = 8 columns (time is always 5 chars: HH:MM or ??:??)
+    let time_prefix = 8;
+    if msg.is_system {
+        // "*** " = 4
+        time_prefix + 4
+    } else {
+        let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
+        // "<sender> " = 1 + sender_width + 2
+        time_prefix + 1 + display_width(&sender) + 2
+    }
+}
+
+/// Compute how many terminal rows a message occupies.
+fn visual_line_count(msg: &DisplayMessage, cols: u16, members: &[RoomMember]) -> usize {
+    let cols_usize = cols as usize;
+    if cols_usize == 0 {
+        return 1;
+    }
+
+    let prefix_width = message_prefix_width(msg, members);
+    let content = sanitize_for_terminal(&msg.content);
+
+    let mut total_rows: usize = 0;
+    for (i, line) in content.split('\n').enumerate() {
+        let line_width = if i == 0 {
+            prefix_width + display_width(line)
+        } else {
+            display_width(line)
+        };
+        total_rows += rows_for_width(line_width, cols_usize) as usize;
+    }
+
+    total_rows.max(1)
+}
+
+const MAX_INPUT_HEIGHT: u16 = 10;
+
+/// Number of terminal rows the input area occupies.
+fn input_line_count(input: &InputLine) -> u16 {
+    let count = input.content().split('\n').count().max(1) as u16;
+    count.min(MAX_INPUT_HEIGHT)
+}
+
 /// Full redraw of the terminal.
 pub fn render_full(
     stdout: &mut impl Write,
@@ -28,20 +92,37 @@ pub fn render_full(
 
     let members = active_room_members(state);
 
-    // Message area: rows 0..rows-2
-    let msg_rows = rows.saturating_sub(2) as usize;
+    // Layout: messages | status bar | input area (1+ rows)
+    let input_height = input_line_count(input);
+    let status_row = rows.saturating_sub(1 + input_height);
+    let input_row = rows.saturating_sub(input_height);
+    let msg_rows = status_row as usize;
+
     let messages = state.active_messages();
     let total = messages.len();
-    let start = total.saturating_sub(msg_rows + state.scroll_offset);
     let end = total.saturating_sub(state.scroll_offset);
 
-    for (i, msg) in messages[start..end].iter().enumerate() {
-        queue!(stdout, cursor::MoveTo(0, i as u16))?;
-        write_message(stdout, msg, cols, &members)?;
+    // Walk backward from end to find which messages fit in the available rows.
+    let mut lines_accumulated = 0;
+    let mut start = end;
+    while start > 0 {
+        let msg_lines = visual_line_count(&messages[start - 1], cols, &members);
+        if lines_accumulated + msg_lines > msg_rows && start < end {
+            break;
+        }
+        lines_accumulated += msg_lines;
+        start -= 1;
     }
 
-    render_status_line(stdout, state, rows.saturating_sub(2))?;
-    render_input_line(stdout, state, input, rows.saturating_sub(1))?;
+    // Render messages top-to-bottom.
+    let mut current_row = 0u16;
+    for msg in &messages[start..end] {
+        let rows_used = write_message(stdout, msg, cols, &members, current_row)?;
+        current_row += rows_used;
+    }
+
+    render_status_line(stdout, state, status_row)?;
+    render_input_area(stdout, state, input, input_row)?;
 
     stdout.flush()
 }
@@ -114,6 +195,67 @@ pub fn render_input_line(
     stdout.flush()
 }
 
+/// Render a multi-line input area starting at `row`.
+pub fn render_input_area(
+    stdout: &mut impl Write,
+    state: &AppState,
+    input: &InputLine,
+    row: u16,
+) -> std::io::Result<()> {
+    let prefix = if let Some(room) = state.active_room_info() {
+        let name = sanitize_for_terminal(&room.display_name());
+        format!("[#{name}] ")
+    } else {
+        String::from("> ")
+    };
+
+    let content = input.content();
+    let lines: Vec<&str> = content.split('\n').collect();
+    let input_height = input_line_count(input);
+
+    for (i, line) in lines.iter().enumerate().take(input_height as usize) {
+        let current_row = row + i as u16;
+        queue!(
+            stdout,
+            cursor::MoveTo(0, current_row),
+            Clear(ClearType::CurrentLine),
+        )?;
+        if i == 0 {
+            write!(stdout, "{prefix}{line}")?;
+        } else {
+            write!(stdout, "{line}")?;
+        }
+    }
+
+    // Compute cursor row and column from the character offset.
+    let cursor_pos = input.cursor_position();
+    let mut chars_remaining = cursor_pos;
+    let mut cursor_line = 0usize;
+    let mut cursor_col = 0usize;
+
+    for (i, line) in lines.iter().enumerate() {
+        let line_char_count = line.chars().count();
+        if chars_remaining <= line_char_count {
+            cursor_line = i;
+            cursor_col = chars_remaining;
+            break;
+        }
+        // +1 for the '\n' separator
+        chars_remaining -= line_char_count + 1;
+    }
+
+    let display_col = if cursor_line == 0 {
+        prefix.len() + cursor_col
+    } else {
+        cursor_col
+    };
+
+    let cursor_row = row + cursor_line.min(input_height.saturating_sub(1) as usize) as u16;
+    queue!(stdout, cursor::MoveTo(display_col as u16, cursor_row))?;
+
+    stdout.flush()
+}
+
 /// Render a newly added message by performing a full redraw.
 pub fn render_new_message(
     stdout: &mut impl Write,
@@ -132,35 +274,58 @@ fn active_room_members(state: &AppState) -> Vec<RoomMember> {
         .unwrap_or_default()
 }
 
-/// Write a single formatted message at the current cursor position.
+/// Write a single formatted message starting at `row`, handling embedded
+/// newlines by rendering each sub-line on its own terminal row with a
+/// consistent indent. Returns the number of rows consumed.
 fn write_message(
     stdout: &mut impl Write,
     msg: &DisplayMessage,
-    _cols: u16,
+    cols: u16,
     members: &[RoomMember],
-) -> std::io::Result<()> {
-    let time = chrono::DateTime::from_timestamp(msg.timestamp, 0)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
-        .unwrap_or_else(|| "??:??".to_string());
-
+    row: u16,
+) -> std::io::Result<u16> {
+    let cols_usize = cols as usize;
+    let time = format_time(msg.timestamp);
     let content = sanitize_for_terminal(&msg.content);
+    let prefix_width = message_prefix_width(msg, members);
+
+    let mut current_row = row;
 
     if msg.is_system {
         queue!(stdout, SetForegroundColor(Color::DarkYellow))?;
-        write!(stdout, "[{time}] *** {content}")?;
+        for (i, line) in content.split('\n').enumerate() {
+            queue!(stdout, cursor::MoveTo(0, current_row))?;
+            if i == 0 {
+                write!(stdout, "[{time}] *** {line}")?;
+                current_row += rows_for_width(prefix_width + display_width(line), cols_usize);
+            } else {
+                write!(stdout, "{line}")?;
+                current_row += rows_for_width(display_width(line), cols_usize);
+            }
+        }
         queue!(stdout, ResetColor)?;
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
         let nick_color = username_color(msg.sender_id.unwrap_or(0));
-        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-        write!(stdout, "[{time}] ")?;
-        queue!(stdout, SetForegroundColor(nick_color))?;
-        write!(stdout, "<{sender}>")?;
-        queue!(stdout, ResetColor)?;
-        write!(stdout, " {content}")?;
+
+        for (i, line) in content.split('\n').enumerate() {
+            queue!(stdout, cursor::MoveTo(0, current_row))?;
+            if i == 0 {
+                queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                write!(stdout, "[{time}] ")?;
+                queue!(stdout, SetForegroundColor(nick_color))?;
+                write!(stdout, "<{sender}>")?;
+                queue!(stdout, ResetColor)?;
+                write!(stdout, " {line}")?;
+                current_row += rows_for_width(prefix_width + display_width(line), cols_usize);
+            } else {
+                write!(stdout, "{line}")?;
+                current_row += rows_for_width(display_width(line), cols_usize);
+            }
+        }
     }
 
-    Ok(())
+    Ok(current_row.saturating_sub(row).max(1))
 }
 
 /// Assign a consistent ANSI color to a sender based on their user ID.
@@ -217,5 +382,69 @@ mod tests {
         assert_eq!(sanitize_for_terminal("\x08backspace"), "backspace");
         assert_eq!(sanitize_for_terminal("\x7fdelete"), "delete");
         assert_eq!(sanitize_for_terminal("\x01\x02\x03"), "");
+    }
+
+    #[test]
+    fn test_rows_for_width() {
+        assert_eq!(rows_for_width(0, 80), 1);
+        assert_eq!(rows_for_width(40, 80), 1);
+        assert_eq!(rows_for_width(80, 80), 1);
+        assert_eq!(rows_for_width(81, 80), 2);
+        assert_eq!(rows_for_width(160, 80), 2);
+        assert_eq!(rows_for_width(161, 80), 3);
+        assert_eq!(rows_for_width(50, 0), 1);
+    }
+
+    #[test]
+    fn test_visual_line_count_single_line() {
+        let msg = DisplayMessage::system("hello");
+        let members = vec![];
+        // "[HH:MM] *** hello" = 12 + 5 = 17 chars, fits in 80 cols
+        assert_eq!(visual_line_count(&msg, 80, &members), 1);
+    }
+
+    #[test]
+    fn test_visual_line_count_multiline() {
+        let msg = DisplayMessage::system("first\nsecond\nthird");
+        let members = vec![];
+        // 3 lines, each fits in 80 cols
+        assert_eq!(visual_line_count(&msg, 80, &members), 3);
+    }
+
+    #[test]
+    fn test_visual_line_count_wrapping() {
+        let long = "a".repeat(100);
+        let msg = DisplayMessage::system(&long);
+        let members = vec![];
+        // "[HH:MM] *** " (12) + 100 = 112 chars, ceil(112/80) = 2
+        assert_eq!(visual_line_count(&msg, 80, &members), 2);
+    }
+
+    #[test]
+    fn test_visual_line_count_empty_content() {
+        let msg = DisplayMessage::system("");
+        let members = vec![];
+        // "[HH:MM] *** " = 12 chars, fits in 80 cols
+        assert_eq!(visual_line_count(&msg, 80, &members), 1);
+    }
+
+    #[test]
+    fn test_visual_line_count_trailing_newline() {
+        let msg = DisplayMessage::system("hello\n");
+        let members = vec![];
+        // "hello" on line 1 (with prefix), "" on line 2 (no prefix, 0 width → 1 row)
+        assert_eq!(visual_line_count(&msg, 80, &members), 2);
+    }
+
+    #[test]
+    fn test_visual_line_count_continuation_no_prefix() {
+        // Continuation lines have no prefix, so a 100-char continuation
+        // wraps based on its own width, not prefix + width.
+        let long = format!("short\n{}", "a".repeat(100));
+        let msg = DisplayMessage::system(&long);
+        let members = vec![];
+        // Line 1: "[HH:MM] *** short" = 12 + 5 = 17, 1 row
+        // Line 2: "aaa...a" = 100 chars (no prefix), ceil(100/80) = 2 rows
+        assert_eq!(visual_line_count(&msg, 80, &members), 3);
     }
 }

@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use crossterm::{
     cursor,
-    event::{Event as CtEvent, EventStream, KeyCode, KeyModifiers},
+    event::{
+        Event as CtEvent, EventStream, KeyCode, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -132,6 +135,14 @@ pub async fn run(
     execute!(stdout, EnterAlternateScreen, cursor::Show)
         .map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
 
+    // Enable extended keyboard protocol so Shift+Enter can be distinguished
+    // from plain Enter. This is best-effort — older terminals will ignore it,
+    // and Alt+Enter serves as a universal fallback.
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+    );
+
     let (cols, rows) =
         terminal::size().map_err(|e| crate::error::Error::Terminal(e.to_string()))?;
     state.terminal_cols = cols;
@@ -187,6 +198,7 @@ pub async fn run(
 
     // Restore terminal — errors are ignored because we are shutting down
     // and there is no meaningful recovery action if these fail.
+    let _ = execute!(stdout, PopKeyboardEnhancementFlags);
     if let Err(error) = terminal::disable_raw_mode() {
         tracing::warn!(%error, "failed to disable raw mode during shutdown");
     }
@@ -406,6 +418,14 @@ async fn handle_key_event(
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(LoopAction::Quit),
 
+        (KeyCode::Enter, m)
+            if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
+        {
+            input.insert('\n');
+            let _ = render::render_full(stdout, state, input);
+            return Ok(LoopAction::Continue);
+        }
+
         (KeyCode::Enter, _) => {
             return handle_enter(
                 stdout,
@@ -528,8 +548,16 @@ async fn handle_key_event(
     };
 
     if edited {
-        let _ =
-            render::render_input_line(stdout, state, input, state.terminal_rows.saturating_sub(1));
+        if input.content().contains('\n') {
+            let _ = render::render_full(stdout, state, input);
+        } else {
+            let _ = render::render_input_line(
+                stdout,
+                state,
+                input,
+                state.terminal_rows.saturating_sub(1),
+            );
+        }
     }
 
     Ok(LoopAction::Continue)
@@ -550,7 +578,11 @@ async fn handle_enter(
     if input.is_empty() {
         return Ok(LoopAction::Continue);
     }
-    let text = input.submit();
+    let text = input.submit().trim_end_matches('\n').to_string();
+    if text.is_empty() {
+        let _ = render::render_full(stdout, state, input);
+        return Ok(LoopAction::Continue);
+    }
 
     match commands::parse(&text) {
         Ok(Command::Quit) => {
