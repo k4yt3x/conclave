@@ -526,6 +526,7 @@ impl Dashboard {
                     Some(text_editor::Binding::Custom(Message::InputSubmitted))
                 }
             })
+            .id("chat_input")
             .padding(10)
             .size(14)
             .height(Length::Shrink)

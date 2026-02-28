@@ -1,4 +1,5 @@
 use iced::Task;
+use iced::widget::operation::focus;
 
 use conclave_client::command::Command;
 use conclave_client::operations;
@@ -28,7 +29,7 @@ impl Conclave {
                     }
                 }
 
-                Task::none()
+                focus("chat_input")
             }
             screen::dashboard::Message::InputAction(action) => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
@@ -49,10 +50,11 @@ impl Conclave {
                 let text = text.trim_end_matches('\n').to_owned();
 
                 if text.is_empty() {
-                    return Task::none();
+                    return focus("chat_input");
                 }
 
-                self.handle_input_text(text)
+                let task = self.handle_input_text(text);
+                Task::batch([task, focus("chat_input")])
             }
             screen::dashboard::Message::ToggleUserPopover => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
