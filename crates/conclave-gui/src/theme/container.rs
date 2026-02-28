@@ -103,15 +103,3 @@ pub fn drag_handle(theme: &Theme) -> Style {
         ..Style::default()
     }
 }
-
-pub fn toast(theme: &Theme) -> Style {
-    Style {
-        background: Some(Background::Color(theme.surface_bright)),
-        border: Border {
-            color: theme.border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..Style::default()
-    }
-}

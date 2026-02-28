@@ -1,19 +1,20 @@
 use std::time::Duration;
 
 use iced::Length;
-use iced::widget::{column, container, rich_text, span, text, tooltip};
+use iced::advanced::text::Span;
+use iced::widget::{column, container, text, tooltip};
 
 use conclave_client::state::{DisplayMessage, RoomMember, resolve_sender_name};
 
 use crate::theme;
 use crate::widget::Element;
+use crate::widget::selectable_rich_text::SelectableRichText;
 
 pub fn message_list<'a, M: Clone + 'a>(
     messages: &'a [DisplayMessage],
     members: &[RoomMember],
     group_id: Option<i64>,
     theme: &crate::theme::Theme,
-    on_copy: fn(String) -> M,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
 
@@ -22,36 +23,38 @@ pub fn message_list<'a, M: Clone + 'a>(
         let tooltip_text = format_tooltip(message, members, group_id);
 
         let row_element: Element<'a, M> = if message.is_system {
-            let content_text = message.content.clone();
-            rich_text![
-                span(format!("[{time}] ")).size(13).color(theme.text_muted),
-                span(format!("*** {}", message.content))
+            let spans = vec![
+                Span::new(format!("[{time}] "))
                     .size(13)
-                    .color(theme.text_secondary)
-                    .link(content_text),
-            ]
-            .width(Length::Fill)
-            .wrapping(text::Wrapping::Glyph)
-            .on_link_click(on_copy)
-            .into()
+                    .color(theme.text_muted),
+                Span::new(format!("*** {}", message.content))
+                    .size(13)
+                    .color(theme.text_secondary),
+            ];
+            SelectableRichText::new(spans)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::Glyph)
+                .selection_color(theme.selection)
+                .into()
         } else {
             let sender_name = resolve_sender_name(message, members);
             let nick_color = theme::nick_color(message.sender_id.unwrap_or(0));
-            let content_text = message.content.clone();
-            rich_text![
-                span(format!("[{time}]")).size(13).color(theme.text_muted),
-                span(format!(" <{sender_name}> "))
+            let spans = vec![
+                Span::new(format!("[{time}]"))
+                    .size(13)
+                    .color(theme.text_muted),
+                Span::new(format!(" <{sender_name}> "))
                     .size(13)
                     .color(nick_color),
-                span(&message.content)
+                Span::new(message.content.as_str())
                     .size(13)
-                    .color(theme.text)
-                    .link(content_text),
-            ]
-            .width(Length::Fill)
-            .wrapping(text::Wrapping::Glyph)
-            .on_link_click(on_copy)
-            .into()
+                    .color(theme.text),
+            ];
+            SelectableRichText::new(spans)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::Glyph)
+                .selection_color(theme.selection)
+                .into()
         };
 
         let tooltip_content = container(
@@ -63,7 +66,7 @@ pub fn message_list<'a, M: Clone + 'a>(
         .class(Box::new(theme::container::tooltip) as Box<dyn Fn(&theme::Theme) -> _>);
 
         let with_tooltip: Element<'a, M> =
-            tooltip(row_element, tooltip_content, tooltip::Position::Bottom)
+            tooltip(row_element, tooltip_content, tooltip::Position::FollowCursor)
                 .delay(Duration::from_millis(300))
                 .into();
 

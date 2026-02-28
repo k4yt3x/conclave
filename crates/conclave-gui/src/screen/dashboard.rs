@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
-use iced::Length;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
 };
+use iced::Length;
 
 use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
 
 use crate::theme;
-use crate::widget::Element;
 use crate::widget::message_view;
+use crate::widget::Element;
 
 pub const SIDEBAR_MIN_WIDTH: f32 = 100.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 500.0;
@@ -30,8 +30,7 @@ pub enum Message {
     ToggleUserPopover,
     CloseUserPopover,
     ToggleMembersSidebar,
-    CopyText(String),
-    DismissToast,
+    SelectedText(Vec<(f32, String)>),
     Logout,
     DragStarted(DragTarget),
     DragUpdate(f32),
@@ -42,7 +41,6 @@ pub struct Dashboard {
     pub input_value: String,
     pub show_user_popover: bool,
     pub show_members_sidebar: bool,
-    pub toast: Option<String>,
     pub left_sidebar_width: f32,
     pub right_sidebar_width: f32,
     pub dragging: Option<DragTarget>,
@@ -55,7 +53,6 @@ impl Dashboard {
             input_value: String::new(),
             show_user_popover: false,
             show_members_sidebar: false,
-            toast: None,
             left_sidebar_width: 200.0,
             right_sidebar_width: 180.0,
             dragging: None,
@@ -503,32 +500,14 @@ impl Dashboard {
         };
 
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
-            message_view::message_list(messages, members, *active_room, theme, Message::CopyText);
+            message_view::message_list(messages, members, *active_room, theme);
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 
-        let messages_area = scrollable(content).height(Length::Fill).anchor_bottom();
-
-        if let Some(toast_text) = &self.toast {
-            let toast_badge = container(
-                text(toast_text.as_str())
-                    .size(12)
-                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
-            )
-            .padding([6, 12])
-            .class(Box::new(theme::container::toast) as Box<dyn Fn(&theme::Theme) -> _>);
-
-            let toast_overlay = container(toast_badge)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Bottom)
-                .padding(iced::Padding::ZERO.bottom(8));
-
-            stack![messages_area, toast_overlay].into()
-        } else {
-            messages_area.into()
-        }
+        scrollable(content)
+            .height(Length::Fill)
+            .anchor_bottom()
+            .into()
     }
 
     fn view_input(&self) -> Element<'_, Message> {

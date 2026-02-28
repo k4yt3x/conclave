@@ -96,6 +96,7 @@ pub enum Message {
     // Keyboard / window events
     TabPressed,
     EscapePressed,
+    CopySelection,
     Quit,
     WindowFocused,
     WindowUnfocused,
@@ -310,6 +311,14 @@ impl Conclave {
                     Task::none()
                 }
             }
+            Message::CopySelection => {
+                if matches!(self.screen, screen::Screen::Dashboard(_)) {
+                    return crate::widget::selectable_rich_text::selected(|fragments| {
+                        Message::Dashboard(screen::dashboard::Message::SelectedText(fragments))
+                    });
+                }
+                Task::none()
+            }
             Message::EscapePressed => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     if dashboard.show_user_popover {
@@ -368,6 +377,11 @@ impl Conclave {
                 modifiers,
                 ..
             }) if modifiers.command() && c.as_ref() == "q" => Some(Message::Quit),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(c),
+                modifiers,
+                ..
+            }) if modifiers.command() && c.as_ref() == "c" => Some(Message::CopySelection),
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Tab),
                 ..

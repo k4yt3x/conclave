@@ -1,5 +1,43 @@
 # Conclave Work Log
 
+## 2026-02-27: Add Mouse-Based Text Selection in GUI Chat History
+
+Replaced iced's built-in `rich_text` widget (which has no text selection support) with a custom `SelectableRichText` widget that supports click-and-drag text selection and Ctrl+C copy. Previously, clicking a message copied its entire content via a link callback workaround. Now users can select arbitrary text spans across messages by dragging, with visual highlight feedback using the theme's `selection` color. Selected text is copied to the clipboard with Ctrl+C.
+
+### Implementation
+
+The custom widget (~490 lines) implements `iced::advanced::Widget` with:
+- **Selection state machine**: `Idle` → `Selecting` (mouse drag) → `Selected` (mouse release). Raw pixel positions are resolved to character offsets via `Paragraph::hit_test()`.
+- **Per-line highlight rendering**: Selection quads are drawn for each line within the selected range, handling partial first/last lines and full middle lines.
+- **Cross-widget text collection**: Uses iced's `operate()` pattern — each widget instance exposes its selected text via `operation.custom()`, and a custom `Operation` implementation collects `Vec<(f32, String)>` (y-position, text) from all instances across the widget tree, which are then sorted by position and joined with newlines.
+- **Event capture**: `shell.capture_event()` on mouse press prevents the parent `Scrollable` from stealing drag events during selection.
+
+### Changes
+
+- **New file**: `crates/conclave-gui/src/widget/selectable_rich_text.rs` — Custom selectable rich text widget with selection state machine, highlight rendering, and cross-widget text collection via `operate()`.
+- **`widget.rs`**: Added `pub mod selectable_rich_text`.
+- **`widget/message_view.rs`**: Replaced `rich_text!` macro with `SelectableRichText::new(spans)`. Removed `on_copy` callback parameter. Uses `iced::advanced::text::Span` directly.
+- **`screen/dashboard.rs`**: Removed `CopyText(String)` and `DismissToast` message variants, removed `toast` field and toast overlay from `view_messages()`. Added `SelectedText(Vec<(f32, String)>)` variant.
+- **`app.rs`**: Added `CopySelection` message variant and Ctrl+C keyboard event subscription that triggers `selectable_rich_text::selected()` operation.
+- **`app/commands.rs`**: Replaced `CopyText`/`DismissToast` handlers with `SelectedText` handler that sorts fragments by Y position, joins with newlines, and writes to clipboard.
+- **`theme/container.rs`**: Removed unused `toast()` function.
+- **`Cargo.toml`**: Added `unicode-segmentation = "1"` dependency.
+
+### Files Created
+
+- `crates/conclave-gui/src/widget/selectable_rich_text.rs`
+
+### Files Modified
+
+- `Cargo.lock`
+- `crates/conclave-gui/Cargo.toml`
+- `crates/conclave-gui/src/widget.rs`
+- `crates/conclave-gui/src/widget/message_view.rs`
+- `crates/conclave-gui/src/screen/dashboard.rs`
+- `crates/conclave-gui/src/app.rs`
+- `crates/conclave-gui/src/app/commands.rs`
+- `crates/conclave-gui/src/theme/container.rs`
+
 ## 2026-02-27: Remove Old Password Requirement from /passwd
 
 Removed the `current_password` field from the `/passwd` command and `POST /api/v1/change-password` endpoint. The old password was previously required for verification, but since the user is already authenticated via session token (`AuthUser` extractor), re-verifying the old password was redundant. This also fixes a usability bug where passwords containing spaces could not be entered as the current password argument due to whitespace-based argument splitting.

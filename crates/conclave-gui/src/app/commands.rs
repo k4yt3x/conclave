@@ -69,25 +69,33 @@ impl Conclave {
                 }
                 Task::none()
             }
-            screen::dashboard::Message::CopyText(text) => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.toast = Some("Copied to clipboard".into());
+            screen::dashboard::Message::SelectedText(fragments) => {
+                if fragments.is_empty() {
+                    return Task::none();
                 }
-                Task::batch([
-                    iced::clipboard::write(text),
-                    Task::perform(
-                        async {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        },
-                        |_| Message::Dashboard(screen::dashboard::Message::DismissToast),
-                    ),
-                ])
-            }
-            screen::dashboard::Message::DismissToast => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.toast = None;
+
+                let mut sorted = fragments;
+                sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                let mut result = String::new();
+                let mut last_y: Option<f32> = None;
+                for (y_position, text) in &sorted {
+                    match last_y {
+                        Some(prev_y) if (*y_position - prev_y).abs() > 1.0 => {
+                            result.push('\n');
+                        }
+                        Some(_) => {}
+                        None => {}
+                    }
+                    result.push_str(text);
+                    last_y = Some(*y_position);
                 }
-                Task::none()
+
+                if result.is_empty() {
+                    return Task::none();
+                }
+
+                iced::clipboard::write(result)
             }
             screen::dashboard::Message::Logout => self.perform_logout(),
             screen::dashboard::Message::DragStarted(target) => {
