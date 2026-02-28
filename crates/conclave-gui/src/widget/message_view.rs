@@ -14,13 +14,14 @@ pub fn message_list<'a, M: Clone + 'a>(
     messages: &'a [DisplayMessage],
     members: &[RoomMember],
     group_id: Option<i64>,
+    group_name: Option<&str>,
     theme: &crate::theme::Theme,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
 
     for message in messages {
         let time = format_timestamp(message.timestamp);
-        let tooltip_text = format_tooltip(message, members, group_id);
+        let tooltip_text = format_tooltip(message, members, group_id, group_name);
 
         let row_element: Element<'a, M> = if message.is_system {
             let spans = vec![
@@ -85,7 +86,12 @@ fn format_timestamp(ts: i64) -> String {
         .unwrap_or_else(|| "??:??:??".to_string())
 }
 
-fn format_tooltip(msg: &DisplayMessage, members: &[RoomMember], group_id: Option<i64>) -> String {
+fn format_tooltip(
+    msg: &DisplayMessage,
+    members: &[RoomMember],
+    group_id: Option<i64>,
+    group_name: Option<&str>,
+) -> String {
     use chrono::{Local, TimeZone};
     let datetime = Local
         .timestamp_opt(msg.timestamp, 0)
@@ -112,6 +118,10 @@ fn format_tooltip(msg: &DisplayMessage, members: &[RoomMember], group_id: Option
 
     if let Some(gid) = group_id {
         lines.push(format!("Group ID: {gid}"));
+    }
+
+    if let Some(name) = group_name {
+        lines.push(format!("Group name: {name}"));
     }
 
     if let Some(seq) = msg.sequence_num {

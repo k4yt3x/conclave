@@ -492,16 +492,16 @@ impl Dashboard {
             None => system_messages,
         };
 
-        let members: &[conclave_client::state::RoomMember] = match active_room {
-            Some(room_id) => rooms
-                .get(room_id)
-                .map(|r| r.members.as_slice())
-                .unwrap_or(&[]),
-            None => &[],
-        };
+        let active_room_data = active_room.and_then(|id| rooms.get(&id));
+
+        let members: &[conclave_client::state::RoomMember] = active_room_data
+            .map(|r| r.members.as_slice())
+            .unwrap_or(&[]);
+
+        let group_name = active_room_data.map(|r| r.group_name.as_str());
 
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
-            message_view::message_list(messages, members, *active_room, theme);
+            message_view::message_list(messages, members, *active_room, group_name, theme);
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 
