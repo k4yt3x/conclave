@@ -388,7 +388,9 @@ impl Dashboard {
                     let name = text(format!("#{}", room.display_name()))
                         .size(14)
                         .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>);
-                    let members = text(format!("  ({} members)", room.members.len()))
+                    let count = room.members.len();
+                    let label = if count == 1 { "member" } else { "members" };
+                    let members = text(format!("  ({count} {label})"))
                         .size(12)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>);
                     row![
@@ -558,6 +560,7 @@ impl Dashboard {
                             Binding::Delete,
                         ]))
                     }
+                    _ if key_press.modifiers.alt() => None,
                     _ => Binding::from_key_press(key_press),
                 }
             })
