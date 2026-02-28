@@ -516,14 +516,49 @@ impl Dashboard {
             .placeholder("Type a message or /command...")
             .on_action(Message::InputAction)
             .key_binding(|key_press| {
-                let keyboard::Key::Named(keyboard::key::Named::Enter) = key_press.key else {
-                    return text_editor::Binding::from_key_press(key_press);
-                };
+                use text_editor::{Binding, Motion};
 
-                if key_press.modifiers.shift() {
-                    Some(text_editor::Binding::Enter)
-                } else {
-                    Some(text_editor::Binding::Custom(Message::InputSubmitted))
+                match key_press.key {
+                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                        if key_press.modifiers.shift() {
+                            Some(Binding::Enter)
+                        } else {
+                            Some(Binding::Custom(Message::InputSubmitted))
+                        }
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Backspace)
+                        if key_press.modifiers.jump() =>
+                    {
+                        Some(Binding::Sequence(vec![
+                            Binding::Select(Motion::WordLeft),
+                            Binding::Backspace,
+                        ]))
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Delete)
+                        if key_press.modifiers.jump() =>
+                    {
+                        Some(Binding::Sequence(vec![
+                            Binding::Select(Motion::WordRight),
+                            Binding::Delete,
+                        ]))
+                    }
+                    _ if key_press.key.to_latin(key_press.physical_key) == Some('u')
+                        && key_press.modifiers.control() =>
+                    {
+                        Some(Binding::Sequence(vec![
+                            Binding::Select(Motion::Home),
+                            Binding::Backspace,
+                        ]))
+                    }
+                    _ if key_press.key.to_latin(key_press.physical_key) == Some('k')
+                        && key_press.modifiers.control() =>
+                    {
+                        Some(Binding::Sequence(vec![
+                            Binding::Select(Motion::End),
+                            Binding::Delete,
+                        ]))
+                    }
+                    _ => Binding::from_key_press(key_press),
                 }
             })
             .id("chat_input")
