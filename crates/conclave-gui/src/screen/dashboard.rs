@@ -7,7 +7,7 @@ use iced::widget::{
 };
 use iced::Length;
 
-use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
+use conclave_client::state::{ConnectionStatus, DisplayMessage, Room, VerificationStatus};
 
 use crate::theme;
 use crate::widget::message_view;
@@ -36,6 +36,7 @@ pub enum Message {
     DragStarted(DragTarget),
     DragUpdate(f32),
     DragEnded,
+    VerifyResult(Result<(Option<(i64, VerificationStatus)>, Vec<DisplayMessage>), String>),
 }
 
 pub struct Dashboard {
@@ -75,6 +76,7 @@ impl Dashboard {
         server_url: &'a Option<String>,
         accept_invalid_certs: bool,
         theme: &'a crate::theme::Theme,
+        verification_status: &'a HashMap<i64, VerificationStatus>,
     ) -> Element<'a, Message> {
         let sidebar = self.view_sidebar(
             rooms,
@@ -86,14 +88,20 @@ impl Dashboard {
             accept_invalid_certs,
         );
         let left_handle = self.view_drag_handle(DragTarget::LeftHandle);
-        let main_area =
-            self.view_main_area(rooms, active_room, room_messages, system_messages, theme);
+        let main_area = self.view_main_area(
+            rooms,
+            active_room,
+            room_messages,
+            system_messages,
+            theme,
+            verification_status,
+        );
 
         let mut base = row![sidebar, left_handle, main_area];
         if self.show_members_sidebar && active_room.is_some() {
             let right_handle = self.view_drag_handle(DragTarget::RightHandle);
             base = base.push(right_handle);
-            base = base.push(self.view_members_sidebar(rooms, active_room));
+            base = base.push(self.view_members_sidebar(rooms, active_room, verification_status));
         }
 
         if self.dragging.is_some() {
@@ -354,9 +362,16 @@ impl Dashboard {
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
+        verification_status: &'a HashMap<i64, VerificationStatus>,
     ) -> Element<'a, Message> {
-        let messages =
-            self.view_messages(rooms, active_room, room_messages, system_messages, theme);
+        let messages = self.view_messages(
+            rooms,
+            active_room,
+            room_messages,
+            system_messages,
+            theme,
+            verification_status,
+        );
         let input = self.view_input();
 
         let mut main_column = column![].width(Length::Fill).height(Length::Fill);
@@ -427,6 +442,7 @@ impl Dashboard {
         &'a self,
         rooms: &'a HashMap<i64, Room>,
         active_room: &'a Option<i64>,
+        verification_status: &'a HashMap<i64, VerificationStatus>,
     ) -> Element<'a, Message> {
         let member_count = active_room
             .and_then(|id| rooms.get(&id))
@@ -454,9 +470,16 @@ impl Dashboard {
             });
             for member in sorted_members {
                 let admin_suffix = if member.role == "admin" { " *" } else { "" };
+                let indicator = match verification_status.get(&member.user_id) {
+                    Some(VerificationStatus::Changed) => "[!] ",
+                    Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
+                    Some(VerificationStatus::Verified) | None => "",
+                };
                 let member_display = match member.alias.as_deref().filter(|a| !a.is_empty()) {
-                    Some(alias) => format!("{alias} (@{}){admin_suffix}", member.username),
-                    None => format!("@{}{admin_suffix}", member.username),
+                    Some(alias) => {
+                        format!("{indicator}{alias} (@{}){admin_suffix}", member.username)
+                    }
+                    None => format!("{indicator}@{}{admin_suffix}", member.username),
                 };
                 member_list = member_list.push(
                     text(member_display)
@@ -485,6 +508,7 @@ impl Dashboard {
         room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
+        verification_status: &'a HashMap<i64, VerificationStatus>,
     ) -> Element<'a, Message> {
         let messages: &[DisplayMessage] = match active_room {
             Some(room_id) => room_messages
@@ -503,7 +527,14 @@ impl Dashboard {
         let group_name = active_room_data.map(|r| r.group_name.as_str());
 
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
-            message_view::message_list(messages, members, *active_room, group_name, theme);
+            message_view::message_list(
+                messages,
+                members,
+                *active_room,
+                group_name,
+                theme,
+                verification_status,
+            );
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);
 

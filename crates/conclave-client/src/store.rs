@@ -100,6 +100,20 @@ impl MessageStore {
             }
         }
 
+        // Create the known_fingerprints table for TOFU verification.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS known_fingerprints (
+                 user_id        INTEGER PRIMARY KEY,
+                 fingerprint    TEXT NOT NULL,
+                 verified       INTEGER NOT NULL DEFAULT 0,
+                 first_seen_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+                 verified_at    INTEGER
+             );",
+        )
+        .map_err(|e| {
+            crate::error::Error::Other(format!("known_fingerprints table creation failed: {e}"))
+        })?;
+
         Ok(Self { conn })
     }
 
@@ -214,6 +228,135 @@ impl MessageStore {
                 tracing::trace!(%error, "failed to cleanup expired messages from local store");
             }
         }
+    }
+
+    /// Check and update the TOFU store for a user's fingerprint.
+    ///
+    /// Returns the verification status based on the current fingerprint
+    /// and stored TOFU state.
+    pub fn get_verification_status(
+        &self,
+        user_id: i64,
+        current_fingerprint: &str,
+    ) -> crate::state::VerificationStatus {
+        use crate::state::VerificationStatus;
+
+        if current_fingerprint.is_empty() {
+            return VerificationStatus::Unknown;
+        }
+
+        let existing: Option<(String, bool)> = self
+            .conn
+            .query_row(
+                "SELECT fingerprint, verified FROM known_fingerprints WHERE user_id = ?1",
+                params![user_id],
+                |row| {
+                    let fp: String = row.get(0)?;
+                    let verified: bool = row.get::<_, i32>(1)? != 0;
+                    Ok((fp, verified))
+                },
+            )
+            .ok();
+
+        match existing {
+            None => {
+                if let Err(error) = self.conn.execute(
+                    "INSERT INTO known_fingerprints (user_id, fingerprint) VALUES (?1, ?2)",
+                    params![user_id, current_fingerprint],
+                ) {
+                    tracing::warn!(%error, "failed to store TOFU fingerprint");
+                }
+                VerificationStatus::Unverified
+            }
+            Some((stored_fp, verified)) => {
+                if stored_fp == current_fingerprint {
+                    if verified {
+                        VerificationStatus::Verified
+                    } else {
+                        VerificationStatus::Unverified
+                    }
+                } else {
+                    if let Err(error) = self.conn.execute(
+                        "UPDATE known_fingerprints SET fingerprint = ?2, verified = 0, verified_at = NULL WHERE user_id = ?1",
+                        params![user_id, current_fingerprint],
+                    ) {
+                        tracing::warn!(%error, "failed to update TOFU fingerprint");
+                    }
+                    VerificationStatus::Changed
+                }
+            }
+        }
+    }
+
+    /// Mark a user's fingerprint as manually verified.
+    ///
+    /// Returns false if no TOFU entry exists for this user.
+    pub fn verify_user(&self, user_id: i64) -> bool {
+        match self.conn.execute(
+            "UPDATE known_fingerprints SET verified = 1, verified_at = unixepoch() WHERE user_id = ?1",
+            params![user_id],
+        ) {
+            Ok(count) => count > 0,
+            Err(error) => {
+                tracing::warn!(%error, "failed to verify user fingerprint");
+                false
+            }
+        }
+    }
+
+    /// Remove manual verification for a user's fingerprint.
+    ///
+    /// Returns false if no TOFU entry exists for this user.
+    pub fn unverify_user(&self, user_id: i64) -> bool {
+        match self.conn.execute(
+            "UPDATE known_fingerprints SET verified = 0, verified_at = NULL WHERE user_id = ?1",
+            params![user_id],
+        ) {
+            Ok(count) => count > 0,
+            Err(error) => {
+                tracing::warn!(%error, "failed to unverify user fingerprint");
+                false
+            }
+        }
+    }
+
+    /// Get the stored fingerprint and verification status for a user.
+    pub fn get_stored_fingerprint(&self, user_id: i64) -> Option<(String, bool)> {
+        self.conn
+            .query_row(
+                "SELECT fingerprint, verified FROM known_fingerprints WHERE user_id = ?1",
+                params![user_id],
+                |row| {
+                    let fp: String = row.get(0)?;
+                    let verified: bool = row.get::<_, i32>(1)? != 0;
+                    Ok((fp, verified))
+                },
+            )
+            .ok()
+    }
+
+    /// Get all known fingerprints from the TOFU store.
+    ///
+    /// Returns `(user_id, fingerprint, verified)` tuples ordered by user ID.
+    pub fn get_all_known_fingerprints(&self) -> Vec<(i64, String, bool)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT user_id, fingerprint, verified FROM known_fingerprints ORDER BY user_id",
+        ) {
+            Ok(s) => s,
+            Err(error) => {
+                tracing::warn!(%error, "failed to query known fingerprints");
+                return Vec::new();
+            }
+        };
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)? != 0,
+            ))
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     /// Update the last read sequence number for a room.

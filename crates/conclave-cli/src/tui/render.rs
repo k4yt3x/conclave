@@ -6,10 +6,36 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 
-use conclave_client::state::{RoomMember, resolve_sender_name};
+use conclave_client::state::{RoomMember, VerificationStatus, resolve_sender_name};
 
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage};
+
+/// Return the verification indicator prefix for a user.
+fn verification_indicator(
+    sender_id: Option<i64>,
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+) -> &'static str {
+    match sender_id.and_then(|id| verification_status.get(&id)) {
+        Some(VerificationStatus::Changed) => "[!] ",
+        Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
+        Some(VerificationStatus::Verified) | None => "",
+    }
+}
+
+/// Return the color for a verification indicator.
+fn verification_color(
+    sender_id: Option<i64>,
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+) -> Option<Color> {
+    match sender_id.and_then(|id| verification_status.get(&id)) {
+        Some(VerificationStatus::Changed) => Some(Color::Red),
+        Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
+            Some(Color::DarkYellow)
+        }
+        Some(VerificationStatus::Verified) | None => None,
+    }
+}
 
 fn sanitize_for_terminal(input: &str) -> String {
     conclave_client::sanitize_control_chars(input)
@@ -35,7 +61,11 @@ fn rows_for_width(width: usize, cols: usize) -> u16 {
 }
 
 /// Width of the message prefix in terminal columns.
-fn message_prefix_width(msg: &DisplayMessage, members: &[RoomMember]) -> usize {
+fn message_prefix_width(
+    msg: &DisplayMessage,
+    members: &[RoomMember],
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+) -> usize {
     // "[HH:MM] " = 8 columns (time is always 5 chars: HH:MM or ??:??)
     let time_prefix = 8;
     if msg.is_system {
@@ -43,19 +73,25 @@ fn message_prefix_width(msg: &DisplayMessage, members: &[RoomMember]) -> usize {
         time_prefix + 4
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
+        let indicator = verification_indicator(msg.sender_id, verification_status);
         // "<sender> " = 1 + sender_width + 2
-        time_prefix + 1 + display_width(&sender) + 2
+        time_prefix + display_width(indicator) + 1 + display_width(&sender) + 2
     }
 }
 
 /// Compute how many terminal rows a message occupies.
-fn visual_line_count(msg: &DisplayMessage, cols: u16, members: &[RoomMember]) -> usize {
+fn visual_line_count(
+    msg: &DisplayMessage,
+    cols: u16,
+    members: &[RoomMember],
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+) -> usize {
     let cols_usize = cols as usize;
     if cols_usize == 0 {
         return 1;
     }
 
-    let prefix_width = message_prefix_width(msg, members);
+    let prefix_width = message_prefix_width(msg, members, verification_status);
     let content = sanitize_for_terminal(&msg.content);
 
     let mut total_rows: usize = 0;
@@ -106,7 +142,8 @@ pub fn render_full(
     let mut lines_accumulated = 0;
     let mut start = end;
     while start > 0 {
-        let msg_lines = visual_line_count(&messages[start - 1], cols, &members);
+        let msg_lines =
+            visual_line_count(&messages[start - 1], cols, &members, &state.verification_status);
         if lines_accumulated + msg_lines > msg_rows && start < end {
             break;
         }
@@ -117,7 +154,14 @@ pub fn render_full(
     // Render messages top-to-bottom.
     let mut current_row = 0u16;
     for msg in &messages[start..end] {
-        let rows_used = write_message(stdout, msg, cols, &members, current_row)?;
+        let rows_used = write_message(
+            stdout,
+            msg,
+            cols,
+            &members,
+            &state.verification_status,
+            current_row,
+        )?;
         current_row += rows_used;
     }
 
@@ -282,12 +326,13 @@ fn write_message(
     msg: &DisplayMessage,
     cols: u16,
     members: &[RoomMember],
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
     row: u16,
 ) -> std::io::Result<u16> {
     let cols_usize = cols as usize;
     let time = format_time(msg.timestamp);
     let content = sanitize_for_terminal(&msg.content);
-    let prefix_width = message_prefix_width(msg, members);
+    let prefix_width = message_prefix_width(msg, members, verification_status);
 
     let mut current_row = row;
 
@@ -307,12 +352,19 @@ fn write_message(
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
         let nick_color = username_color(msg.sender_id.unwrap_or(0));
+        let indicator = verification_indicator(msg.sender_id, verification_status);
 
         for (i, line) in content.split('\n').enumerate() {
             queue!(stdout, cursor::MoveTo(0, current_row))?;
             if i == 0 {
                 queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "[{time}] ")?;
+                if !indicator.is_empty() {
+                    if let Some(color) = verification_color(msg.sender_id, verification_status) {
+                        queue!(stdout, SetForegroundColor(color))?;
+                    }
+                    write!(stdout, "{indicator}")?;
+                }
                 queue!(stdout, SetForegroundColor(nick_color))?;
                 write!(stdout, "<{sender}>")?;
                 queue!(stdout, ResetColor)?;
@@ -400,7 +452,7 @@ mod tests {
         let msg = DisplayMessage::system("hello");
         let members = vec![];
         // "[HH:MM] *** hello" = 12 + 5 = 17 chars, fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members), 1);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 1);
     }
 
     #[test]
@@ -408,7 +460,7 @@ mod tests {
         let msg = DisplayMessage::system("first\nsecond\nthird");
         let members = vec![];
         // 3 lines, each fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members), 3);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 3);
     }
 
     #[test]
@@ -417,7 +469,7 @@ mod tests {
         let msg = DisplayMessage::system(&long);
         let members = vec![];
         // "[HH:MM] *** " (12) + 100 = 112 chars, ceil(112/80) = 2
-        assert_eq!(visual_line_count(&msg, 80, &members), 2);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 2);
     }
 
     #[test]
@@ -425,7 +477,7 @@ mod tests {
         let msg = DisplayMessage::system("");
         let members = vec![];
         // "[HH:MM] *** " = 12 chars, fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members), 1);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 1);
     }
 
     #[test]
@@ -433,7 +485,7 @@ mod tests {
         let msg = DisplayMessage::system("hello\n");
         let members = vec![];
         // "hello" on line 1 (with prefix), "" on line 2 (no prefix, 0 width → 1 row)
-        assert_eq!(visual_line_count(&msg, 80, &members), 2);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 2);
     }
 
     #[test]
@@ -445,6 +497,6 @@ mod tests {
         let members = vec![];
         // Line 1: "[HH:MM] *** short" = 12 + 5 = 17, 1 row
         // Line 2: "aaa...a" = 100 chars (no prefix), ceil(100/80) = 2 rows
-        assert_eq!(visual_line_count(&msg, 80, &members), 3);
+        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 3);
     }
 }

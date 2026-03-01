@@ -35,6 +35,7 @@ message LoginResponse {
 message UploadKeyPackageRequest {
   bytes key_package_data = 1;
   repeated KeyPackageEntry entries = 2;
+  string signing_key_fingerprint = 3;  // SHA-256 hex of signing public key
 }
 
 message KeyPackageEntry {
@@ -79,6 +80,7 @@ message GroupMember {
   string username = 2;
   string alias = 3;
   string role = 4;
+  string signing_key_fingerprint = 5;  // SHA-256 hex of signing public key
 }
 
 message ListGroupsResponse {
@@ -346,4 +348,5 @@ message UserInfoResponse {
   int64 user_id = 1;
   string username = 2;
   string alias = 3;
+  string signing_key_fingerprint = 4;  // SHA-256 hex of signing public key
 }

@@ -1,8 +1,10 @@
 use iced::Task;
 
 use conclave_client::command::Command;
+use conclave_client::mls::{format_fingerprint, normalize_fingerprint};
 use conclave_client::operations;
 use conclave_client::state::DisplayMessage;
+use conclave_client::store::MessageStore;
 
 use crate::screen;
 
@@ -132,6 +134,20 @@ impl Conclave {
                 }
                 Task::none()
             }
+            screen::dashboard::Message::VerifyResult(result) => {
+                match result {
+                    Ok((status_update, msgs)) => {
+                        if let Some((uid, status)) = status_update {
+                            self.verification_status.insert(uid, status);
+                        }
+                        for msg in msgs {
+                            self.add_message(None, msg);
+                        }
+                    }
+                    Err(e) => self.push_system_message(&format!("Error: {e}")),
+                }
+                Task::none()
+            }
         }
     }
 
@@ -146,7 +162,7 @@ impl Conclave {
             }
 
             // Rooms
-            Ok(Command::List) => {
+            Ok(Command::Rooms) => {
                 let params = self.api_params();
                 let active_room = self.active_room;
                 Task::perform(
@@ -187,17 +203,28 @@ impl Conclave {
             }
 
             // Members
-            Ok(Command::Who) => {
+            Ok(Command::Members) => {
                 if let Some(room_id) = self.active_room {
                     if let Some(room) = self.rooms.get(&room_id) {
                         let member_names: Vec<String> = room
                             .members
                             .iter()
                             .map(|m| {
+                                let indicator = match self.verification_status.get(&m.user_id) {
+                                    Some(conclave_client::state::VerificationStatus::Changed) => {
+                                        "[!] "
+                                    }
+                                    Some(
+                                        conclave_client::state::VerificationStatus::Unknown
+                                        | conclave_client::state::VerificationStatus::Unverified,
+                                    ) => "[?] ",
+                                    Some(conclave_client::state::VerificationStatus::Verified)
+                                    | None => "",
+                                };
                                 if m.role == "admin" {
-                                    format!("{} (admin)", m.display_name())
+                                    format!("{indicator}{} (admin)", m.display_name())
                                 } else {
-                                    m.display_name().to_string()
+                                    format!("{indicator}{}", m.display_name())
                                 }
                             })
                             .collect();
@@ -235,20 +262,229 @@ impl Conclave {
             }
 
             // Account
-            Ok(Command::Whois) => {
+            Ok(Command::Whois { username: None }) => {
+                let own_fingerprint = self
+                    .mls
+                    .as_ref()
+                    .map(|m| m.signing_key_fingerprint());
                 let params = self.api_params();
                 Task::perform(
                     async move {
                         let resp = params.into_client().me().await.map_err(|e| e.to_string())?;
-                        Ok(vec![DisplayMessage::system(&format!(
+                        let mut msgs = vec![DisplayMessage::system(&format!(
                             "User: {} (ID: {})",
                             resp.username, resp.user_id
-                        ))])
+                        ))];
+                        if let Some(fp) = own_fingerprint {
+                            msgs.push(DisplayMessage::system(&format!(
+                                "Fingerprint: {}",
+                                format_fingerprint(&fp)
+                            )));
+                        }
+                        Ok(msgs)
                     },
                     Message::CommandResult,
                 )
             }
-            Ok(Command::Nick { alias }) => {
+            Ok(Command::Whois {
+                username: Some(target),
+            }) => {
+                let params = self.api_params();
+                let data_dir = self.config.data_dir.clone();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let resp = api
+                            .get_user_by_username(&target)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let mut msgs = vec![DisplayMessage::system(&format!(
+                            "User: {} (ID: {})",
+                            resp.username, resp.user_id
+                        ))];
+                        if !resp.signing_key_fingerprint.is_empty() {
+                            msgs.push(DisplayMessage::system(&format!(
+                                "Fingerprint: {}",
+                                format_fingerprint(&resp.signing_key_fingerprint)
+                            )));
+                            if let Ok(store) = MessageStore::open(&data_dir) {
+                                let status = store.get_verification_status(
+                                    resp.user_id,
+                                    &resp.signing_key_fingerprint,
+                                );
+                                let status_str = match status {
+                                    conclave_client::state::VerificationStatus::Unknown => {
+                                        "Unknown"
+                                    }
+                                    conclave_client::state::VerificationStatus::Unverified => {
+                                        "Unverified"
+                                    }
+                                    conclave_client::state::VerificationStatus::Verified => {
+                                        "Verified"
+                                    }
+                                    conclave_client::state::VerificationStatus::Changed => {
+                                        "Changed (warning!)"
+                                    }
+                                };
+                                msgs.push(DisplayMessage::system(&format!(
+                                    "Status: {status_str}"
+                                )));
+                            }
+                        }
+                        Ok(msgs)
+                    },
+                    Message::CommandResult,
+                )
+            }
+            Ok(Command::Verify {
+                username,
+                fingerprint,
+            }) => {
+                let normalized = match normalize_fingerprint(&fingerprint) {
+                    Ok(fp) => fp,
+                    Err(e) => {
+                        self.push_system_message(&format!("{e}"));
+                        return Task::none();
+                    }
+                };
+                let params = self.api_params();
+                let data_dir = self.config.data_dir.clone();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let resp = api
+                            .get_user_by_username(&username)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let user_id = resp.user_id;
+                        let store = MessageStore::open(&data_dir)
+                            .map_err(|e| format!("Message store not available: {e}"))?;
+                        let stored = store.get_stored_fingerprint(user_id);
+                        match stored {
+                            Some((stored_fp, _)) => {
+                                if stored_fp == normalized {
+                                    store.verify_user(user_id);
+                                    Ok((
+                                        Some((
+                                            user_id,
+                                            conclave_client::state::VerificationStatus::Verified,
+                                        )),
+                                        vec![DisplayMessage::system(&format!(
+                                            "Fingerprint verified for {username}."
+                                        ))],
+                                    ))
+                                } else {
+                                    Ok((
+                                        None,
+                                        vec![
+                                            DisplayMessage::system(
+                                                "Fingerprint does not match stored value!",
+                                            ),
+                                            DisplayMessage::system(&format!(
+                                                "  Stored:   {}",
+                                                format_fingerprint(&stored_fp)
+                                            )),
+                                            DisplayMessage::system(&format!(
+                                                "  Provided: {}",
+                                                format_fingerprint(&normalized)
+                                            )),
+                                        ],
+                                    ))
+                                }
+                            }
+                            None => Ok((
+                                None,
+                                vec![DisplayMessage::system(&format!(
+                                    "No stored fingerprint for {username}. \
+                                     Use /whois {username} first to establish initial trust."
+                                ))],
+                            )),
+                        }
+                    },
+                    |result| {
+                        Message::Dashboard(
+                            crate::screen::dashboard::Message::VerifyResult(result),
+                        )
+                    },
+                )
+            }
+            Ok(Command::Unverify { username }) => {
+                let params = self.api_params();
+                let data_dir = self.config.data_dir.clone();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let resp = api
+                            .get_user_by_username(&username)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let user_id = resp.user_id;
+                        let store = MessageStore::open(&data_dir)
+                            .map_err(|e| format!("Message store not available: {e}"))?;
+                        if store.unverify_user(user_id) {
+                            Ok((
+                                Some((
+                                    user_id,
+                                    conclave_client::state::VerificationStatus::Unverified,
+                                )),
+                                vec![DisplayMessage::system(&format!(
+                                    "Removed verification for {username}."
+                                ))],
+                            ))
+                        } else {
+                            Ok((
+                                None,
+                                vec![DisplayMessage::system(&format!(
+                                    "No stored fingerprint for {username}."
+                                ))],
+                            ))
+                        }
+                    },
+                    |result| {
+                        Message::Dashboard(
+                            crate::screen::dashboard::Message::VerifyResult(result),
+                        )
+                    },
+                )
+            }
+            Ok(Command::Trusted) => {
+                let data_dir = self.config.data_dir.clone();
+                let name_map: std::collections::HashMap<i64, String> = self
+                    .rooms
+                    .values()
+                    .flat_map(|r| r.members.iter())
+                    .map(|m| (m.user_id, m.display_name().to_string()))
+                    .collect();
+                Task::perform(
+                    async move {
+                        let store = MessageStore::open(&data_dir)
+                            .map_err(|e| format!("Message store not available: {e}"))?;
+                        let entries = store.get_all_known_fingerprints();
+                        if entries.is_empty() {
+                            return Ok(vec![DisplayMessage::system(
+                                "No known fingerprints.",
+                            )]);
+                        }
+                        let mut msgs =
+                            vec![DisplayMessage::system("Known fingerprints:")];
+                        for (user_id, fingerprint, verified) in &entries {
+                            let display_name = name_map
+                                .get(user_id)
+                                .cloned()
+                                .unwrap_or_else(|| format!("user#{user_id}"));
+                            let status =
+                                if *verified { "Verified" } else { "Unverified" };
+                            let formatted = format_fingerprint(fingerprint);
+                            msgs.push(DisplayMessage::system(&format!(
+                                "  {display_name}: [{status}] {formatted}"
+                            )));
+                        }
+                        Ok(msgs)
+                    },
+                    Message::CommandResult,
+                )
+            }
+            Ok(Command::Alias { alias }) => {
                 let params = self.api_params();
                 Task::perform(
                     async move {
@@ -437,11 +673,10 @@ impl Conclave {
                 )
             }
 
-            // Leave / messaging / reset
+            // Leave / security / reset
             Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),
             Ok(Command::Reset) => self.reset_account(),
-            Ok(Command::Msg { room, text }) => self.send_to_room(&room, &text),
             Err(e) => {
                 self.push_system_message(&format!("{e}"));
                 Task::none()

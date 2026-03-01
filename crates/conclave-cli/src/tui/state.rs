@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
+pub use conclave_client::state::{ConnectionStatus, DisplayMessage, Room, VerificationStatus};
 
 pub struct AppState {
     // Identity
@@ -24,6 +24,9 @@ pub struct AppState {
     pub terminal_rows: u16,
     pub terminal_cols: u16,
 
+    // Verification status per user (TOFU).
+    pub verification_status: HashMap<i64, VerificationStatus>,
+
     // System messages (not tied to any room).
     pub system_messages: Vec<DisplayMessage>,
 }
@@ -39,6 +42,7 @@ impl AppState {
             room_messages: HashMap::new(),
             group_mapping: HashMap::new(),
             connection_status: ConnectionStatus::Disconnected,
+            verification_status: HashMap::new(),
             scroll_offset: 0,
             terminal_rows: 24,
             terminal_cols: 80,
@@ -116,6 +120,7 @@ mod tests {
                 username: "alice".to_string(),
                 alias: None,
                 role: "admin".to_string(),
+                signing_key_fingerprint: None,
             }],
             last_seen_seq: 0,
             last_read_seq: 0,

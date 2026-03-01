@@ -6,6 +6,19 @@ pub enum ConnectionStatus {
     Connected,
 }
 
+/// Verification status of a user's signing key fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationStatus {
+    /// No fingerprint available from server.
+    Unknown,
+    /// TOFU stored, not manually verified.
+    Unverified,
+    /// Manually verified via /verify.
+    Verified,
+    /// Fingerprint changed since last seen.
+    Changed,
+}
+
 /// A member of a room.
 #[derive(Debug, Clone)]
 pub struct RoomMember {
@@ -13,6 +26,7 @@ pub struct RoomMember {
     pub username: String,
     pub alias: Option<String>,
     pub role: String,
+    pub signing_key_fingerprint: Option<String>,
 }
 
 impl RoomMember {
@@ -151,6 +165,7 @@ mod tests {
             username: "alice".into(),
             alias: Some("Alice W.".into()),
             role: "member".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(member.display_name(), "Alice W.");
     }
@@ -162,6 +177,7 @@ mod tests {
             username: "alice".into(),
             alias: Some(String::new()),
             role: "member".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(member.display_name(), "alice");
     }
@@ -173,6 +189,7 @@ mod tests {
             username: "alice".into(),
             alias: None,
             role: "member".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(member.display_name(), "alice");
     }
@@ -247,12 +264,14 @@ mod tests {
                 username: "alice".into(),
                 alias: Some("Alice W.".into()),
                 role: "admin".into(),
+                signing_key_fingerprint: None,
             },
             RoomMember {
                 user_id: 2,
                 username: "bob".into(),
                 alias: None,
                 role: "member".into(),
+                signing_key_fingerprint: None,
             },
         ];
         let msg = DisplayMessage::user(1, "old_name", "hi", 100);

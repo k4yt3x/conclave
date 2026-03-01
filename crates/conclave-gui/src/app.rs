@@ -11,7 +11,7 @@ use conclave_client::api::{ApiClient, normalize_server_url};
 use conclave_client::config::{ClientConfig, SessionState};
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
-use conclave_client::state::{ConnectionStatus, DisplayMessage, Room};
+use conclave_client::state::{ConnectionStatus, DisplayMessage, Room, VerificationStatus};
 use conclave_client::store::MessageStore;
 
 use crate::screen;
@@ -60,6 +60,7 @@ pub struct Conclave {
     /// Set when welcome processing triggers a rooms reload — defers the
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     pub(crate) fetch_messages_on_rooms_load: bool,
+    pub(crate) verification_status: HashMap<i64, VerificationStatus>,
     pub(crate) window_focused: bool,
 }
 
@@ -153,6 +154,7 @@ impl Conclave {
             welcomes_processed: false,
             fetching_groups: HashSet::new(),
             fetch_messages_on_rooms_load: false,
+            verification_status: HashMap::new(),
             window_focused: true,
         };
 
@@ -421,6 +423,7 @@ impl Conclave {
                     &self.server_url,
                     self.config.accept_invalid_certs,
                     &self.theme,
+                    &self.verification_status,
                 )
                 .map(Message::Dashboard),
         }
@@ -656,7 +659,7 @@ impl Conclave {
             self.push_system_message(&format!("Switched to #{name}"));
         } else {
             self.push_system_message(&format!(
-                "Unknown room '{target}'. Use /list to list available rooms."
+                "Unknown room '{target}'. Use /rooms to list available rooms."
             ));
         }
     }

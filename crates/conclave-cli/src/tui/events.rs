@@ -9,6 +9,7 @@ use conclave_client::operations::{self, SseEvent};
 
 use super::commands;
 use super::state::{AppState, DisplayMessage};
+use super::store::MessageStore;
 
 /// Handle an SSE message (hex-encoded protobuf ServerEvent).
 /// Returns a list of (group_id, DisplayMessage) pairs to render.
@@ -19,6 +20,7 @@ pub async fn handle_sse_message(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
+    msg_store: &Option<MessageStore>,
 ) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let event = operations::decode_sse_event(hex_data)?;
 
@@ -29,12 +31,12 @@ pub async fn handle_sse_message(
         SseEvent::Welcome {
             group_id,
             group_alias,
-        } => handle_welcome(group_id, &group_alias, api, state, data_dir).await,
+        } => handle_welcome(group_id, &group_alias, api, state, data_dir, msg_store).await,
         SseEvent::GroupUpdate {
             group_id: _,
             update_type: _,
         } => {
-            commands::load_rooms(api, state).await?;
+            commands::load_rooms(api, state, msg_store).await?;
             Ok(vec![])
         }
         SseEvent::MemberRemoved {
@@ -196,6 +198,7 @@ async fn handle_welcome(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
+    msg_store: &Option<MessageStore>,
 ) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
     let user_id = match state.user_id {
         Some(id) => id,
@@ -216,7 +219,7 @@ async fn handle_welcome(
     }
 
     if !results.is_empty() {
-        commands::load_rooms(api, state).await?;
+        commands::load_rooms(api, state, msg_store).await?;
 
         // Advance last_seen_seq so fetch_missed_messages skips the initial
         // commit that was already processed as part of the welcome.

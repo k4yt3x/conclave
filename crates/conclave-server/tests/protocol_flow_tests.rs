@@ -78,6 +78,7 @@ async fn upload_real_key_packages(app: &Router, token: &str, mls: &MlsManager) {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
         entries: proto_entries,
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1008,6 +1009,7 @@ async fn test_e2e_real_key_packages_pass_wire_format_validation() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: kp_bytes,
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();

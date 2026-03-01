@@ -26,8 +26,10 @@ impl Database {
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn
-            .prepare("SELECT id, username, password_hash, alias FROM users WHERE username = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, password_hash, alias, signing_key_fingerprint
+             FROM users WHERE username = ?1",
+        )?;
         let result = stmt
             .query_row(params![username], |row| {
                 Ok(UserRow {
@@ -35,18 +37,24 @@ impl Database {
                     username: row.get(1)?,
                     password_hash: row.get(2)?,
                     alias: row.get(3)?,
+                    signing_key_fingerprint: row.get(4)?,
                 })
             })
             .optional()?;
         Ok(result)
     }
 
-    pub fn get_user_by_id(&self, user_id: i64) -> Result<Option<(i64, String, Option<String>)>> {
+    pub fn get_user_by_id(
+        &self,
+        user_id: i64,
+    ) -> Result<Option<(i64, String, Option<String>, Option<String>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id, username, alias FROM users WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, alias, signing_key_fingerprint FROM users WHERE id = ?1",
+        )?;
         let result = stmt
             .query_row(params![user_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .optional()?;
         Ok(result)
@@ -75,6 +83,19 @@ impl Database {
         conn.execute(
             "UPDATE users SET password_hash = ?1 WHERE id = ?2",
             params![password_hash, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_signing_key_fingerprint(
+        &self,
+        user_id: i64,
+        fingerprint: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE users SET signing_key_fingerprint = ?1 WHERE id = ?2",
+            params![fingerprint, user_id],
         )?;
         Ok(())
     }

@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use iced::Length;
 use iced::advanced::text::Span;
 use iced::widget::{column, container, text, tooltip};
 
-use conclave_client::state::{DisplayMessage, RoomMember, resolve_sender_name};
+use conclave_client::state::{DisplayMessage, RoomMember, VerificationStatus, resolve_sender_name};
 
 use crate::theme;
 use crate::widget::Element;
@@ -16,6 +17,7 @@ pub fn message_list<'a, M: Clone + 'a>(
     group_id: Option<i64>,
     group_name: Option<&str>,
     theme: &crate::theme::Theme,
+    verification_status: &HashMap<i64, VerificationStatus>,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
 
@@ -40,17 +42,38 @@ pub fn message_list<'a, M: Clone + 'a>(
         } else {
             let sender_name = resolve_sender_name(message, members);
             let nick_color = theme::nick_color(message.sender_id.unwrap_or(0));
-            let spans = vec![
+
+            let mut spans = Vec::with_capacity(4);
+            spans.push(
                 Span::new(format!("[{time}]"))
                     .size(13)
                     .color(theme.text_muted),
+            );
+
+            // Add verification indicator before the sender name.
+            if let Some(sid) = message.sender_id {
+                match verification_status.get(&sid) {
+                    Some(VerificationStatus::Changed) => {
+                        spans.push(Span::new(" [!]").size(13).color(theme.error));
+                    }
+                    Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
+                        spans.push(Span::new(" [?]").size(13).color(theme.warning));
+                    }
+                    Some(VerificationStatus::Verified) | None => {}
+                }
+            }
+
+            spans.push(
                 Span::new(format!(" <{sender_name}> "))
                     .size(13)
                     .color(nick_color),
+            );
+            spans.push(
                 Span::new(message.content.as_str())
                     .size(13)
                     .color(theme.text),
-            ];
+            );
+
             SelectableRichText::new(spans)
                 .width(Length::Fill)
                 .wrapping(text::Wrapping::Glyph)

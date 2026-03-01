@@ -29,10 +29,10 @@ pub async fn execute(
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     match cmd {
         Command::Register { .. } | Command::Login { .. } | Command::Logout => {
-            execute_auth(cmd, api, state, mls, config).await
+            execute_auth(cmd, api, state, mls, config, msg_store).await
         }
         Command::Create { .. }
-        | Command::List
+        | Command::Rooms
         | Command::Join { .. }
         | Command::Close
         | Command::Part
@@ -46,20 +46,23 @@ pub async fn execute(
         | Command::Admins
         | Command::Invited
         | Command::Uninvite { .. }
-        | Command::Who => execute_member(cmd, api, state, config).await,
+        | Command::Members => execute_member(cmd, api, state, config, msg_store).await,
         Command::Invites | Command::Accept { .. } | Command::Decline { .. } => {
-            execute_invite(cmd, api, state, config).await
+            execute_invite(cmd, api, state, config, msg_store).await
         }
-        Command::Msg { .. } | Command::Message { .. } | Command::Rotate => {
+        Command::Message { .. } | Command::Rotate => {
             execute_messaging(cmd, api, state, config, msg_store).await
         }
-        Command::Nick { .. }
+        Command::Alias { .. }
         | Command::Topic { .. }
-        | Command::Whois
+        | Command::Whois { .. }
+        | Command::Verify { .. }
+        | Command::Unverify { .. }
+        | Command::Trusted
         | Command::Passwd { .. }
         | Command::Help
         | Command::Quit
-        | Command::Reset => execute_profile(cmd, api, state, mls, config).await,
+        | Command::Reset => execute_profile(cmd, api, state, mls, config, msg_store).await,
     }
 }
 
@@ -69,6 +72,7 @@ async fn execute_auth(
     state: &mut AppState,
     mls: &mut Option<MlsManager>,
     config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
     let mut start_sse = false;
@@ -104,7 +108,7 @@ async fn execute_auth(
 
             *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
 
-            let room_infos = load_rooms(api, state).await?;
+            let room_infos = load_rooms(api, state, msg_store).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
             msgs.push(DisplayMessage::system(&format!(
@@ -142,7 +146,7 @@ async fn execute_auth(
 
             *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
 
-            let room_infos = load_rooms(api, state).await?;
+            let room_infos = load_rooms(api, state, msg_store).await?;
             state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
             let unmapped_count = state
@@ -221,7 +225,7 @@ async fn execute_room(
             state
                 .group_mapping
                 .insert(result.server_group_id, result.mls_group_id);
-            load_rooms(api, state).await?;
+            load_rooms(api, state, msg_store).await?;
 
             state.active_room = Some(result.server_group_id);
             state.scroll_offset = 0;
@@ -262,7 +266,7 @@ async fn execute_room(
                 )));
             }
 
-            load_rooms(api, state).await?;
+            load_rooms(api, state, msg_store).await?;
             if let Some(gid) = last_group_id {
                 state.active_room = Some(gid);
                 state.scroll_offset = 0;
@@ -307,7 +311,7 @@ async fn execute_room(
                 msgs.push(DisplayMessage::system(&format!("Switched to #{name}")));
             } else {
                 msgs.push(DisplayMessage::system(&format!(
-                    "Unknown room '{target}'. Use /list to list available rooms."
+                    "Unknown room '{target}'. Use /rooms to list available rooms."
                 )));
             }
         }
@@ -504,8 +508,8 @@ async fn execute_room(
             )));
         }
 
-        Command::List => {
-            load_rooms(api, state).await?;
+        Command::Rooms => {
+            load_rooms(api, state, msg_store).await?;
 
             if state.rooms.is_empty() {
                 msgs.push(DisplayMessage::system("No rooms."));
@@ -540,6 +544,7 @@ async fn execute_member(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
 
@@ -597,7 +602,7 @@ async fn execute_member(
                 )));
             }
 
-            load_rooms(api, state).await?;
+            load_rooms(api, state, msg_store).await?;
         }
 
         Command::Kick { username: target } => {
@@ -636,7 +641,7 @@ async fn execute_member(
                 .await?;
             }
 
-            load_rooms(api, state).await?;
+            load_rooms(api, state, msg_store).await?;
 
             msgs.push(DisplayMessage::system(&format!(
                 "Removed {target} from the room"
@@ -787,17 +792,33 @@ async fn execute_member(
             )));
         }
 
-        Command::Who => {
+        Command::Members => {
             if let Some(room) = state.active_room_info() {
                 let name = room.display_name();
                 let member_display: Vec<String> = room
                     .members
                     .iter()
                     .map(|m| {
+                        let verification = msg_store
+                            .as_ref()
+                            .and_then(|store| {
+                                m.signing_key_fingerprint.as_ref().map(|fp| {
+                                    store.get_verification_status(m.user_id, fp)
+                                })
+                            })
+                            .unwrap_or(conclave_client::state::VerificationStatus::Unknown);
+
+                        let indicator = match verification {
+                            conclave_client::state::VerificationStatus::Changed => "[!] ",
+                            conclave_client::state::VerificationStatus::Unknown
+                            | conclave_client::state::VerificationStatus::Unverified => "[?] ",
+                            conclave_client::state::VerificationStatus::Verified => "",
+                        };
+
                         if m.role == "admin" {
-                            format!("{} (admin)", m.display_name())
+                            format!("{indicator}{} (admin)", m.display_name())
                         } else {
-                            m.display_name().to_string()
+                            format!("{indicator}{}", m.display_name())
                         }
                     })
                     .collect();
@@ -821,6 +842,7 @@ async fn execute_invite(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
 
@@ -887,7 +909,7 @@ async fn execute_invite(
                 }
             }
 
-            load_rooms(api, state).await?;
+            load_rooms(api, state, msg_store).await?;
 
             for group_id in state.group_mapping.keys() {
                 if let Some(room) = state.rooms.get_mut(group_id)
@@ -926,15 +948,6 @@ async fn execute_messaging(
     let mut msgs = Vec::new();
 
     match cmd {
-        Command::Msg { room, text } => {
-            let group_id = state
-                .resolve_room(&room)
-                .map(|r| r.server_group_id)
-                .ok_or_else(|| Error::Other(format!("Unknown room '{room}'")))?;
-            send_to_group(api, state, config, msg_store, group_id, &text).await?;
-            msgs.push(DisplayMessage::system(&format!("Message sent to #{room}")));
-        }
-
         Command::Message { text } => {
             let group_id = state
                 .active_room
@@ -982,11 +995,12 @@ async fn execute_profile(
     state: &mut AppState,
     mls: &mut Option<MlsManager>,
     config: &ClientConfig,
+    msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
 
     match cmd {
-        Command::Nick { alias } => {
+        Command::Alias { alias } => {
             api.lock().await.update_profile(&alias).await?;
             msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
         }
@@ -1005,12 +1019,138 @@ async fn execute_profile(
             )));
         }
 
-        Command::Whois => {
+        Command::Whois { username: None } => {
             let resp = api.lock().await.me().await?;
             msgs.push(DisplayMessage::system(&format!(
                 "User: {} (ID: {})",
                 resp.username, resp.user_id
             )));
+            if let Some(mls_mgr) = mls {
+                let fp = mls_mgr.signing_key_fingerprint();
+                let formatted = conclave_client::mls::format_fingerprint(&fp);
+                msgs.push(DisplayMessage::system(&format!(
+                    "Fingerprint: {formatted}"
+                )));
+            }
+        }
+
+        Command::Whois {
+            username: Some(target),
+        } => {
+            let resp = api.lock().await.get_user_by_username(&target).await?;
+            msgs.push(DisplayMessage::system(&format!(
+                "User: {} (ID: {})",
+                resp.username, resp.user_id
+            )));
+            if !resp.signing_key_fingerprint.is_empty() {
+                let formatted =
+                    conclave_client::mls::format_fingerprint(&resp.signing_key_fingerprint);
+                msgs.push(DisplayMessage::system(&format!(
+                    "Fingerprint: {formatted}"
+                )));
+                if let Some(store) = msg_store {
+                    let status = store.get_verification_status(
+                        resp.user_id,
+                        &resp.signing_key_fingerprint,
+                    );
+                    let label = match status {
+                        conclave_client::state::VerificationStatus::Unknown => "Unknown",
+                        conclave_client::state::VerificationStatus::Unverified => "Unverified",
+                        conclave_client::state::VerificationStatus::Verified => "Verified",
+                        conclave_client::state::VerificationStatus::Changed => "Changed (warning!)",
+                    };
+                    msgs.push(DisplayMessage::system(&format!("Status: {label}")));
+                }
+            } else {
+                msgs.push(DisplayMessage::system("Fingerprint: not available"));
+            }
+        }
+
+        Command::Verify {
+            username,
+            fingerprint,
+        } => {
+            let normalized = conclave_client::mls::normalize_fingerprint(&fingerprint)?;
+            let resp = api.lock().await.get_user_by_username(&username).await?;
+
+            if let Some(store) = msg_store {
+                let stored = store.get_stored_fingerprint(resp.user_id);
+                match stored {
+                    Some((stored_fp, _)) if stored_fp == normalized => {
+                        store.verify_user(resp.user_id);
+                        state.verification_status.insert(
+                            resp.user_id,
+                            conclave_client::state::VerificationStatus::Verified,
+                        );
+                        msgs.push(DisplayMessage::system(&format!(
+                            "Verified {username}'s signing key fingerprint."
+                        )));
+                    }
+                    Some((stored_fp, _)) => {
+                        let stored_fmt = conclave_client::mls::format_fingerprint(&stored_fp);
+                        let provided_fmt = conclave_client::mls::format_fingerprint(&normalized);
+                        msgs.push(DisplayMessage::system("Fingerprint mismatch!"));
+                        msgs.push(DisplayMessage::system(&format!("  Stored:   {stored_fmt}")));
+                        msgs.push(DisplayMessage::system(&format!(
+                            "  Provided: {provided_fmt}"
+                        )));
+                    }
+                    None => {
+                        msgs.push(DisplayMessage::system(&format!(
+                            "No stored fingerprint for {username}. Use /whois {username} first."
+                        )));
+                    }
+                }
+            } else {
+                msgs.push(DisplayMessage::system(
+                    "Message store not available for verification.",
+                ));
+            }
+        }
+
+        Command::Unverify { username } => {
+            let resp = api.lock().await.get_user_by_username(&username).await?;
+            if let Some(store) = msg_store {
+                if store.unverify_user(resp.user_id) {
+                    state.verification_status.insert(
+                        resp.user_id,
+                        conclave_client::state::VerificationStatus::Unverified,
+                    );
+                    msgs.push(DisplayMessage::system(&format!(
+                        "Removed verification for {username}."
+                    )));
+                } else {
+                    msgs.push(DisplayMessage::system(&format!(
+                        "No stored fingerprint for {username}."
+                    )));
+                }
+            } else {
+                msgs.push(DisplayMessage::system(
+                    "Message store not available.",
+                ));
+            }
+        }
+
+        Command::Trusted => {
+            if let Some(store) = msg_store {
+                let entries = store.get_all_known_fingerprints();
+                if entries.is_empty() {
+                    msgs.push(DisplayMessage::system("No known fingerprints."));
+                } else {
+                    msgs.push(DisplayMessage::system("Known fingerprints:"));
+                    for (user_id, fingerprint, verified) in &entries {
+                        let display_name = resolve_display_name(*user_id, state);
+                        let status = if *verified { "Verified" } else { "Unverified" };
+                        let formatted =
+                            conclave_client::mls::format_fingerprint(fingerprint);
+                        msgs.push(DisplayMessage::system(&format!(
+                            "  {display_name}: [{status}] {formatted}"
+                        )));
+                    }
+                }
+            } else {
+                msgs.push(DisplayMessage::system("Message store not available."));
+            }
         }
 
         Command::Passwd { new_password } => {
@@ -1065,9 +1205,19 @@ fn require_user_id(state: &AppState) -> Result<i64> {
         .ok_or_else(|| Error::Other("not logged in".into()))
 }
 
+fn resolve_display_name(user_id: i64, state: &AppState) -> String {
+    for room in state.rooms.values() {
+        if let Some(member) = room.members.iter().find(|m| m.user_id == user_id) {
+            return member.display_name().to_string();
+        }
+    }
+    format!("user#{user_id}")
+}
+
 pub async fn load_rooms(
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
+    msg_store: &Option<MessageStore>,
 ) -> Result<Vec<operations::RoomInfo>> {
     let rooms = {
         let api_guard = api.lock().await;
@@ -1121,6 +1271,28 @@ pub async fn load_rooms(
             && stale_ids.contains(&active)
         {
             state.active_room = None;
+        }
+    }
+
+    // Update TOFU verification status for all members.
+    if let Some(store) = msg_store {
+        for room in state.rooms.values() {
+            for member in &room.members {
+                // Implicitly trust our own signing key.
+                if Some(member.user_id) == state.user_id {
+                    state.verification_status.insert(
+                        member.user_id,
+                        conclave_client::state::VerificationStatus::Verified,
+                    );
+                    continue;
+                }
+                if let Some(fp) = &member.signing_key_fingerprint {
+                    let status = store.get_verification_status(member.user_id, fp);
+                    state
+                        .verification_status
+                        .insert(member.user_id, status);
+                }
+            }
         }
     }
 

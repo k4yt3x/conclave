@@ -121,7 +121,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/welcomes/{welcome_id}/accept", post(welcomes::accept_welcome))
 
         //
-        // Messaging
+        // Messages
         //
 
         // Upload an MLS commit message (for group state changes like key rotation).

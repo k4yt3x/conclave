@@ -198,6 +198,7 @@ CREATE TABLE users (
     username TEXT UNIQUE NOT NULL,
     alias TEXT,
     password_hash TEXT NOT NULL,
+    signing_key_fingerprint TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -340,7 +341,7 @@ All request/response bodies are protobuf-encoded (`Content-Type: application/x-p
 
 #### Endpoint Behavior Notes
 
-- **`POST /api/v1/key-packages`**: Supports both single-upload (via `key_package_data` field) and batch-upload (via `entries` repeated field with `KeyPackageEntry` messages containing `data` and `is_last_resort` flag). All uploads are validated for MLS wire format correctness (version 0x0001, wire format 0x0005 for `mls_key_package` per RFC 9420 Section 6). Uploading a last-resort package replaces any existing last-resort package for that user.
+- **`POST /api/v1/key-packages`**: Supports both single-upload (via `key_package_data` field) and batch-upload (via `entries` repeated field with `KeyPackageEntry` messages containing `data` and `is_last_resort` flag). All uploads are validated for MLS wire format correctness (version 0x0001, wire format 0x0005 for `mls_key_package` per RFC 9420 Section 6). Uploading a last-resort package replaces any existing last-resort package for that user. The request includes an optional `signing_key_fingerprint` field (SHA-256 hash of the user's MLS signing public key, 64-character hex); when present, the server stores it in `users.signing_key_fingerprint` for TOFU identity verification (see Section 6.1).
 - **`GET /api/v1/key-packages/{user_id}`**: Rate-limited to 10 requests per minute per target user. Consumes the oldest regular key package (FIFO). Falls back to the last-resort package (without deleting it) when no regular packages remain.
 - **`POST /api/v1/groups/{id}/commit`**: All database operations (member additions, welcome storage, group info update, commit message storage) are performed atomically within a single SQLite savepoint transaction. SSE notifications are sent only after the transaction commits. Newly added members receive `WelcomeEvent`; existing members (excluding the sender and newly added members) receive `GroupUpdateEvent`. If the request includes a non-empty `mls_group_id`, it is stored in the `groups` table (only set once, on group creation). Newly added members are assigned the `member` role by default.
 - **`POST /api/v1/groups/{id}/promote`**: Requires the requesting user to be an admin of the group. Promotes a member to the `admin` role. Broadcasts a `GroupUpdateEvent` with `update_type: "role_change"` to all group members.
@@ -425,7 +426,7 @@ The client persists the following files in `data_dir`:
 | `mls_signing_key.bin` | Raw bytes     | `SignatureSecretKey` (private key material)                  |
 | `mls_state.db`        | SQLite        | mls-rs group state, key packages, PSKs (via mls-rs-provider-sqlite) |
 | `group_mapping.toml`  | TOML          | Local cache of server group ID (i64) to MLS group ID (hex string). Used as fallback by one-shot CLI commands; TUI/GUI build mapping from server on login. |
-| `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking. Messages store `sender_id` to enable render-time display name resolution from room member lists. |
+| `message_history.db`  | SQLite        | Decrypted message history and per-room sequence tracking. Messages store `sender_id` to enable render-time display name resolution from room member lists. Also contains `known_fingerprints` table for TOFU signing key fingerprint tracking (see Section 6.1). |
 
 ### 4.3 MLS Integration
 
@@ -491,42 +492,46 @@ Running `conclave-cli` with no subcommand enters the IRC-style interactive TUI. 
 
 ```
 ACCOUNT:
-  /register <server> <user> <pass>  Register a new account
+  /alias <name>                     Set your display name
   /login <server> <user> <pass>     Login to the server
   /logout                           Logout and revoke session
-  /reset                            Reset account and rejoin groups
-  /nick <alias>                     Set your display name
-  /whois                            Show current user info
   /passwd <new_password>            Change your password
+  /register <server> <user> <pass>  Register a new account
+  /reset                            Reset account and rejoin groups
 
 ROOMS:
+  /close                            Switch away without leaving
   /create <name>                    Create a new room
-  /list                             List your rooms
+  /expire [duration]                Set message expiration (admin only)
+  /info                             Show MLS group details
   /join                             Accept pending invitations
   /join <room>                      Switch to a room
-  /close                            Switch away without leaving
   /part                             Leave the room (MLS removal)
-  /info                             Show MLS group details
+  /rooms                            List your rooms
   /topic <text>                     Set active room's display name
-  /expire [duration]                Set message expiration (admin only)
   /unread                           Check rooms for new messages
 
 MEMBERS:
-  /who                              List members of active room
-  /invite <user1,user2>             Invite to the active room
-  /kick <username>                  Remove a member from the room
-  /promote <username>               Promote a member to admin
-  /demote <username>                Demote an admin to member
   /admins                           List admins of active room
+  /demote <username>                Demote an admin to member
+  /invite <user1,user2>             Invite to the active room
+  /invited                          List pending invites for active room
+  /kick <username>                  Remove a member from the room
+  /members                          List members of active room
+  /promote <username>               Promote a member to admin
+  /uninvite <username>              Cancel a pending invite
+  /whois [username]                 Show user info and fingerprint
 
 INVITES:
-  /invites                          List pending invitations
   /accept [id]                      Accept a pending invite (or all)
   /decline <id>                     Decline a pending invite
+  /invites                          List pending invitations
 
-MESSAGING:
-  /msg <room> <text>                Send to a room without switching
+SECURITY:
   /rotate                           Rotate keys (forward secrecy)
+  /trusted                          List all known user fingerprints
+  /unverify <username>              Remove verification for a user's signing key
+  /verify <user> <fingerprint>      Verify a user's signing key fingerprint
 
 GENERAL:
   /help                             Show this help
@@ -562,7 +567,11 @@ Client                              Server
   |  [Generate MLS SigningIdentity]   |
   |  [Store keys locally in SQLite]   |
   |                                   |
-  |--- POST /key-packages (kp) ------>|  Store key package blob
+  |  [Compute signing key fingerprint] |
+  |  [SHA-256(signing_public_key)]    |
+  |                                   |
+  |--- POST /key-packages ----------->|  Store key package blob
+  |    (kp, fingerprint)              |  Store signing_key_fingerprint
   |<-- OK ----------------------------|
 ```
 
@@ -672,8 +681,74 @@ Admin                               Server                              Target
 - **Invite consent**: All member additions require the target's explicit acceptance via a two-phase escrow system. Group creation adds only the creator; there is no way to add members at creation time. The admin pre-builds the MLS commit+welcome and uploads it to `pending_invites`. The target can accept (joining the group) or decline (triggering key rotation to evict the phantom MLS leaf). Pending invites expire after a configurable TTL (default 7 days, server-side cleanup). A UNIQUE constraint on `(group_id, invitee_id)` prevents duplicate invites.
 - **Trust model**: Currently uses `BasicCredential` with `BasicIdentityProvider`, which does not validate identities. This is suitable for closed communities. X.509 credentials can be added for stronger identity assurance.
 
+### 6.1 TOFU Fingerprint Verification
+
+Conclave uses a Trust On First Use (TOFU) model — similar to SSH `known_hosts` — to let users detect signing key changes after initial contact.
+
+#### Signing Key Fingerprint
+
+Each user has a long-lived MLS signing key pair (CURVE448_CHACHA). The **fingerprint** is the SHA-256 hash of the signing public key, represented as a 64-character lowercase hexadecimal string. This fingerprint uniquely identifies a user's cryptographic identity.
+
+#### Fingerprint Distribution
+
+Clients compute their fingerprint locally and upload it to the server during key package upload (on registration, login, and account reset). The server stores the fingerprint in `users.signing_key_fingerprint` and distributes it alongside member data:
+
+- `GroupMember.signing_key_fingerprint` — included in `ListGroupsResponse` so clients receive fingerprints for all co-members.
+- `UserInfoResponse.signing_key_fingerprint` — returned by the user lookup endpoints (`GET /api/v1/users/{username}`, `GET /api/v1/users/by-id/{user_id}`, `GET /api/v1/me`).
+
+#### Local TOFU Store
+
+Clients maintain a `known_fingerprints` table in `message_history.db` that tracks the first-seen fingerprint for each user:
+
+```sql
+CREATE TABLE known_fingerprints (
+    user_id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0
+);
+```
+
+The `verified` column is `0` for TOFU-stored (unverified) fingerprints and `1` for manually verified fingerprints (confirmed via `/verify`).
+
+#### Verification States
+
+A user's fingerprint can be in one of four states:
+
+| State        | Condition                                            | Display    |
+|--------------|------------------------------------------------------|------------|
+| Unknown      | Server has no fingerprint for the user               | `[?]`      |
+| Unverified   | TOFU stored, not manually confirmed                  | `[?]`      |
+| Verified     | Manually confirmed via `/verify`                     | (none)     |
+| Changed      | Server fingerprint differs from locally stored value | `[!]`      |
+
+- **Unknown**: The server has not received a fingerprint for this user (e.g., legacy account, key packages not yet uploaded). Displayed with `[?]`.
+- **Unverified**: The client has stored a fingerprint on first contact but the user has not manually verified it out-of-band. Displayed with `[?]`.
+- **Verified**: The user has confirmed the fingerprint matches via `/verify`, providing stronger assurance against key substitution. No indicator is displayed.
+- **Changed**: The fingerprint returned by the server does not match the locally stored value. This is a security-sensitive event and is displayed with `[!]` as a warning. Key changes are expected after `/reset` (account reset with new signing keys) but could also indicate a key substitution attack.
+
+#### Commands
+
+- **`/whois [username]`**: With no argument, displays the current user's own fingerprint. With a username argument, looks up the target user's fingerprint from the server and displays it alongside the local verification state. This allows users to compare fingerprints out-of-band (e.g., in person, over a verified channel).
+- **`/verify <username> <fingerprint>`**: Manually verifies a user's signing key fingerprint. The client checks that the provided fingerprint matches the server's current fingerprint for that user, then stores it as verified in the local TOFU store. If the fingerprint does not match, the command is rejected. This provides stronger assurance than TOFU alone by confirming the fingerprint through an out-of-band channel.
+- **`/unverify <username>`**: Removes the verified status for a user, resetting them to unverified (TOFU) state. The `[?]` indicator reappears next to their messages. Useful if verification was done in error or if trust conditions change.
+- **`/trusted`**: Lists all users in the local TOFU fingerprint store with their fingerprints and verification status (Verified/Unverified). User IDs are resolved to display names from in-memory room member data; unknown users are shown as `user#<id>`.
+
+#### Key Change Warnings
+
+When a user performs an account reset (`/reset`), their signing keys are regenerated and a new fingerprint is uploaded to the server. Other clients detect the fingerprint change when they next receive the user's updated member data (via `ListGroupsResponse` or `UserInfoResponse`). The changed fingerprint triggers an `[!]` warning indicator next to the user's name, alerting other members to verify the new fingerprint out-of-band. An `IdentityResetEvent` SSE is also sent to co-members when a user performs an external rejoin after reset.
+
+#### Security Model
+
+TOFU trusts the server for the initial key distribution — the first fingerprint received from the server is assumed authentic, similar to SSH's `known_hosts` behavior on first connection. This provides:
+
+- **Protection against post-first-contact key substitution**: After the initial fingerprint is stored, any change (whether from a compromised server, MITM, or legitimate key reset) is detected and flagged.
+- **No protection against first-contact attacks**: If the server is compromised during the initial key exchange, it could substitute a different key. This is the inherent limitation of TOFU.
+- **Stronger assurance via out-of-band verification**: Users can use `/verify` to confirm fingerprints through a trusted channel (in person, phone call, etc.), upgrading from TOFU trust to verified trust. This eliminates the first-contact vulnerability for verified users.
+
+The TOFU model is a practical trade-off between usability (no PKI or certificate authority required) and security (detects key changes after initial contact). For communities requiring stronger guarantees, out-of-band `/verify` provides a path to full fingerprint verification.
+
 ## 7. Protobuf Schema
 
 The wire format is defined in `proto/conclave.proto`. All messages are in the `conclave` package. MLS messages are carried as opaque `bytes` fields — the server does not interpret their contents.
 
-Key message types: `RegisterRequest/Response` (with optional `registration_token` for gated registration), `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping, `message_expiry_seconds` for per-group message expiration), `GroupMember` (with `user_id`, `username`, `alias`, `role`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response` (with `message_expiry_seconds` and `update_message_expiry` flag for per-group expiration updates), `GetRetentionPolicyResponse` (with `max_retention_seconds` for server-wide retention policy), `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse`.
+Key message types: `RegisterRequest/Response` (with optional `registration_token` for gated registration), `LoginRequest/Response`, `UploadKeyPackageRequest/Response` (with `KeyPackageEntry` for batch uploads containing `data` and `is_last_resort` fields, and `signing_key_fingerprint` for TOFU identity verification), `GetKeyPackageResponse`, `CreateGroupRequest` (with `alias` and `group_name`; creator-only, no member list), `CreateGroupResponse` (with `group_id`), `GroupInfo` (with `mls_group_id` for server-side group mapping, `message_expiry_seconds` for per-group message expiration), `GroupMember` (with `user_id`, `username`, `alias`, `role`, `signing_key_fingerprint`), `ListGroupsResponse`, `InviteToGroupRequest/Response`, `UploadCommitRequest` (with `commit_message`, `group_info`, `mls_group_id` set on group creation), `UploadCommitResponse`, `SendMessageRequest/Response`, `StoredMessage` (with `sender_id`; clients resolve display names from local member cache), `GetMessagesResponse`, `PendingWelcome` (with `group_alias`), `ListPendingWelcomesResponse`, `RemoveMemberRequest/Response` (with `commit_message` and `group_info`), `LeaveGroupRequest/Response` (with `commit_message` and `group_info` for MLS leave commits and external rejoin support), `GetGroupInfoResponse`, `ExternalJoinRequest/Response` (with `mls_group_id` set on rejoin), `ResetAccountResponse`, `ChangePasswordRequest/Response` (with `new_password`), `UpdateProfileRequest/Response`, `UpdateGroupRequest/Response` (with `message_expiry_seconds` and `update_message_expiry` flag for per-group expiration updates), `GetRetentionPolicyResponse` (with `max_retention_seconds` for server-wide retention policy), `PromoteMemberRequest/Response`, `DemoteMemberRequest/Response`, `ListAdminsResponse`, `EscrowInviteRequest/Response` (with `invitee_id`, `commit_message`, `welcome_message`, `group_info`), `PendingInvite` (with `invite_id`, `group_id`, `group_name`, `group_alias`, `inviter_username`, `inviter_id`, `created_at`), `ListPendingInvitesResponse`, `AcceptInviteResponse`, `DeclineInviteResponse`, `ServerEvent` (oneof: `NewMessageEvent`, `GroupUpdateEvent`, `WelcomeEvent` (with `group_alias`), `MemberRemovedEvent`, `IdentityResetEvent`, `InviteReceivedEvent`, `InviteDeclinedEvent`), `ErrorResponse`, `UserInfoResponse` (with `signing_key_fingerprint`).

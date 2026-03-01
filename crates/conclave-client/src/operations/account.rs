@@ -122,15 +122,17 @@ pub async fn initialize_mls_and_upload_key_packages(
     std::fs::create_dir_all(data_dir)?;
 
     let data_dir = data_dir.to_path_buf();
-    let entries = tokio::task::spawn_blocking(move || {
+    let (entries, fingerprint) = tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
-        generate_initial_key_packages(&mls)
+        let entries = generate_initial_key_packages(&mls)?;
+        let fingerprint = mls.signing_key_fingerprint();
+        Ok::<_, Error>((entries, fingerprint))
     })
     .await
     .map_err(super::map_join_error)??;
 
     let count = entries.len();
-    api.upload_key_packages(entries).await?;
+    api.upload_key_packages(entries, &fingerprint).await?;
     Ok(count)
 }
 
@@ -192,14 +194,16 @@ pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: i64) -> Re
     {
         let data_dir = data_dir.to_path_buf();
 
-        let entries = tokio::task::spawn_blocking(move || {
+        let (entries, fingerprint) = tokio::task::spawn_blocking(move || {
             let mls = MlsManager::new(&data_dir, user_id)?;
-            generate_initial_key_packages(&mls)
+            let entries = generate_initial_key_packages(&mls)?;
+            let fingerprint = mls.signing_key_fingerprint();
+            Ok::<_, Error>((entries, fingerprint))
         })
         .await
         .map_err(super::map_join_error)??;
 
-        api.upload_key_packages(entries).await?;
+        api.upload_key_packages(entries, &fingerprint).await?;
     }
 
     // Step 6: Rejoin each group via external commit.

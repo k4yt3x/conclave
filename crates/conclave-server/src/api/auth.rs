@@ -113,7 +113,7 @@ pub async fn logout(
 }
 
 pub async fn me(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<impl IntoResponse> {
-    let (user_id, username, alias) = state
+    let (user_id, username, alias, fingerprint) = state
         .db
         .get_user_by_id(auth.user_id)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
@@ -124,6 +124,7 @@ pub async fn me(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<im
             user_id,
             username,
             alias: alias.unwrap_or_default(),
+            signing_key_fingerprint: fingerprint.unwrap_or_default(),
         },
     ))
 }
@@ -179,6 +180,7 @@ pub async fn get_user_by_username(
             user_id: user.user_id,
             username: user.username,
             alias: user.alias.unwrap_or_default(),
+            signing_key_fingerprint: user.signing_key_fingerprint.unwrap_or_default(),
         },
     ))
 }
@@ -188,7 +190,7 @@ pub async fn get_user_by_id(
     _auth: AuthUser,
     Path(user_id): Path<i64>,
 ) -> Result<impl IntoResponse> {
-    let (uid, username, alias) = state
+    let (uid, username, alias, fingerprint) = state
         .db
         .get_user_by_id(user_id)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
@@ -199,6 +201,7 @@ pub async fn get_user_by_id(
             user_id: uid,
             username,
             alias: alias.unwrap_or_default(),
+            signing_key_fingerprint: fingerprint.unwrap_or_default(),
         },
     ))
 }

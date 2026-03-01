@@ -112,7 +112,7 @@ impl Database {
     pub fn get_group_members(&self, group_id: i64) -> Result<Vec<crate::db::GroupMemberRow>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.alias, gm.role
+            "SELECT u.id, u.username, u.alias, gm.role, u.signing_key_fingerprint
              FROM users u
              JOIN group_members gm ON u.id = gm.user_id
              WHERE gm.group_id = ?1",
@@ -124,6 +124,7 @@ impl Database {
                     username: row.get(1)?,
                     alias: row.get(2)?,
                     role: row.get(3)?,
+                    signing_key_fingerprint: row.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -245,18 +246,21 @@ impl Database {
         Ok(count)
     }
 
-    /// List admin members of a group: (user_id, username, alias).
-    pub fn get_group_admins(&self, group_id: i64) -> Result<Vec<(i64, String, Option<String>)>> {
+    /// List admin members of a group: (user_id, username, alias, signing_key_fingerprint).
+    pub fn get_group_admins(
+        &self,
+        group_id: i64,
+    ) -> Result<Vec<(i64, String, Option<String>, Option<String>)>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.alias
+            "SELECT u.id, u.username, u.alias, u.signing_key_fingerprint
              FROM users u
              JOIN group_members gm ON u.id = gm.user_id
              WHERE gm.group_id = ?1 AND gm.role = 'admin'",
         )?;
         let rows = stmt
             .query_map(params![group_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)

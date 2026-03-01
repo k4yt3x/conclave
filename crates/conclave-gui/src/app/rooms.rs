@@ -109,6 +109,43 @@ impl Conclave {
                         self.active_room = None;
                     }
                 }
+
+                // Update TOFU verification status for all members.
+                // Collect warnings separately to avoid borrow conflict.
+                let mut warnings = Vec::new();
+                let own_user_id = self.user_id;
+                if let Some(store) = &self.msg_store {
+                    for room in self.rooms.values() {
+                        for member in &room.members {
+                            // Implicitly trust our own signing key.
+                            if Some(member.user_id) == own_user_id {
+                                self.verification_status.insert(
+                                    member.user_id,
+                                    conclave_client::state::VerificationStatus::Verified,
+                                );
+                                continue;
+                            }
+                            if let Some(fp) = &member.signing_key_fingerprint {
+                                let status =
+                                    store.get_verification_status(member.user_id, fp);
+                                if matches!(
+                                    status,
+                                    conclave_client::state::VerificationStatus::Changed
+                                ) {
+                                    warnings.push(format!(
+                                        "Warning: {}'s signing key has changed!",
+                                        member.display_name()
+                                    ));
+                                }
+                                self.verification_status
+                                    .insert(member.user_id, status);
+                            }
+                        }
+                    }
+                }
+                for warning in warnings {
+                    self.push_system_message(&warning);
+                }
             }
             Err(e) => {
                 self.push_system_message(&format!("Failed to load rooms: {e}"));
@@ -369,24 +406,6 @@ impl Conclave {
         };
 
         self.send_to_group(group_id, &text)
-    }
-
-    pub(crate) fn send_to_room(&mut self, room: &str, text: &str) -> Task<Message> {
-        let group_id = if let Some(r) = self.find_room_by_name(room) {
-            r.server_group_id
-        } else if let Ok(id) = room.parse::<i64>() {
-            if self.rooms.contains_key(&id) {
-                id
-            } else {
-                self.push_system_message(&format!("Unknown room '{room}'"));
-                return Task::none();
-            }
-        } else {
-            self.push_system_message(&format!("Unknown room '{room}'"));
-            return Task::none();
-        };
-
-        self.send_to_group(group_id, text)
     }
 
     fn send_to_group(&mut self, group_id: i64, text: &str) -> Task<Message> {

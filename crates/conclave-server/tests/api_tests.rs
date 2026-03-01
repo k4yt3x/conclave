@@ -109,6 +109,7 @@ async fn upload_key_package_for(app: &Router, token: &str, data: &[u8]) {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: data.to_vec(),
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -133,6 +134,7 @@ async fn upload_key_packages_batch(
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
         entries,
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -671,6 +673,7 @@ async fn test_upload_key_package_empty() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -697,6 +700,7 @@ async fn test_upload_key_package_too_large() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: large_data,
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1853,6 +1857,7 @@ async fn test_upload_key_package_invalid_mls_version() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: bad_kp,
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1876,6 +1881,7 @@ async fn test_upload_key_package_wrong_wire_format() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: bad_kp,
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1899,6 +1905,7 @@ async fn test_upload_key_package_too_short_for_header() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: bad_kp,
         entries: vec![],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1931,6 +1938,7 @@ async fn test_batch_upload_validates_wire_format() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
         entries,
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2446,6 +2454,7 @@ async fn test_batch_upload_empty_entry_data() {
             data: vec![],
             is_last_resort: false,
         }],
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2909,6 +2918,7 @@ async fn test_batch_upload_oversized_entry() {
     let req_body = conclave_proto::UploadKeyPackageRequest {
         key_package_data: vec![],
         entries,
+        signing_key_fingerprint: String::new(),
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();

@@ -19,6 +19,8 @@ use mls_rs_crypto_openssl::OpensslCryptoProvider;
 use mls_rs_provider_sqlite::SqLiteDataStorageEngine;
 use mls_rs_provider_sqlite::connection_strategy::FileConnectionStrategy;
 
+use sha2::{Digest, Sha256};
+
 use crate::error::{Error, Result};
 
 /// Result of creating a new MLS group.
@@ -146,6 +148,17 @@ impl MlsManager {
     /// Returns the data directory.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Compute the SHA-256 fingerprint of the MLS signing public key.
+    ///
+    /// Returns a 64-character lowercase hex string.
+    pub fn signing_key_fingerprint(&self) -> String {
+        let signing_identity: SigningIdentity =
+            mls_rs_codec_from_slice(&self.identity_bytes).expect("stored identity is valid");
+        let public_key_bytes = signing_identity.signature_key.as_ref();
+        let hash = Sha256::digest(public_key_bytes);
+        hex::encode(hash)
     }
 
     /// Build an mls-rs Client with SQLite-backed storage.
@@ -774,6 +787,44 @@ pub fn extract_user_id_from_identity(identity: &SigningIdentity) -> Option<i64> 
     let basic = identity.credential.as_basic()?;
     let bytes: [u8; 8] = basic.identifier.as_slice().try_into().ok()?;
     Some(i64::from_be_bytes(bytes))
+}
+
+/// Format a 64-character hex fingerprint as 8 groups of 8 for display.
+///
+/// Example: `"a1b2c3d4e5f6a7b8..."` → `"a1b2c3d4 e5f6a7b8 ..."`
+pub fn format_fingerprint(hex: &str) -> String {
+    hex.as_bytes()
+        .chunks(8)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Normalize user-provided fingerprint input to canonical form.
+///
+/// Strips spaces, colons, and dashes. Validates that the result is exactly
+/// 64 lowercase hex characters. Returns the canonical form or an error.
+pub fn normalize_fingerprint(input: &str) -> Result<String> {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| !matches!(c, ' ' | ':' | '-'))
+        .collect::<String>()
+        .to_lowercase();
+
+    if cleaned.len() != 64 {
+        return Err(Error::Other(format!(
+            "fingerprint must be 64 hex characters (got {}). use /whois <username> to see the fingerprint",
+            cleaned.len()
+        )));
+    }
+
+    if !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::Other(
+            "fingerprint must contain only hex characters (0-9, a-f)".into(),
+        ));
+    }
+
+    Ok(cleaned)
 }
 
 // ── MLS codec helpers ─────────────────────────────────────────────

@@ -21,6 +21,7 @@ pub struct UserRow {
     pub username: String,
     pub password_hash: String,
     pub alias: Option<String>,
+    pub signing_key_fingerprint: Option<String>,
 }
 
 /// A pending welcome from the `pending_welcomes` table.
@@ -78,6 +79,7 @@ pub struct GroupMemberRow {
     pub username: String,
     pub alias: Option<String>,
     pub role: String,
+    pub signing_key_fingerprint: Option<String>,
 }
 
 /// A row from the `messages` table.
@@ -230,6 +232,16 @@ impl Database {
             let message = error.to_string();
             if !message.contains("duplicate column") {
                 tracing::warn!(%error, "migration failed: add message_expiry_seconds column");
+            }
+        }
+
+        // Migration: add signing_key_fingerprint column to existing databases.
+        if let Err(error) =
+            conn.execute_batch("ALTER TABLE users ADD COLUMN signing_key_fingerprint TEXT;")
+        {
+            let message = error.to_string();
+            if !message.contains("duplicate column") {
+                tracing::warn!(%error, "migration failed: add signing_key_fingerprint column");
             }
         }
 

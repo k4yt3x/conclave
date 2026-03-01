@@ -55,6 +55,7 @@ pub async fn list_groups(
                 username: m.username,
                 alias: m.alias.unwrap_or_default(),
                 role: m.role,
+                signing_key_fingerprint: m.signing_key_fingerprint.unwrap_or_default(),
             })
             .collect();
 

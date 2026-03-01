@@ -50,6 +50,7 @@ pub struct MemberInfo {
     pub username: String,
     pub alias: Option<String>,
     pub role: String,
+    pub signing_key_fingerprint: Option<String>,
 }
 
 impl MemberInfo {
@@ -66,6 +67,7 @@ impl MemberInfo {
             username: self.username.clone(),
             alias: self.alias.clone(),
             role: self.role.clone(),
+            signing_key_fingerprint: self.signing_key_fingerprint.clone(),
         }
     }
 }
@@ -263,6 +265,11 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
                         Some(m.alias)
                     },
                     role: m.role,
+                    signing_key_fingerprint: if m.signing_key_fingerprint.is_empty() {
+                        None
+                    } else {
+                        Some(m.signing_key_fingerprint)
+                    },
                 })
                 .collect(),
             mls_group_id: if group.mls_group_id.is_empty() {
@@ -326,6 +333,7 @@ mod tests {
             username: "alice".into(),
             alias: Some("Alice W.".into()),
             role: "admin".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(info.display_name(), "Alice W.");
     }
@@ -337,6 +345,7 @@ mod tests {
             username: "alice".into(),
             alias: None,
             role: "member".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(info.display_name(), "alice");
     }
@@ -348,6 +357,7 @@ mod tests {
             username: "alice".into(),
             alias: Some(String::new()),
             role: "member".into(),
+            signing_key_fingerprint: None,
         };
         assert_eq!(info.display_name(), "alice");
     }
@@ -359,6 +369,7 @@ mod tests {
             username: "bob".into(),
             alias: Some("Bobby".into()),
             role: "admin".into(),
+            signing_key_fingerprint: Some("abcd1234".into()),
         };
         let member = info.to_room_member();
         assert_eq!(member.user_id, 42);
@@ -507,6 +518,7 @@ mod tests {
             username: "alice".into(),
             alias: Some("Alice W.".into()),
             role: "admin".into(),
+            signing_key_fingerprint: None,
         }];
         assert_eq!(resolve_user_display_name(Some(1), &members), "Alice W.");
     }
@@ -518,6 +530,7 @@ mod tests {
             username: "alice".into(),
             alias: None,
             role: "member".into(),
+            signing_key_fingerprint: None,
         }];
         assert_eq!(resolve_user_display_name(Some(1), &members), "alice");
     }
@@ -529,6 +542,7 @@ mod tests {
             username: "alice".into(),
             alias: None,
             role: "member".into(),
+            signing_key_fingerprint: None,
         }];
         assert_eq!(resolve_user_display_name(Some(99), &members), "user#99");
     }

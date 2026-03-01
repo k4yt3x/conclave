@@ -69,7 +69,8 @@ pub async fn run(
             if let Some(mls_mgr) = &mls {
                 match generate_initial_key_packages(mls_mgr) {
                     Ok(entries) => {
-                        if let Err(e) = api.lock().await.upload_key_packages(entries).await {
+                        let fingerprint = mls_mgr.signing_key_fingerprint();
+                        if let Err(e) = api.lock().await.upload_key_packages(entries, &fingerprint).await {
                             state.system_messages.push(DisplayMessage::system(&format!(
                                 "Warning: failed to upload key packages: {e}"
                             )));
@@ -89,7 +90,7 @@ pub async fn run(
                 msg_store = Some(store);
             }
 
-            match commands::load_rooms(&api, &mut state).await {
+            match commands::load_rooms(&api, &mut state, &msg_store).await {
                 Ok(room_infos) => {
                     state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
                 }
@@ -102,7 +103,7 @@ pub async fn run(
 
             // Accept pending welcomes (invites received while offline) so
             // that group mappings exist before we fetch missed messages.
-            accept_pending_welcomes(&api, &mut state, &mls, &config.data_dir).await;
+            accept_pending_welcomes(&api, &mut state, &mls, &config.data_dir, &msg_store).await;
 
             // Restore persisted last_seen_seq and message history per room,
             // then fetch any messages that arrived while we were offline.
@@ -271,7 +272,7 @@ async fn main_loop(
 
                         // Accept any pending welcomes (invites received
                         // while SSE was disconnected) before fetching.
-                        accept_pending_welcomes(api, state, mls, &config.data_dir).await;
+                        accept_pending_welcomes(api, state, mls, &config.data_dir, msg_store).await;
 
                         // Fetch messages missed while disconnected.
                         if let Some(store) = msg_store {
@@ -293,7 +294,7 @@ async fn main_loop(
                     }
                     Ok(EsEvent::Message(msg)) => {
                         match events::handle_sse_message(
-                            &msg.data, api, state, &config.data_dir,
+                            &msg.data, api, state, &config.data_dir, msg_store,
                         ).await {
                             Ok(messages) => {
                                 if messages.is_empty() {
@@ -727,6 +728,7 @@ async fn accept_pending_welcomes(
     state: &mut AppState,
     _mls: &Option<MlsManager>,
     data_dir: &std::path::Path,
+    msg_store: &Option<MessageStore>,
 ) {
     let user_id = match state.user_id {
         Some(id) => id,
@@ -764,7 +766,7 @@ async fn accept_pending_welcomes(
         )));
     }
 
-    let _ = commands::load_rooms(api, state).await;
+    let _ = commands::load_rooms(api, state, msg_store).await;
 }
 
 /// Fetch messages that arrived while the client was offline for all rooms.

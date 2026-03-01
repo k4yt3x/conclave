@@ -6,7 +6,7 @@ pub enum CommandCategory {
     Rooms,
     Members,
     Invites,
-    Messaging,
+    Security,
     General,
 }
 
@@ -17,7 +17,7 @@ impl CommandCategory {
             CommandCategory::Rooms => "ROOMS",
             CommandCategory::Members => "MEMBERS",
             CommandCategory::Invites => "INVITES",
-            CommandCategory::Messaging => "MESSAGING",
+            CommandCategory::Security => "SECURITY",
             CommandCategory::General => "GENERAL",
         }
     }
@@ -27,7 +27,7 @@ impl CommandCategory {
         CommandCategory::Rooms,
         CommandCategory::Members,
         CommandCategory::Invites,
-        CommandCategory::Messaging,
+        CommandCategory::Security,
         CommandCategory::General,
     ];
 }
@@ -76,18 +76,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         description: "Reset account and rejoin groups",
     },
     CommandSpec {
-        name: "nick",
-        aliases: &[],
+        name: "alias",
+        aliases: &["nick"],
         category: CommandCategory::Account,
-        usage: "/nick <alias>",
+        usage: "/alias <name>",
         description: "Set your display name",
-    },
-    CommandSpec {
-        name: "whois",
-        aliases: &[],
-        category: CommandCategory::Account,
-        usage: "/whois",
-        description: "Show current user info",
     },
     CommandSpec {
         name: "passwd",
@@ -105,10 +98,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         description: "Create a new room",
     },
     CommandSpec {
-        name: "list",
-        aliases: &[],
+        name: "rooms",
+        aliases: &["list"],
         category: CommandCategory::Rooms,
-        usage: "/list",
+        usage: "/rooms",
         description: "List your rooms",
     },
     CommandSpec {
@@ -162,11 +155,18 @@ pub static COMMANDS: &[CommandSpec] = &[
     },
     // Members
     CommandSpec {
-        name: "who",
+        name: "members",
+        aliases: &["who"],
+        category: CommandCategory::Members,
+        usage: "/members",
+        description: "List members of active room",
+    },
+    CommandSpec {
+        name: "whois",
         aliases: &[],
         category: CommandCategory::Members,
-        usage: "/who",
-        description: "List members of active room",
+        usage: "/whois [username]",
+        description: "Show user info and fingerprint",
     },
     CommandSpec {
         name: "invite",
@@ -239,20 +239,34 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/decline <id>",
         description: "Decline a pending invite",
     },
-    // Messaging
-    CommandSpec {
-        name: "msg",
-        aliases: &[],
-        category: CommandCategory::Messaging,
-        usage: "/msg <room> <text>",
-        description: "Send to a room without switching",
-    },
+    // Security
     CommandSpec {
         name: "rotate",
         aliases: &[],
-        category: CommandCategory::Messaging,
+        category: CommandCategory::Security,
         usage: "/rotate",
         description: "Rotate keys (forward secrecy)",
+    },
+    CommandSpec {
+        name: "trusted",
+        aliases: &[],
+        category: CommandCategory::Security,
+        usage: "/trusted",
+        description: "List all known user fingerprints",
+    },
+    CommandSpec {
+        name: "unverify",
+        aliases: &[],
+        category: CommandCategory::Security,
+        usage: "/unverify <username>",
+        description: "Remove verification for a user's signing key",
+    },
+    CommandSpec {
+        name: "verify",
+        aliases: &[],
+        category: CommandCategory::Security,
+        usage: "/verify <user> <fingerprint>",
+        description: "Verify a user's signing key fingerprint",
     },
     // General
     CommandSpec {
@@ -341,10 +355,20 @@ pub enum Command {
     },
     Logout,
     Reset,
-    Nick {
+    Alias {
         alias: String,
     },
-    Whois,
+    Whois {
+        username: Option<String>,
+    },
+    Verify {
+        username: String,
+        fingerprint: String,
+    },
+    Unverify {
+        username: String,
+    },
+    Trusted,
     Passwd {
         new_password: String,
     },
@@ -357,7 +381,7 @@ pub enum Command {
     Join {
         target: Option<String>,
     },
-    List,
+    Rooms,
     Close,
     Part,
     Info,
@@ -370,7 +394,7 @@ pub enum Command {
     },
 
     // Members
-    Who,
+    Members,
     Invite {
         members: Vec<String>,
     },
@@ -398,12 +422,10 @@ pub enum Command {
         invite_id: i64,
     },
 
-    // Messaging
-    Msg {
-        room: String,
-        text: String,
-    },
+    // Security
     Rotate,
+
+    // Plain text (not a slash command)
     Message {
         text: String,
     },
@@ -434,6 +456,7 @@ pub fn parse(input: &str) -> Result<Command> {
 }
 
 fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Command> {
+    let cmd_word = parts[0];
     match name {
         // Account
         "register" => {
@@ -471,15 +494,46 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
         }
         "logout" => Ok(Command::Logout),
         "reset" => Ok(Command::Reset),
-        "nick" => {
+        "alias" => {
             if parts.len() < 2 {
-                return Err(Error::Other("Usage: /nick <alias>".into()));
+                return Err(Error::Other("Usage: /alias <name>".into()));
             }
-            let prefix = format!("/{name} ");
+            let prefix = format!("{cmd_word} ");
             let alias = full_input[prefix.len()..].to_string();
-            Ok(Command::Nick { alias })
+            Ok(Command::Alias { alias })
         }
-        "whois" => Ok(Command::Whois),
+        "whois" => {
+            let username = parts.get(1).map(|s| s.to_string());
+            Ok(Command::Whois { username })
+        }
+        "verify" => {
+            if parts.len() < 2 {
+                return Err(Error::Other(
+                    "Usage: /verify <username> <fingerprint>".into(),
+                ));
+            }
+            let username = parts[1].to_string();
+            let prefix = format!("{cmd_word} {username} ");
+            if full_input.len() <= prefix.len() {
+                return Err(Error::Other(
+                    "Usage: /verify <username> <fingerprint>".into(),
+                ));
+            }
+            let fingerprint = full_input[prefix.len()..].to_string();
+            Ok(Command::Verify {
+                username,
+                fingerprint,
+            })
+        }
+        "unverify" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /unverify <username>".into()));
+            }
+            Ok(Command::Unverify {
+                username: parts[1].to_string(),
+            })
+        }
+        "trusted" => Ok(Command::Trusted),
         "passwd" => {
             let parts: Vec<&str> = full_input.splitn(2, ' ').collect();
             if parts.len() < 2 || parts[1].is_empty() {
@@ -503,7 +557,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             let target = parts.get(1).map(|s| s.to_string());
             Ok(Command::Join { target })
         }
-        "list" => Ok(Command::List),
+        "rooms" => Ok(Command::Rooms),
         "close" => Ok(Command::Close),
         "part" => Ok(Command::Part),
         "info" => Ok(Command::Info),
@@ -511,14 +565,14 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /topic <text>".into()));
             }
-            let prefix = format!("/{name} ");
+            let prefix = format!("{cmd_word} ");
             let topic = full_input[prefix.len()..].to_string();
             Ok(Command::Topic { topic })
         }
         "unread" => Ok(Command::Unread),
         "expire" => {
             let duration = if parts.len() >= 2 {
-                let prefix = format!("/{name} ");
+                let prefix = format!("{cmd_word} ");
                 Some(full_input[prefix.len()..].to_string())
             } else {
                 None
@@ -527,7 +581,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
         }
 
         // Members
-        "who" => Ok(Command::Who),
+        "members" => Ok(Command::Members),
         "invite" => {
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /invite <member1,member2,...>".into()));
@@ -595,16 +649,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             Ok(Command::Decline { invite_id })
         }
 
-        // Messaging
-        "msg" => {
-            if parts.len() < 3 {
-                return Err(Error::Other("Usage: /msg <room> <message>".into()));
-            }
-            Ok(Command::Msg {
-                room: parts[1].to_string(),
-                text: parts[2].to_string(),
-            })
-        }
+        // Security
         "rotate" => Ok(Command::Rotate),
 
         // General
@@ -824,18 +869,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_list() {
-        let cmd = parse("/list").unwrap();
-        assert!(matches!(cmd, Command::List));
+    fn test_parse_rooms() {
+        let cmd = parse("/rooms").unwrap();
+        assert!(matches!(cmd, Command::Rooms));
     }
 
     #[test]
-    fn test_parse_who() {
-        let cmd = parse("/who").unwrap();
-        assert!(matches!(cmd, Command::Who));
+    fn test_parse_rooms_alias() {
+        let cmd = parse("/list").unwrap();
+        assert!(matches!(cmd, Command::Rooms));
     }
 
-    // Messaging
+    #[test]
+    fn test_parse_members() {
+        let cmd = parse("/members").unwrap();
+        assert!(matches!(cmd, Command::Members));
+    }
+
+    #[test]
+    fn test_parse_members_alias() {
+        let cmd = parse("/who").unwrap();
+        assert!(matches!(cmd, Command::Members));
+    }
+
+    // Plain text
 
     #[test]
     fn test_parse_plain_message() {
@@ -844,21 +901,6 @@ mod tests {
             panic!("expected Message variant");
         };
         assert_eq!(text, "hello");
-    }
-
-    #[test]
-    fn test_parse_msg() {
-        let cmd = parse("/msg room hello world").unwrap();
-        let Command::Msg { room, text } = cmd else {
-            panic!("expected Msg variant");
-        };
-        assert_eq!(room, "room");
-        assert_eq!(text, "hello world");
-    }
-
-    #[test]
-    fn test_parse_msg_missing_args() {
-        assert!(parse("/msg room").is_err());
     }
 
     #[test]
@@ -874,9 +916,61 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_whois() {
+    fn test_parse_whois_no_arg() {
         let cmd = parse("/whois").unwrap();
-        assert!(matches!(cmd, Command::Whois));
+        let Command::Whois { username } = cmd else {
+            panic!("expected Whois variant");
+        };
+        assert!(username.is_none());
+    }
+
+    #[test]
+    fn test_parse_whois_with_username() {
+        let cmd = parse("/whois alice").unwrap();
+        let Command::Whois { username } = cmd else {
+            panic!("expected Whois variant");
+        };
+        assert_eq!(username, Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_parse_verify() {
+        let cmd = parse("/verify alice a1b2c3d4 e5f6a7b8").unwrap();
+        let Command::Verify {
+            username,
+            fingerprint,
+        } = cmd
+        else {
+            panic!("expected Verify variant");
+        };
+        assert_eq!(username, "alice");
+        assert_eq!(fingerprint, "a1b2c3d4 e5f6a7b8");
+    }
+
+    #[test]
+    fn test_parse_verify_missing_args() {
+        assert!(parse("/verify").is_err());
+        assert!(parse("/verify alice").is_err());
+    }
+
+    #[test]
+    fn test_parse_unverify() {
+        let cmd = parse("/unverify alice").unwrap();
+        let Command::Unverify { username } = cmd else {
+            panic!("expected Unverify variant");
+        };
+        assert_eq!(username, "alice");
+    }
+
+    #[test]
+    fn test_parse_unverify_missing_args() {
+        assert!(parse("/unverify").is_err());
+    }
+
+    #[test]
+    fn test_parse_trusted() {
+        let cmd = parse("/trusted").unwrap();
+        assert!(matches!(cmd, Command::Trusted));
     }
 
     // General
@@ -914,17 +1008,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_nick() {
-        let cmd = parse("/nick Alice Smith").unwrap();
-        let Command::Nick { alias } = cmd else {
-            panic!("expected Nick variant");
+    fn test_parse_alias() {
+        let cmd = parse("/alias Alice Smith").unwrap();
+        let Command::Alias { alias } = cmd else {
+            panic!("expected Alias variant");
         };
         assert_eq!(alias, "Alice Smith");
     }
 
     #[test]
-    fn test_parse_nick_missing_args() {
-        assert!(parse("/nick").is_err());
+    fn test_parse_alias_alias() {
+        let cmd = parse("/nick Alice Smith").unwrap();
+        let Command::Alias { alias } = cmd else {
+            panic!("expected Alias variant");
+        };
+        assert_eq!(alias, "Alice Smith");
+    }
+
+    #[test]
+    fn test_parse_alias_missing_args() {
+        assert!(parse("/alias").is_err());
     }
 
     #[test]

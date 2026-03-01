@@ -49,6 +49,12 @@ pub async fn upload_key_package(
         return Err(Error::BadRequest("key_package_data is required".into()));
     }
 
+    if !request.signing_key_fingerprint.is_empty() {
+        state
+            .db
+            .update_signing_key_fingerprint(auth.user_id, &request.signing_key_fingerprint)?;
+    }
+
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UploadKeyPackageResponse {},

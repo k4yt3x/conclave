@@ -339,7 +339,7 @@ pub async fn accept_welcomes(
         let entries: Vec<(Vec<u8>, bool)> =
             replacements.into_iter().map(|kp| (kp, false)).collect();
         if !entries.is_empty() {
-            api.upload_key_packages(entries).await?;
+            api.upload_key_packages(entries, "").await?;
         }
     }
 
