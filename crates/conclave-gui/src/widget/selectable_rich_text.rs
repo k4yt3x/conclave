@@ -361,14 +361,16 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(iced::touch::Event::FingerPressed { .. }) => {
-                if let Some(position) = cursor.position()
-                    && bounds.contains(position)
-                {
-                    state.interaction = Interaction::Selecting(RawSelection {
-                        start: position,
-                        end: position,
-                    });
-                    shell.capture_event();
+                if let Some(position) = cursor.position() {
+                    if bounds.contains(position) {
+                        state.interaction = Interaction::Selecting(RawSelection {
+                            start: position,
+                            end: position,
+                        });
+                        shell.capture_event();
+                    } else {
+                        state.interaction = Interaction::Idle;
+                    }
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. })
@@ -383,6 +385,10 @@ where
             | Event::Touch(iced::touch::Event::FingerLifted { .. }) => {
                 if let Interaction::Selecting(raw) = state.interaction {
                     state.interaction = Interaction::Selected(raw);
+                } else if matches!(state.interaction, Interaction::Selected(_))
+                    && cursor.position().is_none_or(|p| !bounds.contains(p))
+                {
+                    state.interaction = Interaction::Idle;
                 }
             }
             _ => {}
