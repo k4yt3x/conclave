@@ -251,7 +251,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::{params, OptionalExtension};
+    use rusqlite::{OptionalExtension, params};
 
     use super::*;
     use crate::validation::validate_alias;

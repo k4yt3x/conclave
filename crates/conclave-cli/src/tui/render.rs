@@ -2,11 +2,14 @@ use std::io::Write;
 
 use crossterm::{
     cursor, queue,
-    style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
+    style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{Clear, ClearType},
 };
 
-use conclave_client::state::{RoomMember, VerificationStatus, resolve_sender_name};
+use conclave_client::state::{
+    INDICATOR_COLOR_RISKY, INDICATOR_COLOR_UNVERIFIED, INDICATOR_COLOR_VERIFIED, RoomMember,
+    RoomTrustLevel, VerificationStatus, resolve_sender_name, room_trust_level,
+};
 
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage};
@@ -15,10 +18,12 @@ use super::state::{AppState, ConnectionStatus, DisplayMessage};
 fn verification_indicator(
     sender_id: Option<i64>,
     verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    show_verified: bool,
 ) -> &'static str {
     match sender_id.and_then(|id| verification_status.get(&id)) {
         Some(VerificationStatus::Changed) => "[!] ",
         Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
+        Some(VerificationStatus::Verified) if show_verified => "[\u{2713}] ",
         Some(VerificationStatus::Verified) | None => "",
     }
 }
@@ -27,11 +32,20 @@ fn verification_indicator(
 fn verification_color(
     sender_id: Option<i64>,
     verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    show_verified: bool,
 ) -> Option<Color> {
     match sender_id.and_then(|id| verification_status.get(&id)) {
-        Some(VerificationStatus::Changed) => Some(Color::Red),
+        Some(VerificationStatus::Changed) => {
+            let (r, g, b) = INDICATOR_COLOR_RISKY;
+            Some(Color::Rgb { r, g, b })
+        }
         Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
-            Some(Color::DarkYellow)
+            let (r, g, b) = INDICATOR_COLOR_UNVERIFIED;
+            Some(Color::Rgb { r, g, b })
+        }
+        Some(VerificationStatus::Verified) if show_verified => {
+            let (r, g, b) = INDICATOR_COLOR_VERIFIED;
+            Some(Color::Rgb { r, g, b })
         }
         Some(VerificationStatus::Verified) | None => None,
     }
@@ -65,6 +79,7 @@ fn message_prefix_width(
     msg: &DisplayMessage,
     members: &[RoomMember],
     verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    show_verified: bool,
 ) -> usize {
     // "[HH:MM] " = 8 columns (time is always 5 chars: HH:MM or ??:??)
     let time_prefix = 8;
@@ -73,7 +88,7 @@ fn message_prefix_width(
         time_prefix + 4
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
-        let indicator = verification_indicator(msg.sender_id, verification_status);
+        let indicator = verification_indicator(msg.sender_id, verification_status, show_verified);
         // "<sender> " = 1 + sender_width + 2
         time_prefix + display_width(indicator) + 1 + display_width(&sender) + 2
     }
@@ -85,13 +100,14 @@ fn visual_line_count(
     cols: u16,
     members: &[RoomMember],
     verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    show_verified: bool,
 ) -> usize {
     let cols_usize = cols as usize;
     if cols_usize == 0 {
         return 1;
     }
 
-    let prefix_width = message_prefix_width(msg, members, verification_status);
+    let prefix_width = message_prefix_width(msg, members, verification_status, show_verified);
     let content = sanitize_for_terminal(&msg.content);
 
     let mut total_rows: usize = 0;
@@ -142,8 +158,13 @@ pub fn render_full(
     let mut lines_accumulated = 0;
     let mut start = end;
     while start > 0 {
-        let msg_lines =
-            visual_line_count(&messages[start - 1], cols, &members, &state.verification_status);
+        let msg_lines = visual_line_count(
+            &messages[start - 1],
+            cols,
+            &members,
+            &state.verification_status,
+            state.show_verified_indicator,
+        );
         if lines_accumulated + msg_lines > msg_rows && start < end {
             break;
         }
@@ -160,6 +181,7 @@ pub fn render_full(
             cols,
             &members,
             &state.verification_status,
+            state.show_verified_indicator,
             current_row,
         )?;
         current_row += rows_used;
@@ -177,11 +199,39 @@ pub fn render_status_line(
     state: &AppState,
     row: u16,
 ) -> std::io::Result<()> {
-    queue!(
-        stdout,
-        cursor::MoveTo(0, row),
-        SetAttribute(Attribute::Reverse),
-    )?;
+    queue!(stdout, cursor::MoveTo(0, row))?;
+
+    // Room trust badge (colored background) before the reverse-video status bar.
+    let badge_width = if let Some(room) = state.active_room_info() {
+        let trust = room_trust_level(&room.members, &state.verification_status);
+        if matches!(trust, RoomTrustLevel::Verified) && !state.show_verified_indicator {
+            0
+        } else {
+            let (bg, label) = match trust {
+                RoomTrustLevel::Risky => (INDICATOR_COLOR_RISKY, "[!]"),
+                RoomTrustLevel::Unverified => (INDICATOR_COLOR_UNVERIFIED, "[?]"),
+                RoomTrustLevel::Verified => (INDICATOR_COLOR_VERIFIED, "\u{2713}"),
+            };
+            let (r, g, b) = bg;
+            queue!(
+                stdout,
+                SetBackgroundColor(Color::Rgb { r, g, b }),
+                SetForegroundColor(Color::White),
+            )?;
+            write!(stdout, " {label} ")?;
+            queue!(stdout, ResetColor)?;
+            // " [?] " = 5 display columns, " ✓ " = 3 display columns
+            if matches!(trust, RoomTrustLevel::Verified) {
+                3
+            } else {
+                5
+            }
+        }
+    } else {
+        0
+    };
+
+    queue!(stdout, SetAttribute(Attribute::Reverse))?;
 
     let status_icon = match state.connection_status {
         ConnectionStatus::Connected => "connected",
@@ -201,8 +251,8 @@ pub fn render_status_line(
 
     let status = format!(" [{status_icon}] {room_info} | {username} ");
 
-    // Pad to full width.
-    let padding = (state.terminal_cols as usize).saturating_sub(status.len());
+    // Pad to full width, accounting for the trust badge.
+    let padding = (state.terminal_cols as usize).saturating_sub(status.len() + badge_width);
     write!(stdout, "{status}{}", " ".repeat(padding))?;
 
     queue!(stdout, SetAttribute(Attribute::Reset))?;
@@ -327,12 +377,13 @@ fn write_message(
     cols: u16,
     members: &[RoomMember],
     verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    show_verified: bool,
     row: u16,
 ) -> std::io::Result<u16> {
     let cols_usize = cols as usize;
     let time = format_time(msg.timestamp);
     let content = sanitize_for_terminal(&msg.content);
-    let prefix_width = message_prefix_width(msg, members, verification_status);
+    let prefix_width = message_prefix_width(msg, members, verification_status, show_verified);
 
     let mut current_row = row;
 
@@ -352,7 +403,7 @@ fn write_message(
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
         let nick_color = username_color(msg.sender_id.unwrap_or(0));
-        let indicator = verification_indicator(msg.sender_id, verification_status);
+        let indicator = verification_indicator(msg.sender_id, verification_status, show_verified);
 
         for (i, line) in content.split('\n').enumerate() {
             queue!(stdout, cursor::MoveTo(0, current_row))?;
@@ -360,7 +411,9 @@ fn write_message(
                 queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "[{time}] ")?;
                 if !indicator.is_empty() {
-                    if let Some(color) = verification_color(msg.sender_id, verification_status) {
+                    if let Some(color) =
+                        verification_color(msg.sender_id, verification_status, show_verified)
+                    {
                         queue!(stdout, SetForegroundColor(color))?;
                     }
                     write!(stdout, "{indicator}")?;
@@ -452,7 +505,10 @@ mod tests {
         let msg = DisplayMessage::system("hello");
         let members = vec![];
         // "[HH:MM] *** hello" = 12 + 5 = 17 chars, fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 1);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            1
+        );
     }
 
     #[test]
@@ -460,7 +516,10 @@ mod tests {
         let msg = DisplayMessage::system("first\nsecond\nthird");
         let members = vec![];
         // 3 lines, each fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 3);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            3
+        );
     }
 
     #[test]
@@ -469,7 +528,10 @@ mod tests {
         let msg = DisplayMessage::system(&long);
         let members = vec![];
         // "[HH:MM] *** " (12) + 100 = 112 chars, ceil(112/80) = 2
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 2);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            2
+        );
     }
 
     #[test]
@@ -477,7 +539,10 @@ mod tests {
         let msg = DisplayMessage::system("");
         let members = vec![];
         // "[HH:MM] *** " = 12 chars, fits in 80 cols
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 1);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            1
+        );
     }
 
     #[test]
@@ -485,7 +550,10 @@ mod tests {
         let msg = DisplayMessage::system("hello\n");
         let members = vec![];
         // "hello" on line 1 (with prefix), "" on line 2 (no prefix, 0 width → 1 row)
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 2);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            2
+        );
     }
 
     #[test]
@@ -497,6 +565,9 @@ mod tests {
         let members = vec![];
         // Line 1: "[HH:MM] *** short" = 12 + 5 = 17, 1 row
         // Line 2: "aaa...a" = 100 chars (no prefix), ceil(100/80) = 2 rows
-        assert_eq!(visual_line_count(&msg, 80, &members, &std::collections::HashMap::new()), 3);
+        assert_eq!(
+            visual_line_count(&msg, 80, &members, &std::collections::HashMap::new(), false),
+            3
+        );
     }
 }

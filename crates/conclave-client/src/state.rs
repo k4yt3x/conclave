@@ -6,6 +6,12 @@ pub enum ConnectionStatus {
     Connected,
 }
 
+/// Hardcoded RGB colors for verification/trust indicators.
+/// Defined here so both TUI (crossterm) and GUI (iced) use identical values.
+pub const INDICATOR_COLOR_RISKY: (u8, u8, u8) = (0xcc, 0x44, 0x44);
+pub const INDICATOR_COLOR_UNVERIFIED: (u8, u8, u8) = (0xcc, 0x99, 0x33);
+pub const INDICATOR_COLOR_VERIFIED: (u8, u8, u8) = (0x44, 0x88, 0x44);
+
 /// Verification status of a user's signing key fingerprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerificationStatus {
@@ -17,6 +23,41 @@ pub enum VerificationStatus {
     Verified,
     /// Fingerprint changed since last seen.
     Changed,
+}
+
+/// Aggregate trust level for an entire room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomTrustLevel {
+    /// All members are verified.
+    Verified,
+    /// Some members are unverified or unknown.
+    Unverified,
+    /// A verified member has changed their signing key.
+    Risky,
+}
+
+/// Compute the aggregate trust level for a room based on its members'
+/// verification statuses.
+///
+/// Priority: any `Changed` → `Risky`, any non-`Verified` → `Unverified`,
+/// all `Verified` → `Verified`.
+pub fn room_trust_level(
+    members: &[RoomMember],
+    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+) -> RoomTrustLevel {
+    let mut all_verified = true;
+    for member in members {
+        match verification_status.get(&member.user_id) {
+            Some(VerificationStatus::Changed) => return RoomTrustLevel::Risky,
+            Some(VerificationStatus::Verified) => {}
+            _ => all_verified = false,
+        }
+    }
+    if all_verified {
+        RoomTrustLevel::Verified
+    } else {
+        RoomTrustLevel::Unverified
+    }
 }
 
 /// A member of a room.
@@ -408,13 +449,84 @@ mod tests {
         rooms.insert(1, make_room(1, 60));
 
         let mut room_messages = std::collections::HashMap::new();
-        room_messages.insert(
-            1i64,
-            vec![DisplayMessage::user(1, "alice", "recent", now)],
-        );
+        room_messages.insert(1i64, vec![DisplayMessage::user(1, "alice", "recent", now)]);
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(!removed);
         assert_eq!(room_messages[&1].len(), 1);
+    }
+
+    fn make_member(user_id: i64) -> RoomMember {
+        RoomMember {
+            user_id,
+            username: format!("user{user_id}"),
+            alias: None,
+            role: "member".into(),
+            signing_key_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn test_room_trust_level_all_verified() {
+        let members = vec![make_member(1), make_member(2), make_member(3)];
+        let mut status = std::collections::HashMap::new();
+        status.insert(1, VerificationStatus::Verified);
+        status.insert(2, VerificationStatus::Verified);
+        status.insert(3, VerificationStatus::Verified);
+        assert_eq!(
+            room_trust_level(&members, &status),
+            RoomTrustLevel::Verified
+        );
+    }
+
+    #[test]
+    fn test_room_trust_level_one_unverified() {
+        let members = vec![make_member(1), make_member(2)];
+        let mut status = std::collections::HashMap::new();
+        status.insert(1, VerificationStatus::Verified);
+        status.insert(2, VerificationStatus::Unverified);
+        assert_eq!(
+            room_trust_level(&members, &status),
+            RoomTrustLevel::Unverified
+        );
+    }
+
+    #[test]
+    fn test_room_trust_level_one_unknown() {
+        let members = vec![make_member(1), make_member(2)];
+        let mut status = std::collections::HashMap::new();
+        status.insert(1, VerificationStatus::Verified);
+        status.insert(2, VerificationStatus::Unknown);
+        assert_eq!(
+            room_trust_level(&members, &status),
+            RoomTrustLevel::Unverified
+        );
+    }
+
+    #[test]
+    fn test_room_trust_level_one_changed() {
+        let members = vec![make_member(1), make_member(2), make_member(3)];
+        let mut status = std::collections::HashMap::new();
+        status.insert(1, VerificationStatus::Verified);
+        status.insert(2, VerificationStatus::Changed);
+        status.insert(3, VerificationStatus::Verified);
+        assert_eq!(room_trust_level(&members, &status), RoomTrustLevel::Risky);
+    }
+
+    #[test]
+    fn test_room_trust_level_missing_entry() {
+        let members = vec![make_member(1), make_member(2)];
+        let mut status = std::collections::HashMap::new();
+        status.insert(1, VerificationStatus::Verified);
+        assert_eq!(
+            room_trust_level(&members, &status),
+            RoomTrustLevel::Unverified
+        );
+    }
+
+    #[test]
+    fn test_room_trust_level_empty_members() {
+        let status = std::collections::HashMap::new();
+        assert_eq!(room_trust_level(&[], &status), RoomTrustLevel::Verified);
     }
 }

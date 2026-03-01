@@ -136,18 +136,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Probe for the notification daemon once at startup. If unavailable,
     // downgrade gracefully so we don't spam errors on every message.
-    let notifications =
-        if matches!(notifications, NotificationMethod::Native | NotificationMethod::Both)
-            && !notification::is_daemon_available()
-        {
-            tracing::warn!("notification daemon not available, disabling native notifications");
-            match notifications {
-                NotificationMethod::Both => NotificationMethod::Bell,
-                _ => NotificationMethod::None,
-            }
-        } else {
-            notifications
-        };
+    let notifications = if matches!(
+        notifications,
+        NotificationMethod::Native | NotificationMethod::Both
+    ) && !notification::is_daemon_available()
+    {
+        tracing::warn!("notification daemon not available, disabling native notifications");
+        match notifications {
+            NotificationMethod::Both => NotificationMethod::Bell,
+            _ => NotificationMethod::None,
+        }
+    } else {
+        notifications
+    };
 
     match cli.command {
         None => {

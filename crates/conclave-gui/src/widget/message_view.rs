@@ -18,6 +18,7 @@ pub fn message_list<'a, M: Clone + 'a>(
     group_name: Option<&str>,
     theme: &crate::theme::Theme,
     verification_status: &HashMap<i64, VerificationStatus>,
+    show_verified_indicator: bool,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
 
@@ -54,10 +55,17 @@ pub fn message_list<'a, M: Clone + 'a>(
             if let Some(sid) = message.sender_id {
                 match verification_status.get(&sid) {
                     Some(VerificationStatus::Changed) => {
-                        spans.push(Span::new(" [!]").size(13).color(theme.error));
+                        spans.push(Span::new(" [!]").size(13).color(theme.indicator_risky));
                     }
                     Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
-                        spans.push(Span::new(" [?]").size(13).color(theme.warning));
+                        spans.push(Span::new(" [?]").size(13).color(theme.indicator_unverified));
+                    }
+                    Some(VerificationStatus::Verified) if show_verified_indicator => {
+                        spans.push(
+                            Span::new(" [\u{2713}]")
+                                .size(13)
+                                .color(theme.indicator_verified),
+                        );
                     }
                     Some(VerificationStatus::Verified) | None => {}
                 }
@@ -89,10 +97,13 @@ pub fn message_list<'a, M: Clone + 'a>(
         .padding(6)
         .class(Box::new(theme::container::tooltip) as Box<dyn Fn(&theme::Theme) -> _>);
 
-        let with_tooltip: Element<'a, M> =
-            tooltip(row_element, tooltip_content, tooltip::Position::FollowCursor)
-                .delay(Duration::from_millis(300))
-                .into();
+        let with_tooltip: Element<'a, M> = tooltip(
+            row_element,
+            tooltip_content,
+            tooltip::Position::FollowCursor,
+        )
+        .delay(Duration::from_millis(300))
+        .into();
 
         messages_column = messages_column.push(with_tooltip);
     }

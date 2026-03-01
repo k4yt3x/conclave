@@ -47,6 +47,9 @@ pub async fn handle_sse_message(
             // Process the external commit to advance our MLS epoch state.
             let _ = handle_new_message(group_id, api, state, data_dir).await;
 
+            // Refresh member list and fingerprints so TOFU check detects the change.
+            commands::load_rooms(api, state, msg_store).await?;
+
             let display_name = state
                 .rooms
                 .get(&group_id)

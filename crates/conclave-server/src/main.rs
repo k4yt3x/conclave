@@ -66,8 +66,7 @@ async fn main() -> anyhow::Result<()> {
         let state = app_state.clone();
         tokio::spawn(async move {
             let cleanup_secs = state.config.cleanup_interval_seconds();
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(cleanup_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(cleanup_secs));
             loop {
                 interval.tick().await;
                 match state.db.cleanup_expired_sessions() {

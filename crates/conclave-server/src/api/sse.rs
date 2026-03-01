@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::AuthUser;
 use crate::state::AppState;

@@ -29,6 +29,9 @@ pub struct AppState {
 
     // System messages (not tied to any room).
     pub system_messages: Vec<DisplayMessage>,
+
+    // Whether to show indicators for verified users/rooms.
+    pub show_verified_indicator: bool,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ impl AppState {
             terminal_rows: 24,
             terminal_cols: 80,
             system_messages: Vec::new(),
+            show_verified_indicator: false,
         }
     }
 

@@ -126,8 +126,7 @@ impl Conclave {
                                 continue;
                             }
                             if let Some(fp) = &member.signing_key_fingerprint {
-                                let status =
-                                    store.get_verification_status(member.user_id, fp);
+                                let status = store.get_verification_status(member.user_id, fp);
                                 if matches!(
                                     status,
                                     conclave_client::state::VerificationStatus::Changed
@@ -137,8 +136,7 @@ impl Conclave {
                                         member.display_name()
                                     ));
                                 }
-                                self.verification_status
-                                    .insert(member.user_id, status);
+                                self.verification_status.insert(member.user_id, status);
                             }
                         }
                     }
@@ -243,10 +241,7 @@ impl Conclave {
                 if let Some(store) = &self.msg_store
                     && let Some(room) = self.rooms.get(&fetched.group_id)
                 {
-                    store.cleanup_expired_messages(
-                        fetched.group_id,
-                        room.message_expiry_seconds,
-                    );
+                    store.cleanup_expired_messages(fetched.group_id, room.message_expiry_seconds);
                 }
                 conclave_client::state::remove_expired_messages(
                     &self.rooms,

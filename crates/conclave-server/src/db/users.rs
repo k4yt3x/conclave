@@ -1,4 +1,4 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use crate::db::UserRow;
 use crate::error::{Error, Result};
@@ -87,11 +87,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_signing_key_fingerprint(
-        &self,
-        user_id: i64,
-        fingerprint: &str,
-    ) -> Result<()> {
+    pub fn update_signing_key_fingerprint(&self, user_id: i64, fingerprint: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE users SET signing_key_fingerprint = ?1 WHERE id = ?2",

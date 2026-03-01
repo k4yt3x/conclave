@@ -71,7 +71,9 @@ impl Conclave {
                          New messages are secured with their new keys."
                     )),
                 );
-                self.handle_sse_event(SseUpdate::NewMessage { group_id })
+                let new_msg_task = self.handle_sse_event(SseUpdate::NewMessage { group_id });
+                let rooms_task = self.load_rooms_task();
+                Task::batch([new_msg_task, rooms_task])
             }
             SseUpdate::MemberRemoved {
                 group_id,

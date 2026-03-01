@@ -140,6 +140,7 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
 ## Conventions
 
 - Run `cargo build --release` after completing a task to verify the release build succeeds.
+- Run `cargo fmt` after completing all tasks to ensure consistent formatting.
 - Update `docs/SPEC.md` when changes affect the technical specification (architecture, protocol, API, MLS behavior, storage, etc.).
 - Update `AGENTS.md` after completing work.
 - `docs/SPEC.md` is the authoritative technical specification.

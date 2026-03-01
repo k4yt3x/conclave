@@ -103,3 +103,27 @@ pub fn drag_handle(theme: &Theme) -> Style {
         ..Style::default()
     }
 }
+
+pub fn trust_risky(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.indicator_risky)),
+        text_color: Some(theme.on_indicator_risky),
+        ..Style::default()
+    }
+}
+
+pub fn trust_unverified(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.indicator_unverified)),
+        text_color: Some(theme.on_indicator_unverified),
+        ..Style::default()
+    }
+}
+
+pub fn trust_verified(theme: &Theme) -> Style {
+    Style {
+        background: Some(Background::Color(theme.indicator_verified)),
+        text_color: Some(theme.on_indicator_verified),
+        ..Style::default()
+    }
+}

@@ -29,8 +29,7 @@ impl Conclave {
             screen::dashboard::Message::InputSubmitted => {
                 let text = if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     let t = dashboard.input_content.text();
-                    dashboard.input_content =
-                        iced::widget::text_editor::Content::new();
+                    dashboard.input_content = iced::widget::text_editor::Content::new();
                     t
                 } else {
                     return Task::none();
@@ -263,10 +262,7 @@ impl Conclave {
 
             // Account
             Ok(Command::Whois { username: None }) => {
-                let own_fingerprint = self
-                    .mls
-                    .as_ref()
-                    .map(|m| m.signing_key_fingerprint());
+                let own_fingerprint = self.mls.as_ref().map(|m| m.signing_key_fingerprint());
                 let params = self.api_params();
                 Task::perform(
                     async move {
@@ -326,9 +322,7 @@ impl Conclave {
                                         "Changed (warning!)"
                                     }
                                 };
-                                msgs.push(DisplayMessage::system(&format!(
-                                    "Status: {status_str}"
-                                )));
+                                msgs.push(DisplayMessage::system(&format!("Status: {status_str}")));
                             }
                         }
                         Ok(msgs)
@@ -402,9 +396,7 @@ impl Conclave {
                         }
                     },
                     |result| {
-                        Message::Dashboard(
-                            crate::screen::dashboard::Message::VerifyResult(result),
-                        )
+                        Message::Dashboard(crate::screen::dashboard::Message::VerifyResult(result))
                     },
                 )
             }
@@ -441,9 +433,7 @@ impl Conclave {
                         }
                     },
                     |result| {
-                        Message::Dashboard(
-                            crate::screen::dashboard::Message::VerifyResult(result),
-                        )
+                        Message::Dashboard(crate::screen::dashboard::Message::VerifyResult(result))
                     },
                 )
             }
@@ -461,19 +451,21 @@ impl Conclave {
                             .map_err(|e| format!("Message store not available: {e}"))?;
                         let entries = store.get_all_known_fingerprints();
                         if entries.is_empty() {
-                            return Ok(vec![DisplayMessage::system(
-                                "No known fingerprints.",
-                            )]);
+                            return Ok(vec![DisplayMessage::system("No known fingerprints.")]);
                         }
-                        let mut msgs =
-                            vec![DisplayMessage::system("Known fingerprints:")];
-                        for (user_id, fingerprint, verified) in &entries {
+                        let mut msgs = vec![DisplayMessage::system("Known fingerprints:")];
+                        for (user_id, fingerprint, verified, key_changed) in &entries {
                             let display_name = name_map
                                 .get(user_id)
                                 .cloned()
                                 .unwrap_or_else(|| format!("user#{user_id}"));
-                            let status =
-                                if *verified { "Verified" } else { "Unverified" };
+                            let status = if *key_changed {
+                                "Changed"
+                            } else if *verified {
+                                "Verified"
+                            } else {
+                                "Unverified"
+                            };
                             let formatted = format_fingerprint(fingerprint);
                             msgs.push(DisplayMessage::system(&format!(
                                 "  {display_name}: [{status}] {formatted}"
@@ -620,8 +612,9 @@ impl Conclave {
                             .get_retention_policy(group_id)
                             .await
                             .map_err(|e| e.to_string())?;
-                        let server =
-                            conclave_client::duration::format_duration(policy.server_retention_seconds);
+                        let server = conclave_client::duration::format_duration(
+                            policy.server_retention_seconds,
+                        );
                         let group =
                             conclave_client::duration::format_duration(policy.group_expiry_seconds);
                         let effective = conclave_client::duration::compute_effective(

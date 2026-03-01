@@ -1,4 +1,4 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use crate::db::{AcceptedInvite, PendingInviteRow};
 use crate::error::{Error, Result};

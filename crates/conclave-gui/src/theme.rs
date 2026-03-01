@@ -8,6 +8,10 @@ pub mod text_input;
 
 use iced::Color;
 
+use conclave_client::state::{
+    INDICATOR_COLOR_RISKY, INDICATOR_COLOR_UNVERIFIED, INDICATOR_COLOR_VERIFIED,
+};
+
 /// Dark theme for the Conclave GUI (greyscale palette).
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -28,6 +32,12 @@ pub struct Theme {
     pub selection: Color,
     pub title_bar: Color,
     pub input_area: Color,
+    pub indicator_risky: Color,
+    pub on_indicator_risky: Color,
+    pub indicator_unverified: Color,
+    pub on_indicator_unverified: Color,
+    pub indicator_verified: Color,
+    pub on_indicator_verified: Color,
 }
 
 impl Default for Theme {
@@ -50,6 +60,24 @@ impl Default for Theme {
             selection: Color::from_rgb8(0x3f, 0x3f, 0x3f),
             title_bar: Color::from_rgb8(0x20, 0x20, 0x20),
             input_area: Color::from_rgb8(0x20, 0x20, 0x20),
+            indicator_risky: Color::from_rgb8(
+                INDICATOR_COLOR_RISKY.0,
+                INDICATOR_COLOR_RISKY.1,
+                INDICATOR_COLOR_RISKY.2,
+            ),
+            on_indicator_risky: Color::WHITE,
+            indicator_unverified: Color::from_rgb8(
+                INDICATOR_COLOR_UNVERIFIED.0,
+                INDICATOR_COLOR_UNVERIFIED.1,
+                INDICATOR_COLOR_UNVERIFIED.2,
+            ),
+            on_indicator_unverified: Color::WHITE,
+            indicator_verified: Color::from_rgb8(
+                INDICATOR_COLOR_VERIFIED.0,
+                INDICATOR_COLOR_VERIFIED.1,
+                INDICATOR_COLOR_VERIFIED.2,
+            ),
+            on_indicator_verified: Color::WHITE,
         }
     }
 }

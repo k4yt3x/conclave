@@ -17,6 +17,10 @@
 # Only enable this for development or testing environments.
 #accept_invalid_certs = false
 
+# Show verification indicators for verified users and fully-verified rooms.
+# Default: false (hides verified indicators to reduce visual clutter).
+#show_verified_indicator = false
+
 # TUI-only: notification method for new messages.
 # Possible values: "Native" (default), "Bell", "Both", "None".
 #notifications = "Native"

@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 
+use iced::Length;
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard;
 use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_editor,
 };
-use iced::Length;
 
-use conclave_client::state::{ConnectionStatus, DisplayMessage, Room, VerificationStatus};
+use conclave_client::state::{
+    ConnectionStatus, DisplayMessage, Room, RoomTrustLevel, VerificationStatus, room_trust_level,
+};
 
 use crate::theme;
-use crate::widget::message_view;
 use crate::widget::Element;
+use crate::widget::message_view;
 
 pub const SIDEBAR_MIN_WIDTH: f32 = 100.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 500.0;
@@ -77,6 +79,7 @@ impl Dashboard {
         accept_invalid_certs: bool,
         theme: &'a crate::theme::Theme,
         verification_status: &'a HashMap<i64, VerificationStatus>,
+        show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let sidebar = self.view_sidebar(
             rooms,
@@ -95,13 +98,19 @@ impl Dashboard {
             system_messages,
             theme,
             verification_status,
+            show_verified_indicator,
         );
 
         let mut base = row![sidebar, left_handle, main_area];
         if self.show_members_sidebar && active_room.is_some() {
             let right_handle = self.view_drag_handle(DragTarget::RightHandle);
             base = base.push(right_handle);
-            base = base.push(self.view_members_sidebar(rooms, active_room, verification_status));
+            base = base.push(self.view_members_sidebar(
+                rooms,
+                active_room,
+                verification_status,
+                show_verified_indicator,
+            ));
         }
 
         if self.dragging.is_some() {
@@ -355,6 +364,7 @@ impl Dashboard {
         opaque(mouse_area(positioned_card).on_press(Message::CloseUserPopover))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn view_main_area<'a>(
         &'a self,
         rooms: &'a HashMap<i64, Room>,
@@ -363,6 +373,7 @@ impl Dashboard {
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
         verification_status: &'a HashMap<i64, VerificationStatus>,
+        show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let messages = self.view_messages(
             rooms,
@@ -371,12 +382,18 @@ impl Dashboard {
             system_messages,
             theme,
             verification_status,
+            show_verified_indicator,
         );
         let input = self.view_input();
 
         let mut main_column = column![].width(Length::Fill).height(Length::Fill);
         if active_room.is_some() {
-            main_column = main_column.push(self.view_title_bar(rooms, active_room));
+            main_column = main_column.push(self.view_title_bar(
+                rooms,
+                active_room,
+                verification_status,
+                show_verified_indicator,
+            ));
         }
         main_column = main_column.push(messages).push(input);
         main_column.into()
@@ -386,6 +403,8 @@ impl Dashboard {
         &'a self,
         rooms: &'a HashMap<i64, Room>,
         active_room: &'a Option<i64>,
+        verification_status: &'a HashMap<i64, VerificationStatus>,
+        show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let toggle_label = if self.show_members_sidebar { ">" } else { "<" };
         let toggle_btn = button(
@@ -400,6 +419,8 @@ impl Dashboard {
         let content: Element<'a, Message> = match active_room {
             Some(room_id) => {
                 if let Some(room) = rooms.get(room_id) {
+                    let trust = room_trust_level(&room.members, verification_status);
+
                     let name = text(format!("#{}", room.display_name()))
                         .size(14)
                         .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>);
@@ -408,14 +429,57 @@ impl Dashboard {
                     let members = text(format!("  ({count} {label})"))
                         .size(12)
                         .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>);
-                    row![
-                        name,
-                        members,
-                        iced::widget::Space::new().width(Length::Fill),
-                        toggle_btn
-                    ]
-                    .align_y(Vertical::Center)
-                    .into()
+
+                    let title_bar =
+                        container(
+                            row![
+                                name,
+                                members,
+                                iced::widget::Space::new().width(Length::Fill),
+                                toggle_btn
+                            ]
+                            .align_y(Vertical::Center),
+                        )
+                        .padding([8, 12])
+                        .width(Length::Fill)
+                        .class(Box::new(theme::container::title_bar)
+                            as Box<dyn Fn(&theme::Theme) -> _>);
+
+                    let show_badge =
+                        !matches!(trust, RoomTrustLevel::Verified) || show_verified_indicator;
+
+                    if show_badge {
+                        let trust_label = match trust {
+                            RoomTrustLevel::Risky => "!",
+                            RoomTrustLevel::Unverified => "?",
+                            RoomTrustLevel::Verified => "\u{2713}",
+                        };
+                        let trust_style: Box<dyn Fn(&theme::Theme) -> _> = match trust {
+                            RoomTrustLevel::Risky => Box::new(theme::container::trust_risky),
+                            RoomTrustLevel::Unverified => {
+                                Box::new(theme::container::trust_unverified)
+                            }
+                            RoomTrustLevel::Verified => Box::new(theme::container::trust_verified),
+                        };
+                        let badge_size = 30.0;
+                        let trust_square = container(
+                            text(trust_label)
+                                .size(16)
+                                .class(Box::new(theme::text::on_error)
+                                    as Box<dyn Fn(&theme::Theme) -> _>),
+                        )
+                        .width(Length::Fixed(badge_size))
+                        .height(Length::Fixed(badge_size))
+                        .align_x(Horizontal::Center)
+                        .align_y(Vertical::Center)
+                        .class(trust_style);
+
+                        row![trust_square, title_bar]
+                            .align_y(Vertical::Center)
+                            .into()
+                    } else {
+                        title_bar.into()
+                    }
                 } else {
                     row![
                         text("Unknown room")
@@ -432,7 +496,6 @@ impl Dashboard {
         };
 
         container(content)
-            .padding([8, 12])
             .width(Length::Fill)
             .class(Box::new(theme::container::title_bar) as Box<dyn Fn(&theme::Theme) -> _>)
             .into()
@@ -443,6 +506,7 @@ impl Dashboard {
         rooms: &'a HashMap<i64, Room>,
         active_room: &'a Option<i64>,
         verification_status: &'a HashMap<i64, VerificationStatus>,
+        show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let member_count = active_room
             .and_then(|id| rooms.get(&id))
@@ -473,6 +537,7 @@ impl Dashboard {
                 let indicator = match verification_status.get(&member.user_id) {
                     Some(VerificationStatus::Changed) => "[!] ",
                     Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
+                    Some(VerificationStatus::Verified) if show_verified_indicator => "[\u{2713}] ",
                     Some(VerificationStatus::Verified) | None => "",
                 };
                 let member_display = match member.alias.as_deref().filter(|a| !a.is_empty()) {
@@ -501,6 +566,7 @@ impl Dashboard {
             .into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn view_messages<'a>(
         &'a self,
         rooms: &'a HashMap<i64, Room>,
@@ -509,6 +575,7 @@ impl Dashboard {
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
         verification_status: &'a HashMap<i64, VerificationStatus>,
+        show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let messages: &[DisplayMessage] = match active_room {
             Some(room_id) => room_messages
@@ -534,6 +601,7 @@ impl Dashboard {
                 group_name,
                 theme,
                 verification_status,
+                show_verified_indicator,
             );
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);

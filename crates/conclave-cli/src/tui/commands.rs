@@ -94,10 +94,10 @@ async fn execute_auth(
             )
             .await?;
 
-            let count = result.key_packages_uploaded;
-            msgs.push(DisplayMessage::system(&format!(
-                "{count} key packages uploaded."
-            )));
+            tracing::debug!(
+                count = result.key_packages_uploaded,
+                "key packages uploaded"
+            );
 
             *api.lock().await = result.into_api_client(config.accept_invalid_certs);
             state.username = Some(result.username.clone());
@@ -132,10 +132,10 @@ async fn execute_auth(
             )
             .await?;
 
-            let count = result.key_packages_uploaded;
-            msgs.push(DisplayMessage::system(&format!(
-                "{count} key packages uploaded."
-            )));
+            tracing::debug!(
+                count = result.key_packages_uploaded,
+                "key packages uploaded"
+            );
 
             *api.lock().await = result.into_api_client(config.accept_invalid_certs);
             state.username = Some(result.username.clone());
@@ -479,12 +479,12 @@ async fn execute_room(
             let policy = api.lock().await.get_retention_policy(group_id).await?;
             let server = format_duration(policy.server_retention_seconds);
             let group = format_duration(policy.group_expiry_seconds);
-            msgs.push(DisplayMessage::system(&format!("Server retention: {server}")));
+            msgs.push(DisplayMessage::system(&format!(
+                "Server retention: {server}"
+            )));
             msgs.push(DisplayMessage::system(&format!("Room expiry: {group}")));
-            let effective = compute_effective(
-                policy.server_retention_seconds,
-                policy.group_expiry_seconds,
-            );
+            let effective =
+                compute_effective(policy.server_retention_seconds, policy.group_expiry_seconds);
             msgs.push(DisplayMessage::system(&format!(
                 "Effective: {}",
                 format_duration(effective)
@@ -498,10 +498,7 @@ async fn execute_room(
                 .active_room
                 .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
             let seconds = parse_duration(&dur)?;
-            api.lock()
-                .await
-                .set_group_expiry(group_id, seconds)
-                .await?;
+            api.lock().await.set_group_expiry(group_id, seconds).await?;
             msgs.push(DisplayMessage::system(&format!(
                 "Message expiry set to {}",
                 format_duration(seconds)
@@ -802,9 +799,9 @@ async fn execute_member(
                         let verification = msg_store
                             .as_ref()
                             .and_then(|store| {
-                                m.signing_key_fingerprint.as_ref().map(|fp| {
-                                    store.get_verification_status(m.user_id, fp)
-                                })
+                                m.signing_key_fingerprint
+                                    .as_ref()
+                                    .map(|fp| store.get_verification_status(m.user_id, fp))
                             })
                             .unwrap_or(conclave_client::state::VerificationStatus::Unknown);
 
@@ -1028,9 +1025,7 @@ async fn execute_profile(
             if let Some(mls_mgr) = mls {
                 let fp = mls_mgr.signing_key_fingerprint();
                 let formatted = conclave_client::mls::format_fingerprint(&fp);
-                msgs.push(DisplayMessage::system(&format!(
-                    "Fingerprint: {formatted}"
-                )));
+                msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
             }
         }
 
@@ -1045,14 +1040,10 @@ async fn execute_profile(
             if !resp.signing_key_fingerprint.is_empty() {
                 let formatted =
                     conclave_client::mls::format_fingerprint(&resp.signing_key_fingerprint);
-                msgs.push(DisplayMessage::system(&format!(
-                    "Fingerprint: {formatted}"
-                )));
+                msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
                 if let Some(store) = msg_store {
-                    let status = store.get_verification_status(
-                        resp.user_id,
-                        &resp.signing_key_fingerprint,
-                    );
+                    let status =
+                        store.get_verification_status(resp.user_id, &resp.signing_key_fingerprint);
                     let label = match status {
                         conclave_client::state::VerificationStatus::Unknown => "Unknown",
                         conclave_client::state::VerificationStatus::Unverified => "Unverified",
@@ -1125,9 +1116,7 @@ async fn execute_profile(
                     )));
                 }
             } else {
-                msgs.push(DisplayMessage::system(
-                    "Message store not available.",
-                ));
+                msgs.push(DisplayMessage::system("Message store not available."));
             }
         }
 
@@ -1138,11 +1127,16 @@ async fn execute_profile(
                     msgs.push(DisplayMessage::system("No known fingerprints."));
                 } else {
                     msgs.push(DisplayMessage::system("Known fingerprints:"));
-                    for (user_id, fingerprint, verified) in &entries {
+                    for (user_id, fingerprint, verified, key_changed) in &entries {
                         let display_name = resolve_display_name(*user_id, state);
-                        let status = if *verified { "Verified" } else { "Unverified" };
-                        let formatted =
-                            conclave_client::mls::format_fingerprint(fingerprint);
+                        let status = if *key_changed {
+                            "Changed"
+                        } else if *verified {
+                            "Verified"
+                        } else {
+                            "Unverified"
+                        };
+                        let formatted = conclave_client::mls::format_fingerprint(fingerprint);
                         msgs.push(DisplayMessage::system(&format!(
                             "  {display_name}: [{status}] {formatted}"
                         )));
@@ -1154,10 +1148,7 @@ async fn execute_profile(
         }
 
         Command::Passwd { new_password } => {
-            api.lock()
-                .await
-                .change_password(&new_password)
-                .await?;
+            api.lock().await.change_password(&new_password).await?;
             msgs.push(DisplayMessage::system("Password changed successfully."));
         }
 
@@ -1288,9 +1279,7 @@ pub async fn load_rooms(
                 }
                 if let Some(fp) = &member.signing_key_fingerprint {
                     let status = store.get_verification_status(member.user_id, fp);
-                    state
-                        .verification_status
-                        .insert(member.user_id, status);
+                    state.verification_status.insert(member.user_id, status);
                 }
             }
         }

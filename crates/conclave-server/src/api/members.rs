@@ -282,13 +282,15 @@ pub async fn list_admins(
     let admins = state.db.get_group_admins(group_id)?;
     let admin_protos = admins
         .into_iter()
-        .map(|(uid, uname, ualias, ufingerprint)| conclave_proto::GroupMember {
-            user_id: uid,
-            username: uname,
-            alias: ualias.unwrap_or_default(),
-            role: "admin".into(),
-            signing_key_fingerprint: ufingerprint.unwrap_or_default(),
-        })
+        .map(
+            |(uid, uname, ualias, ufingerprint)| conclave_proto::GroupMember {
+                user_id: uid,
+                username: uname,
+                alias: ualias.unwrap_or_default(),
+                role: "admin".into(),
+                signing_key_fingerprint: ufingerprint.unwrap_or_default(),
+            },
+        )
         .collect();
 
     Ok(proto_response(

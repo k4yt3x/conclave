@@ -27,6 +27,11 @@ pub struct ClientConfig {
     /// Only enable this for development or testing environments.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+
+    /// Show verification indicators for verified users and fully-verified rooms.
+    /// Default: false (hides verified indicators to reduce visual clutter).
+    #[serde(default)]
+    pub show_verified_indicator: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -59,6 +64,7 @@ impl Default for ClientConfig {
             data_dir: default_data_dir(),
             config_dir: default_config_dir(),
             accept_invalid_certs: false,
+            show_verified_indicator: false,
         }
     }
 }

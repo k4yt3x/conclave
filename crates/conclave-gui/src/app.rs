@@ -389,10 +389,7 @@ impl Conclave {
                 if let Some(store) = &self.msg_store {
                     for (group_id, room) in &self.rooms {
                         if room.message_expiry_seconds > 0 {
-                            store.cleanup_expired_messages(
-                                *group_id,
-                                room.message_expiry_seconds,
-                            );
+                            store.cleanup_expired_messages(*group_id, room.message_expiry_seconds);
                         }
                     }
                 }
@@ -424,6 +421,7 @@ impl Conclave {
                     self.config.accept_invalid_certs,
                     &self.theme,
                     &self.verification_status,
+                    self.config.show_verified_indicator,
                 )
                 .map(Message::Dashboard),
         }
@@ -476,10 +474,7 @@ impl Conclave {
                 key: keyboard::Key::Character(c),
                 modifiers,
                 ..
-            }) if modifiers.alt()
-                && c.len() == 1
-                && matches!(c.as_bytes()[0], b'1'..=b'9') =>
-            {
+            }) if modifiers.alt() && c.len() == 1 && matches!(c.as_bytes()[0], b'1'..=b'9') => {
                 Some(Message::GoToRoom(c.as_bytes()[0] - b'0'))
             }
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
@@ -502,8 +497,7 @@ impl Conclave {
 
         if conclave_client::state::has_expiring_rooms(&self.rooms) {
             subs.push(
-                iced::time::every(std::time::Duration::from_secs(1))
-                    .map(|_| Message::ExpiryTick),
+                iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::ExpiryTick),
             );
         }
 

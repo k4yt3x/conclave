@@ -49,6 +49,7 @@ pub async fn run(
     )));
 
     let mut state = AppState::new();
+    state.show_verified_indicator = config.show_verified_indicator;
     let mut input = InputLine::new();
     let mut mls: Option<MlsManager> = None;
     let mut msg_store: Option<MessageStore> = None;
@@ -70,7 +71,12 @@ pub async fn run(
                 match generate_initial_key_packages(mls_mgr) {
                     Ok(entries) => {
                         let fingerprint = mls_mgr.signing_key_fingerprint();
-                        if let Err(e) = api.lock().await.upload_key_packages(entries, &fingerprint).await {
+                        if let Err(e) = api
+                            .lock()
+                            .await
+                            .upload_key_packages(entries, &fingerprint)
+                            .await
+                        {
                             state.system_messages.push(DisplayMessage::system(&format!(
                                 "Warning: failed to upload key packages: {e}"
                             )));
@@ -421,9 +427,7 @@ async fn handle_key_event(
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(LoopAction::Quit),
 
-        (KeyCode::Enter, m)
-            if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
-        {
+        (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) => {
             input.insert('\n');
             let _ = render::render_full(stdout, state, input);
             return Ok(LoopAction::Continue);

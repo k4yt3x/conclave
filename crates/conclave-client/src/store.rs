@@ -114,6 +114,18 @@ impl MessageStore {
             crate::error::Error::Other(format!("known_fingerprints table creation failed: {e}"))
         })?;
 
+        // Migrate: add key_changed column for persistent Changed status.
+        if let Err(error) = conn.execute_batch(
+            "ALTER TABLE known_fingerprints ADD COLUMN key_changed INTEGER NOT NULL DEFAULT 0;",
+        ) {
+            let msg = error.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(crate::error::Error::Other(format!(
+                    "migration failed: {msg}"
+                )));
+            }
+        }
+
         Ok(Self { conn })
     }
 
@@ -213,10 +225,10 @@ impl MessageStore {
     /// Delete locally cached messages for a group based on its expiry policy.
     pub fn cleanup_expired_messages(&self, group_id: i64, expiry_seconds: i64) {
         if expiry_seconds == 0 {
-            if let Err(error) = self
-                .conn
-                .execute("DELETE FROM messages WHERE group_id = ?1 AND is_system = 0", params![group_id])
-            {
+            if let Err(error) = self.conn.execute(
+                "DELETE FROM messages WHERE group_id = ?1 AND is_system = 0",
+                params![group_id],
+            ) {
                 tracing::trace!(%error, "failed to cleanup expired messages from local store");
             }
         } else if expiry_seconds > 0 {
@@ -245,15 +257,16 @@ impl MessageStore {
             return VerificationStatus::Unknown;
         }
 
-        let existing: Option<(String, bool)> = self
+        let existing: Option<(String, bool, bool)> = self
             .conn
             .query_row(
-                "SELECT fingerprint, verified FROM known_fingerprints WHERE user_id = ?1",
+                "SELECT fingerprint, verified, key_changed FROM known_fingerprints WHERE user_id = ?1",
                 params![user_id],
                 |row| {
                     let fp: String = row.get(0)?;
                     let verified: bool = row.get::<_, i32>(1)? != 0;
-                    Ok((fp, verified))
+                    let key_changed: bool = row.get::<_, i32>(2)? != 0;
+                    Ok((fp, verified, key_changed))
                 },
             )
             .ok();
@@ -268,16 +281,18 @@ impl MessageStore {
                 }
                 VerificationStatus::Unverified
             }
-            Some((stored_fp, verified)) => {
+            Some((stored_fp, verified, key_changed)) => {
                 if stored_fp == current_fingerprint {
-                    if verified {
+                    if key_changed {
+                        VerificationStatus::Changed
+                    } else if verified {
                         VerificationStatus::Verified
                     } else {
                         VerificationStatus::Unverified
                     }
                 } else {
                     if let Err(error) = self.conn.execute(
-                        "UPDATE known_fingerprints SET fingerprint = ?2, verified = 0, verified_at = NULL WHERE user_id = ?1",
+                        "UPDATE known_fingerprints SET fingerprint = ?2, verified = 0, verified_at = NULL, key_changed = 1 WHERE user_id = ?1",
                         params![user_id, current_fingerprint],
                     ) {
                         tracing::warn!(%error, "failed to update TOFU fingerprint");
@@ -293,7 +308,7 @@ impl MessageStore {
     /// Returns false if no TOFU entry exists for this user.
     pub fn verify_user(&self, user_id: i64) -> bool {
         match self.conn.execute(
-            "UPDATE known_fingerprints SET verified = 1, verified_at = unixepoch() WHERE user_id = ?1",
+            "UPDATE known_fingerprints SET verified = 1, key_changed = 0, verified_at = unixepoch() WHERE user_id = ?1",
             params![user_id],
         ) {
             Ok(count) => count > 0,
@@ -309,7 +324,7 @@ impl MessageStore {
     /// Returns false if no TOFU entry exists for this user.
     pub fn unverify_user(&self, user_id: i64) -> bool {
         match self.conn.execute(
-            "UPDATE known_fingerprints SET verified = 0, verified_at = NULL WHERE user_id = ?1",
+            "UPDATE known_fingerprints SET verified = 0, key_changed = 0, verified_at = NULL WHERE user_id = ?1",
             params![user_id],
         ) {
             Ok(count) => count > 0,
@@ -337,10 +352,10 @@ impl MessageStore {
 
     /// Get all known fingerprints from the TOFU store.
     ///
-    /// Returns `(user_id, fingerprint, verified)` tuples ordered by user ID.
-    pub fn get_all_known_fingerprints(&self) -> Vec<(i64, String, bool)> {
+    /// Returns `(user_id, fingerprint, verified, key_changed)` tuples ordered by user ID.
+    pub fn get_all_known_fingerprints(&self) -> Vec<(i64, String, bool, bool)> {
         let mut stmt = match self.conn.prepare(
-            "SELECT user_id, fingerprint, verified FROM known_fingerprints ORDER BY user_id",
+            "SELECT user_id, fingerprint, verified, key_changed FROM known_fingerprints ORDER BY user_id",
         ) {
             Ok(s) => s,
             Err(error) => {
@@ -353,6 +368,7 @@ impl MessageStore {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i32>(2)? != 0,
+                row.get::<_, i32>(3)? != 0,
             ))
         })
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -684,5 +700,127 @@ mod tests {
         store.set_last_seen_seq(2, 200);
         assert_eq!(store.get_last_seen_seq(1), 100);
         assert_eq!(store.get_last_seen_seq(2), 200);
+    }
+
+    #[test]
+    fn test_tofu_first_seen_returns_unverified() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        let status = store.get_verification_status(1, "aabbccdd");
+        assert_eq!(status, crate::state::VerificationStatus::Unverified);
+    }
+
+    #[test]
+    fn test_tofu_same_fingerprint_returns_unverified() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        let status = store.get_verification_status(1, "aabbccdd");
+        assert_eq!(status, crate::state::VerificationStatus::Unverified);
+    }
+
+    #[test]
+    fn test_tofu_verified_returns_verified() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        store.verify_user(1);
+        let status = store.get_verification_status(1, "aabbccdd");
+        assert_eq!(status, crate::state::VerificationStatus::Verified);
+    }
+
+    #[test]
+    fn test_tofu_changed_fingerprint_returns_changed() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        let status = store.get_verification_status(1, "newfingerprint");
+        assert_eq!(status, crate::state::VerificationStatus::Changed);
+    }
+
+    #[test]
+    fn test_tofu_changed_is_persistent() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        store.get_verification_status(1, "newfingerprint");
+        // Second call with same new fingerprint should still return Changed.
+        let status = store.get_verification_status(1, "newfingerprint");
+        assert_eq!(status, crate::state::VerificationStatus::Changed);
+    }
+
+    #[test]
+    fn test_tofu_changed_persists_across_reopen() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = MessageStore::open(dir.path()).unwrap();
+            store.get_verification_status(1, "aabbccdd");
+            store.get_verification_status(1, "newfingerprint");
+        }
+        let store = MessageStore::open(dir.path()).unwrap();
+        let status = store.get_verification_status(1, "newfingerprint");
+        assert_eq!(status, crate::state::VerificationStatus::Changed);
+    }
+
+    #[test]
+    fn test_tofu_verify_clears_changed() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        store.verify_user(1);
+        store.get_verification_status(1, "newfingerprint");
+        assert_eq!(
+            store.get_verification_status(1, "newfingerprint"),
+            crate::state::VerificationStatus::Changed,
+        );
+        store.verify_user(1);
+        let status = store.get_verification_status(1, "newfingerprint");
+        assert_eq!(status, crate::state::VerificationStatus::Verified);
+    }
+
+    #[test]
+    fn test_tofu_unverify_clears_changed() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "aabbccdd");
+        store.get_verification_status(1, "newfingerprint");
+        store.unverify_user(1);
+        let status = store.get_verification_status(1, "newfingerprint");
+        assert_eq!(status, crate::state::VerificationStatus::Unverified);
+    }
+
+    #[test]
+    fn test_tofu_empty_fingerprint_returns_unknown() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        let status = store.get_verification_status(1, "");
+        assert_eq!(status, crate::state::VerificationStatus::Unknown);
+    }
+
+    #[test]
+    fn test_tofu_verify_nonexistent_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert!(!store.verify_user(999));
+    }
+
+    #[test]
+    fn test_tofu_unverify_nonexistent_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        assert!(!store.unverify_user(999));
+    }
+
+    #[test]
+    fn test_tofu_get_all_includes_key_changed() {
+        let dir = TempDir::new().unwrap();
+        let store = MessageStore::open(dir.path()).unwrap();
+        store.get_verification_status(1, "fp1");
+        store.get_verification_status(2, "fp2");
+        store.get_verification_status(2, "fp2_new");
+        let entries = store.get_all_known_fingerprints();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (1, "fp1".to_string(), false, false));
+        assert_eq!(entries[1], (2, "fp2_new".to_string(), false, true));
     }
 }

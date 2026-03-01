@@ -161,13 +161,12 @@ impl Login {
         .max_width(400);
 
         if self.mode == Mode::Register {
-            let token_input =
-                text_input("Registration Token (optional)", &self.registration_token)
-                    .id("login_registration_token")
-                    .on_input(Message::RegistrationTokenChanged)
-                    .on_submit(Message::Submit)
-                    .padding(10)
-                    .size(14);
+            let token_input = text_input("Registration Token (optional)", &self.registration_token)
+                .id("login_registration_token")
+                .on_input(Message::RegistrationTokenChanged)
+                .on_submit(Message::Submit)
+                .padding(10)
+                .size(14);
             form = form.push(Space::new().height(8));
             form = form.push(
                 text("Registration Token (optional)")
