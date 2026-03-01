@@ -1,4 +1,8 @@
+# Rust
 /target
+
+# mdBook generated files
+/docs/spec/book
 
 # Project-specific files
 /temp
