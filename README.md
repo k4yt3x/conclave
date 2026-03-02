@@ -4,7 +4,7 @@ A minimalistic, self-hosted, end-to-end encrypted group messaging system built o
 
 Full protocol specification and documentation: **[docs.conclave.im](https://docs.conclave.im)**
 
-![Conclave GUI Screenshot](https://github.com/user-attachments/assets/0fbe825d-4ced-49d6-94e4-24e1e7e5d22b)
+![Conclave GUI Screenshot](https://github.com/user-attachments/assets/49b94531-1a50-4a31-8f2d-bf0e4e19b6be)
 
 ## Overview
 
@@ -12,11 +12,11 @@ Conclave aims to make secure group communication accessible to everyone. All mes
 
 ## Properties
 
-- **5-minute setup** — single binary, no config required, no domain required
-- **End-to-end encrypted** — MLS (RFC 9420) with forward secrecy and post-compromise security
-- **Simple protocol** — single-server, no federation, minimal attack surface
-- **Standard HTTP transport** — protobuf over HTTP/2 with SSE, compatible with reverse proxies and CDNs
-- **Message expiration** — server-wide and per-room retention policies
+- **5-minute setup**: single binary, no config required, no domain required
+- **End-to-end encrypted**: MLS (RFC 9420) with forward secrecy and post-compromise security
+- **Simple protocol**: single-server, no federation, minimal attack surface
+- **Standard HTTP transport**: protobuf over HTTP/2 with SSE, compatible with reverse proxies and CDNs
+- **Message expiration**: server-wide and per-room retention policies
 
 ## Comparison
 
