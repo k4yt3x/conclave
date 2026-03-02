@@ -13,9 +13,9 @@ command = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-fd-lock = "4"
 conclave-proto = { workspace = true }
 directories = "6"
+fd-lock = "4"
 hex = { workspace = true }
 mls-rs = { version = "0.53", features = ["sqlite-bundled", "last_resort_key_package_ext"] }
 mls-rs-codec = "0.7"
@@ -26,8 +26,8 @@ prost = { workspace = true }
 reqwest = { version = "0.12", features = ["http2"] }
 reqwest-eventsource = "0.6"
 rusqlite = { version = "0.37", features = ["bundled"] }
-sha2 = "0.10"
 serde = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
