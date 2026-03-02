@@ -666,6 +666,10 @@ impl Conclave {
                 )
             }
 
+            // Account deletion / group deletion
+            Ok(Command::Expunge { password }) => self.expunge_account(password),
+            Ok(Command::Delete) => self.delete_group(),
+
             // Leave / security / reset
             Ok(Command::Part) => self.leave_group(),
             Ok(Command::Rotate) => self.rotate_keys(),

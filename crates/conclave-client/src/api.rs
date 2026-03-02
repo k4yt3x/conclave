@@ -558,6 +558,21 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn delete_account(&self, password: &str) -> Result<()> {
+        let request = conclave_proto::DeleteAccountRequest {
+            password: password.to_string(),
+        };
+        self.post("/api/v1/delete-account", &request).await?;
+        Ok(())
+    }
+
+    pub async fn delete_group(&self, group_id: i64) -> Result<()> {
+        let empty = conclave_proto::DeleteGroupResponse {};
+        self.post(&format!("/api/v1/groups/{group_id}/delete"), &empty)
+            .await?;
+        Ok(())
+    }
+
     pub async fn reset_account(&self) -> Result<()> {
         let url = format!("{}/api/v1/reset-account", self.base_url);
         let mut request = self

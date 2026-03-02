@@ -1,4 +1,4 @@
-# Authentication Endpoints
+# Account Endpoints
 
 ## Register
 
@@ -260,3 +260,45 @@ Group membership on the server is NOT affected — the user remains a member of 
 ### SSE Events
 
 None (the `IdentityResetEvent` is emitted later, when the user performs external joins to rejoin groups).
+
+## Delete Account
+
+Permanently deletes the user's account and all associated data. The server manually deletes from tables without ON DELETE CASCADE (pending_invites, messages) before deleting the user row.
+
+```
+POST /api/v1/delete-account
+```
+
+**Authentication**: Required.
+
+### Request Body — `DeleteAccountRequest`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `password` | string | Yes | Current password for confirmation. |
+
+### Response Body — `DeleteAccountResponse`
+
+Empty message.
+
+### Status Codes
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | Account deleted. |
+| 401 Unauthorized | Invalid password or token. |
+
+### Notes
+
+This is an irreversible operation. The server:
+
+1. Verifies the password against the stored Argon2id hash.
+2. Collects all group memberships and their members for SSE notification.
+3. Deletes pending invites, messages, and then the user row (cascade handles remaining tables).
+4. Broadcasts `MemberRemovedEvent` per group to remaining members.
+
+Remaining group members will have phantom MLS leaves for the deleted user. No removal commits exist. Other members can `/rotate` to advance the epoch.
+
+### SSE Events
+
+`MemberRemovedEvent` is broadcast per group to all remaining members (excluding the deleted user).

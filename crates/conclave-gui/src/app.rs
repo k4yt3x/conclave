@@ -92,6 +92,7 @@ pub enum Message {
     ResetComplete(Result<operations::ResetResult, String>),
     UserAliasLoaded(Result<Option<String>, String>),
     NickResult(Result<String, String>),
+    ExpungeResult(Result<(), String>),
 
     // Keyboard / window events
     TabPressed,
@@ -298,6 +299,19 @@ impl Conclave {
                 }
                 Err(e) => {
                     self.push_system_message(&format!("Failed to set alias: {e}"));
+                    Task::none()
+                }
+            },
+            Message::ExpungeResult(result) => match result {
+                Ok(()) => {
+                    let logout_task = self.perform_logout();
+                    self.push_system_message(
+                        "Account permanently deleted. All data has been wiped.",
+                    );
+                    logout_task
+                }
+                Err(e) => {
+                    self.push_system_message(&format!("Failed to delete account: {e}"));
                     Task::none()
                 }
             },

@@ -276,6 +276,14 @@ message ChangePasswordRequest {
 
 message ChangePasswordResponse {}
 
+message DeleteAccountRequest {
+  string password = 1;
+}
+
+message DeleteAccountResponse {}
+
+message DeleteGroupResponse {}
+
 // ============================================================
 // SSE Events
 // ============================================================
@@ -290,6 +298,7 @@ message ServerEvent {
     InviteReceivedEvent invite_received = 6;
     InviteDeclinedEvent invite_declined = 7;
     InviteCancelledEvent invite_cancelled = 8;
+    GroupDeletedEvent group_deleted = 9;
   }
 }
 
@@ -333,6 +342,10 @@ message InviteDeclinedEvent {
 }
 
 message InviteCancelledEvent {
+  int64 group_id = 1;
+}
+
+message GroupDeletedEvent {
   int64 group_id = 1;
 }
 

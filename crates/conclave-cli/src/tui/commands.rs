@@ -28,9 +28,10 @@ pub async fn execute(
     msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     match cmd {
-        Command::Register { .. } | Command::Login { .. } | Command::Logout => {
-            execute_auth(cmd, api, state, mls, config, msg_store).await
-        }
+        Command::Register { .. }
+        | Command::Login { .. }
+        | Command::Logout
+        | Command::Expunge { .. } => execute_account(cmd, api, state, mls, config, msg_store).await,
         Command::Create { .. }
         | Command::Rooms
         | Command::Join { .. }
@@ -38,7 +39,8 @@ pub async fn execute(
         | Command::Part
         | Command::Unread
         | Command::Info
-        | Command::Expire { .. } => execute_room(cmd, api, state, mls, config, msg_store).await,
+        | Command::Expire { .. }
+        | Command::Delete => execute_room(cmd, api, state, mls, config, msg_store).await,
         Command::Invite { .. }
         | Command::Kick { .. }
         | Command::Promote { .. }
@@ -66,7 +68,7 @@ pub async fn execute(
     }
 }
 
-async fn execute_auth(
+async fn execute_account(
     cmd: Command,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
@@ -195,6 +197,31 @@ async fn execute_auth(
             }
 
             msgs.push(DisplayMessage::system("Logged out. Session revoked."));
+        }
+
+        Command::Expunge { password } => {
+            if !state.logged_in {
+                msgs.push(DisplayMessage::system("Not logged in."));
+                return Ok((msgs, start_sse));
+            }
+
+            {
+                let api_guard = api.lock().await;
+                operations::delete_account(&api_guard, &password, &config.data_dir).await?;
+            }
+
+            api.lock().await.set_token(String::new());
+            state.logged_in = false;
+            state.username = None;
+            state.user_id = None;
+            state.active_room = None;
+            state.rooms.clear();
+            state.group_mapping.clear();
+            *mls = None;
+
+            msgs.push(DisplayMessage::system(
+                "Account permanently deleted. All data has been wiped.",
+            ));
         }
 
         _ => {}
@@ -502,6 +529,29 @@ async fn execute_room(
             msgs.push(DisplayMessage::system(&format!(
                 "Message expiry set to {}",
                 format_duration(seconds)
+            )));
+        }
+
+        Command::Delete => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let name = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.display_name())
+                .unwrap_or_default();
+
+            api.lock().await.delete_group(group_id).await?;
+
+            state.group_mapping.remove(&group_id);
+            state.rooms.remove(&group_id);
+            state.room_messages.remove(&group_id);
+            state.active_room = None;
+            state.scroll_offset = 0;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Room #{name} has been deleted"
             )));
         }
 

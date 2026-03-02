@@ -1023,6 +1023,55 @@ impl Conclave {
         }
     }
 
+    pub(crate) fn expunge_account(&mut self, password: String) -> Task<Message> {
+        let params = self.api_params();
+        let data_dir = self.config.data_dir.clone();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                operations::delete_account(&api, &password, &data_dir)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::ExpungeResult,
+        )
+    }
+
+    pub(crate) fn delete_group(&mut self) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first");
+                return Task::none();
+            }
+        };
+
+        let room_name = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.display_name())
+            .unwrap_or_default();
+
+        let params = self.api_params();
+
+        self.group_mapping.remove(&group_id);
+        self.rooms.remove(&group_id);
+        self.active_room = None;
+        self.push_system_message(&format!("Room #{room_name} has been deleted"));
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                api.delete_group(group_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![])
+            },
+            Message::CommandResult,
+        )
+    }
+
     pub(crate) fn accept_welcomes(&mut self) -> Task<Message> {
         let user_id = match self.user_id {
             Some(id) => id,

@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::validation::{validate_alias, validate_password, validate_username};
 
-use super::{decode_proto, notify_group_members, proto_response, unix_now};
+use super::{broadcast_sse, decode_proto, notify_group_members, proto_response, unix_now};
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
@@ -223,6 +223,71 @@ pub async fn change_password(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::ChangePasswordResponse {},
+    ))
+}
+
+pub async fn delete_account(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::DeleteAccountRequest>(&body)?;
+
+    let password_hash = state
+        .db
+        .get_password_hash(auth.user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    if !auth::verify_password(&request.password, &password_hash)? {
+        return Err(Error::Unauthorized("invalid password".into()));
+    }
+
+    // Collect group memberships and their members for SSE before deletion.
+    let user_groups = state.db.list_user_groups(auth.user_id)?;
+    let group_members: Vec<(i64, Vec<i64>)> = user_groups
+        .iter()
+        .filter_map(|group| {
+            state
+                .db
+                .get_group_members(group.group_id)
+                .ok()
+                .map(|members| {
+                    let ids = members
+                        .iter()
+                        .filter(|m| m.user_id != auth.user_id)
+                        .map(|m| m.user_id)
+                        .collect();
+                    (group.group_id, ids)
+                })
+        })
+        .collect();
+
+    state.db.delete_user(auth.user_id)?;
+
+    // Broadcast MemberRemovedEvent per group to remaining members.
+    for (group_id, member_ids) in group_members {
+        if member_ids.is_empty() {
+            continue;
+        }
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::MemberRemoved(
+                    conclave_proto::MemberRemovedEvent {
+                        group_id,
+                        removed_user_id: auth.user_id,
+                    },
+                )),
+            },
+            member_ids,
+        );
+    }
+
+    tracing::info!(user_id = auth.user_id, "account deleted");
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::DeleteAccountResponse {},
     ))
 }
 

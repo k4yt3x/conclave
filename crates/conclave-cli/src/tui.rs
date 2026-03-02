@@ -596,6 +596,7 @@ async fn handle_enter(
             return Ok(LoopAction::Quit);
         }
         Ok(cmd) => {
+            let is_expunge = matches!(cmd, Command::Expunge { .. });
             match commands::execute(cmd, api, state, mls, config, msg_store).await {
                 Ok((msgs, should_start_sse)) => {
                     for msg in msgs {
@@ -608,6 +609,9 @@ async fn handle_enter(
                             msg_store,
                             notifications,
                         );
+                    }
+                    if is_expunge {
+                        return Ok(LoopAction::Quit);
                     }
                     if should_start_sse {
                         // Open the message store after a fresh /login

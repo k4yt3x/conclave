@@ -203,6 +203,14 @@ impl Database {
         Ok(())
     }
 
+    /// Delete a group. CASCADE handles all dependent rows (group_members,
+    /// pending_welcomes, messages, message_fetch_watermarks, etc.).
+    pub fn delete_group(&self, group_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
+        Ok(())
+    }
+
     /// Check whether a user is an admin of a group.
     pub fn is_group_admin(&self, group_id: i64, user_id: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());

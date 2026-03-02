@@ -89,6 +89,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/passwd <new_password>",
         description: "Change your password",
     },
+    CommandSpec {
+        name: "expunge",
+        aliases: &[],
+        category: CommandCategory::Account,
+        usage: "/expunge <password>",
+        description: "Permanently delete your account and all data",
+    },
     // Rooms
     CommandSpec {
         name: "create",
@@ -152,6 +159,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         category: CommandCategory::Rooms,
         usage: "/expire [duration]",
         description: "Set or view message expiration policy",
+    },
+    CommandSpec {
+        name: "delete",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/delete",
+        description: "Delete the active room (admin only)",
     },
     // Members
     CommandSpec {
@@ -372,6 +386,9 @@ pub enum Command {
     Passwd {
         new_password: String,
     },
+    Expunge {
+        password: String,
+    },
 
     // Rooms
     Create {
@@ -392,6 +409,7 @@ pub enum Command {
     Expire {
         duration: Option<String>,
     },
+    Delete,
 
     // Members
     Members,
@@ -543,6 +561,15 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 new_password: parts[1].to_string(),
             })
         }
+        "expunge" => {
+            let parts: Vec<&str> = full_input.splitn(2, ' ').collect();
+            if parts.len() < 2 || parts[1].is_empty() {
+                return Err(Error::Other("Usage: /expunge <password>".into()));
+            }
+            Ok(Command::Expunge {
+                password: parts[1].to_string(),
+            })
+        }
 
         // Rooms
         "create" => {
@@ -570,6 +597,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             Ok(Command::Topic { topic })
         }
         "unread" => Ok(Command::Unread),
+        "delete" => Ok(Command::Delete),
         "expire" => {
             let duration = if parts.len() >= 2 {
                 let prefix = format!("{cmd_word} ");

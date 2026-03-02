@@ -136,6 +136,17 @@ pub async fn initialize_mls_and_upload_key_packages(
     Ok(count)
 }
 
+/// Delete the user's account on the server and wipe all local data.
+pub async fn delete_account(api: &ApiClient, password: &str, data_dir: &Path) -> Result<()> {
+    api.delete_account(password).await?;
+
+    if data_dir.exists() {
+        std::fs::remove_dir_all(data_dir)?;
+    }
+
+    Ok(())
+}
+
 /// Reset the account: wipe all local MLS state, regenerate identity and key
 /// packages, then rejoin each group via external commit.
 ///

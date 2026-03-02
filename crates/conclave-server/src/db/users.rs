@@ -96,6 +96,25 @@ impl Database {
         Ok(())
     }
 
+    /// Delete a user and all their data. Manually deletes from tables without
+    /// ON DELETE CASCADE (pending_invites, messages) before deleting the user
+    /// row, which cascades to everything else.
+    pub fn delete_user(&self, user_id: i64) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let sp = conn.savepoint()?;
+        sp.execute(
+            "DELETE FROM pending_invites WHERE inviter_id = ?1 OR invitee_id = ?1",
+            params![user_id],
+        )?;
+        sp.execute(
+            "DELETE FROM messages WHERE sender_id = ?1",
+            params![user_id],
+        )?;
+        sp.execute("DELETE FROM users WHERE id = ?1", params![user_id])?;
+        sp.commit()?;
+        Ok(())
+    }
+
     pub fn update_user_alias(&self, user_id: i64, alias: Option<&str>) -> Result<()> {
         if let Some(alias) = alias {
             validate_alias(alias)?;

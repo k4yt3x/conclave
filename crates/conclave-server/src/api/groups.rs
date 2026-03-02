@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::validation::validate_group_name;
 
-use super::{decode_proto, notify_group_members, proto_response};
+use super::{broadcast_sse, decode_proto, notify_group_members, proto_response};
 
 pub async fn create_group(
     State(state): State<Arc<AppState>>,
@@ -134,6 +134,47 @@ pub async fn update_group(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UpdateGroupResponse {},
+    ))
+}
+
+pub async fn delete_group(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<i64>,
+) -> Result<impl IntoResponse> {
+    if !state.db.group_exists(group_id)? {
+        return Err(Error::NotFound("group not found".into()));
+    }
+
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::Unauthorized(
+            "only group admins can delete a group".into(),
+        ));
+    }
+
+    // Collect all group members for SSE before deletion.
+    let members = state.db.get_group_members(group_id)?;
+    let target_ids: Vec<i64> = members.iter().map(|m| m.user_id).collect();
+
+    state.db.delete_group(group_id)?;
+
+    if !target_ids.is_empty() {
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::GroupDeleted(
+                    conclave_proto::GroupDeletedEvent { group_id },
+                )),
+            },
+            target_ids,
+        );
+    }
+
+    tracing::info!(group_id = group_id, user_id = auth.user_id, "group deleted");
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::DeleteGroupResponse {},
     ))
 }
 

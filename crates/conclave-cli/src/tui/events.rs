@@ -93,6 +93,9 @@ pub async fn handle_sse_message(
             None,
             DisplayMessage::system("An invitation to this room was cancelled."),
         )]),
+        SseEvent::GroupDeleted { group_id } => {
+            handle_group_deleted(group_id, state, data_dir).await
+        }
         SseEvent::InviteDeclined {
             group_id,
             declined_user_id,
@@ -132,6 +135,37 @@ pub async fn handle_sse_message(
             )])
         }
     }
+}
+
+async fn handle_group_deleted(
+    group_id: i64,
+    state: &mut AppState,
+    data_dir: &Path,
+) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+    let room_name = state
+        .rooms
+        .get(&group_id)
+        .map(|r| r.display_name())
+        .unwrap_or_else(|| group_id.to_string());
+
+    if let Some(mls_group_id) = state.group_mapping.get(&group_id)
+        && let Some(user_id) = state.user_id
+        && let Err(error) =
+            operations::delete_mls_group_state(mls_group_id, data_dir, user_id).await
+    {
+        tracing::warn!(%error, "failed to delete MLS group state");
+    }
+
+    state.group_mapping.remove(&group_id);
+    state.rooms.remove(&group_id);
+    if state.active_room == Some(group_id) {
+        state.active_room = None;
+    }
+
+    Ok(vec![(
+        None,
+        DisplayMessage::system(&format!("Room #{room_name} has been deleted")),
+    )])
 }
 
 async fn handle_new_message(

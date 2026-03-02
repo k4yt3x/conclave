@@ -38,6 +38,9 @@ pub enum SseUpdate {
         declined_user_id: i64,
     },
     InviteCancelled,
+    GroupDeleted {
+        group_id: i64,
+    },
 }
 
 /// State key for the SSE subscription. Keyed by token so the subscription
@@ -173,6 +176,9 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
         }),
         conclave_client::operations::SseEvent::InviteCancelled { .. } => {
             Some(SseUpdate::InviteCancelled)
+        }
+        conclave_client::operations::SseEvent::GroupDeleted { group_id } => {
+            Some(SseUpdate::GroupDeleted { group_id })
         }
     }
 }

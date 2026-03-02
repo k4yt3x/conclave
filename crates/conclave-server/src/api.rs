@@ -1,4 +1,4 @@
-mod auth;
+mod accounts;
 mod external;
 mod groups;
 mod invites;
@@ -28,30 +28,32 @@ use crate::state::{AppState, SseEvent};
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         //
-        // Authentication
+        // Accounts
         //
 
         // [Public] Register a new user account with username, password, and optional alias.
-        .route("/api/v1/register", post(auth::register))
+        .route("/api/v1/register", post(accounts::register))
         // [Public] Log in with username and password, returning a session token.
-        .route("/api/v1/login", post(auth::login))
+        .route("/api/v1/login", post(accounts::login))
         // Log out and invalidate the current session token.
-        .route("/api/v1/logout", post(auth::logout))
+        .route("/api/v1/logout", post(accounts::logout))
         // GET: retrieve the current user's profile. PATCH: update the display alias.
-        .route("/api/v1/me", get(auth::me).patch(auth::update_profile))
+        .route("/api/v1/me", get(accounts::me).patch(accounts::update_profile))
         // Change the current user's password (requires current password verification).
-        .route("/api/v1/change-password", post(auth::change_password))
+        .route("/api/v1/change-password", post(accounts::change_password))
         // Reset the current user's account, removing all MLS state and group memberships.
-        .route("/api/v1/reset-account", post(auth::reset_account))
+        .route("/api/v1/reset-account", post(accounts::reset_account))
+        // Permanently delete the current user's account and all data.
+        .route("/api/v1/delete-account", post(accounts::delete_account))
 
         //
         // User lookup
         //
 
         // Look up a user's ID and alias by username.
-        .route("/api/v1/users/{username}", get(auth::get_user_by_username))
+        .route("/api/v1/users/{username}", get(accounts::get_user_by_username))
         // Look up a user's username and alias by ID.
-        .route("/api/v1/users/by-id/{user_id}", get(auth::get_user_by_id))
+        .route("/api/v1/users/by-id/{user_id}", get(accounts::get_user_by_id))
 
         //
         // Key packages
@@ -72,6 +74,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/groups/{group_id}", patch(groups::update_group))
         // Fetch the MLS GroupInfo message for external joins.
         .route("/api/v1/groups/{group_id}/group-info", get(groups::get_group_info))
+        // Delete a group permanently (admin only).
+        .route("/api/v1/groups/{group_id}/delete", post(groups::delete_group))
         // Fetch the retention policy for a group (server + group expiry).
         .route("/api/v1/groups/{group_id}/retention", get(groups::get_retention_policy))
 

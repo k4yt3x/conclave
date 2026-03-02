@@ -37,6 +37,7 @@ message ServerEvent {
     InviteReceivedEvent invite_received = 6;
     InviteDeclinedEvent invite_declined = 7;
     InviteCancelledEvent invite_cancelled = 8;
+    GroupDeletedEvent group_deleted = 9;
   }
 }
 ```
@@ -154,6 +155,18 @@ message InviteCancelledEvent {
 ```
 
 **Recipients**: The invitee only.
+
+#### GroupDeletedEvent
+
+A group was permanently deleted by an admin.
+
+```protobuf
+message GroupDeletedEvent {
+  int64 group_id = 1;
+}
+```
+
+**Recipients**: All former group members (including the admin who deleted it).
 
 ### Lag Handling
 

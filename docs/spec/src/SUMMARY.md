@@ -21,7 +21,7 @@
 # Client-Server API
 
 - [API Conventions](api/conventions.md)
-- [Authentication Endpoints](api/authentication.md)
+- [Account Endpoints](api/accounts.md)
 - [User Endpoints](api/users.md)
 - [Key Package Endpoints](api/key-packages.md)
 - [Group Endpoints](api/groups.md)
@@ -39,6 +39,8 @@
 - [Member Removal and Departure](flows/member-removal.md)
 - [Account Reset and External Rejoin](flows/account-reset.md)
 - [Key Rotation](flows/key-rotation.md)
+- [Account Deletion](flows/account-deletion.md)
+- [Group Deletion](flows/group-deletion.md)
 
 # Message Retention
 

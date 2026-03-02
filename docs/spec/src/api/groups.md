@@ -228,3 +228,52 @@ None.
 ### SSE Events
 
 None.
+
+---
+
+## Delete Group
+
+Permanently deletes a group and all associated data.
+
+```
+POST /api/v1/groups/{group_id}/delete
+```
+
+**Authentication**: Required. **Authorization**: Group admin.
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_id` | int64 | The group to delete. |
+
+### Request Body
+
+None.
+
+### Response Body — `DeleteGroupResponse`
+
+Empty message.
+
+### Status Codes
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | Group deleted. |
+| 401 Unauthorized | Invalid token, not a group member, or not an admin. |
+| 404 Not Found | Group does not exist. |
+
+### Notes
+
+This is an irreversible operation. The server:
+
+1. Verifies the caller is a group admin.
+2. Collects all group members for SSE notification.
+3. Deletes the group row (`DELETE FROM groups WHERE id = ?`). CASCADE handles all dependent tables (group_members, messages, pending_invites, pending_welcomes, message_fetch_watermarks).
+4. Broadcasts `GroupDeletedEvent` to all former members (including the caller).
+
+All members' local MLS state for the group becomes orphaned. Clients clean up local MLS state upon receiving the `GroupDeletedEvent`.
+
+### SSE Events
+
+`GroupDeletedEvent` is broadcast to all former group members (including the caller).

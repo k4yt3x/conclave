@@ -177,6 +177,9 @@ pub enum SseEvent {
     InviteCancelled {
         group_id: i64,
     },
+    GroupDeleted {
+        group_id: i64,
+    },
 }
 
 // ── SSE event decoding ───────────────────────────────────────────
@@ -231,6 +234,11 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
         Some(conclave_proto::server_event::Event::InviteCancelled(cancelled)) => {
             Ok(SseEvent::InviteCancelled {
                 group_id: cancelled.group_id,
+            })
+        }
+        Some(conclave_proto::server_event::Event::GroupDeleted(deleted)) => {
+            Ok(SseEvent::GroupDeleted {
+                group_id: deleted.group_id,
             })
         }
         None => Err(Error::Other("empty SSE event".into())),

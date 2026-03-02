@@ -5805,3 +5805,201 @@ async fn test_update_group_expiry_not_applied_when_flag_false() {
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups[0].message_expiry_seconds, -1);
 }
+
+// ── Account Deletion Tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_delete_account_success() {
+    let (app, app_state) = setup_with_state();
+
+    let user_id = register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let group_id = create_group_for(&app, &token, "test_room").await;
+
+    // Add a second user so group survives after alice's deletion.
+    let bob_id = register_user(&app, "bob", "password123").await;
+    app_state.db.add_group_member(group_id, bob_id).unwrap();
+
+    // Store a message from alice.
+    app_state
+        .db
+        .store_message(group_id, user_id, b"hello")
+        .unwrap();
+
+    // Delete alice's account.
+    let req_body = conclave_proto::DeleteAccountRequest {
+        password: "password123".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/delete-account")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify user is gone.
+    assert!(
+        app_state
+            .db
+            .get_user_by_username("alice")
+            .unwrap()
+            .is_none()
+    );
+
+    // Verify group still exists.
+    assert!(app_state.db.group_exists(group_id).unwrap());
+
+    // Verify alice is no longer a member.
+    assert!(!app_state.db.is_group_member(group_id, user_id).unwrap());
+
+    // Verify alice's messages are gone.
+    let messages = app_state.db.get_messages(group_id, 0, 100).unwrap();
+    assert!(messages.is_empty());
+}
+
+#[tokio::test]
+async fn test_delete_account_wrong_password() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let req_body = conclave_proto::DeleteAccountRequest {
+        password: "wrong_password".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/delete-account")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_delete_account_cleans_invites() {
+    let (app, app_state) = setup_with_state();
+
+    let alice_id = register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+
+    let bob_id = register_user(&app, "bob", "password123").await;
+
+    let group_id = create_group_for(&app, &alice_token, "invites_room").await;
+
+    // Create pending invite from alice to bob.
+    app_state
+        .db
+        .create_pending_invite(group_id, alice_id, bob_id, b"commit", b"welcome", b"info")
+        .unwrap();
+
+    // Delete alice's account.
+    let req_body = conclave_proto::DeleteAccountRequest {
+        password: "password123".to_string(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/delete-account")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify pending invites are cleaned up.
+    let invites = app_state.db.list_pending_invites_for_user(bob_id).unwrap();
+    assert!(invites.is_empty());
+}
+
+// ── Group Deletion Tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_delete_group_success() {
+    let (app, app_state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let group_id = create_group_for(&app, &token, "to_delete").await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/delete"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify group is gone.
+    assert!(!app_state.db.group_exists(group_id).unwrap());
+}
+
+#[tokio::test]
+async fn test_delete_group_non_admin() {
+    let (app, app_state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+
+    let bob_id = register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    let group_id = create_group_for(&app, &alice_token, "admin_only").await;
+    app_state.db.add_group_member(group_id, bob_id).unwrap();
+
+    // Bob (not admin) tries to delete the group.
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{group_id}/delete"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Group still exists.
+    assert!(app_state.db.group_exists(group_id).unwrap());
+}
+
+#[tokio::test]
+async fn test_delete_group_not_found() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/groups/99999/delete")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

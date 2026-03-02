@@ -142,6 +142,43 @@ impl Conclave {
                     self.handle_sse_event(SseUpdate::NewMessage { group_id })
                 }
             }
+            SseUpdate::GroupDeleted { group_id } => {
+                let room_name = self
+                    .rooms
+                    .get(&group_id)
+                    .map(|r| r.display_name())
+                    .unwrap_or_else(|| group_id.to_string());
+
+                let mls_group_id = self.group_mapping.get(&group_id).cloned();
+
+                self.group_mapping.remove(&group_id);
+                self.rooms.remove(&group_id);
+                if self.active_room == Some(group_id) {
+                    self.active_room = None;
+                }
+                self.push_system_message(&format!("Room #{room_name} has been deleted"));
+
+                if let (Some(mls_group_id), Some(our_user_id)) = (mls_group_id, self.user_id) {
+                    let data_dir = self.config.data_dir.clone();
+                    Task::perform(
+                        async move {
+                            if let Err(error) = operations::delete_mls_group_state(
+                                &mls_group_id,
+                                &data_dir,
+                                our_user_id,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%error, "failed to delete MLS group state");
+                            }
+                            Ok::<_, String>(vec![])
+                        },
+                        Message::CommandResult,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
             SseUpdate::InviteReceived {
                 invite_id,
                 group_id,
