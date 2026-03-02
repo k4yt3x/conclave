@@ -12,8 +12,6 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-#lto = "fat"
-#codegen-units = 1
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -29,3 +27,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 strip = "symbols"
+lto = "fat"
+codegen-units = 1

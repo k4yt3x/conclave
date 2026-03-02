@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: conclave-linux-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: conclave-windows-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: conclave-macos-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              protobuf-compiler \
+              pkg-config \
+              libssl-dev \
+              libfontconfig-dev \
+              libxkbcommon-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install protobuf openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Install protoc
+          $version = (Invoke-RestMethod https://api.github.com/repos/protocolbuffers/protobuf/releases/latest).tag_name
+          $url = "https://github.com/protocolbuffers/protobuf/releases/download/$version/protoc-$($version.TrimStart('v'))-win64.zip"
+          Invoke-WebRequest -Uri $url -OutFile protoc.zip
+          Expand-Archive protoc.zip -DestinationPath "$env:RUNNER_TEMP\protoc"
+          echo "$env:RUNNER_TEMP\protoc\bin" >> $env:GITHUB_PATH
+
+          # Install OpenSSL via vcpkg
+          vcpkg install openssl:x64-windows-static-md
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifacts (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/conclave-server staging/
+          cp target/${{ matrix.target }}/release/conclave-cli staging/
+          cp target/${{ matrix.target }}/release/conclave-gui staging/
+          tar -czf ${{ matrix.artifact }}.tar.gz -C staging .
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item "target/${{ matrix.target }}/release/conclave-server.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/release/conclave-cli.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/release/conclave-gui.exe" staging/
+          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/*
