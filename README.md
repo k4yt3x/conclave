@@ -41,6 +41,10 @@ In contrast, Conclave:
 - enforces end-to-end encryption for all conversations; and
 - uses MLS (RFC 9420), an IETF standard designed for group encryption from the ground up with formal security proofs.
 
+## AI Use Declaration and Policy
+
+AI tools were used to assist the design and implementation of this project. All design decisions were made by humans, and every change was reviewed and approved by a human maintainer. For contributors, AI use is accepted under the terms listed in the [AI Use Policy](https://github.com/k4yt3x/conclave/blob/master/CONTRIBUTING.md#ai-use-policy).
+
 ## License
 
 This project is licensed under [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.txt).\
