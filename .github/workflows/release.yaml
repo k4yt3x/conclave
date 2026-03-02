@@ -7,6 +7,15 @@ on:
     tags:
       - "*"
   workflow_dispatch:
+    inputs:
+      profile:
+        description: "Build profile"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - debug
 
 permissions:
   contents: write
@@ -28,6 +37,10 @@ jobs:
             artifact: conclave-macos-arm64
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      BUILD_PROFILE: ${{ (startsWith(github.ref, 'refs/tags/') || inputs.profile == 'release') && 'release' || 'debug' }}
+      CARGO_FLAGS: ${{ (startsWith(github.ref, 'refs/tags/') || inputs.profile == 'release') && '--release' || '' }}
 
     steps:
       - name: Checkout
@@ -71,16 +84,16 @@ jobs:
           echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
 
-      - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build binaries
+        run: cargo build ${{ env.CARGO_FLAGS }} --target ${{ matrix.target }}
 
       - name: Package artifacts (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/conclave-server staging/
-          cp target/${{ matrix.target }}/release/conclave-cli staging/
-          cp target/${{ matrix.target }}/release/conclave-gui staging/
+          cp target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-server staging/
+          cp target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-cli staging/
+          cp target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-gui staging/
           tar -czf ${{ matrix.artifact }}.tar.gz -C staging .
 
       - name: Package artifacts (Windows)
@@ -88,9 +101,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path staging
-          Copy-Item "target/${{ matrix.target }}/release/conclave-server.exe" staging/
-          Copy-Item "target/${{ matrix.target }}/release/conclave-cli.exe" staging/
-          Copy-Item "target/${{ matrix.target }}/release/conclave-gui.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-server.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-cli.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/${{ env.BUILD_PROFILE }}/conclave-gui.exe" staging/
           Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
 
       - name: Upload artifact
