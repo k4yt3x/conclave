@@ -23,17 +23,20 @@ pub enum Message {
     ServerUrlChanged(String),
     UsernameChanged(String),
     PasswordChanged(String),
+    ConfirmPasswordChanged(String),
     RegistrationTokenChanged(String),
     Submit,
     ToggleMode,
     FocusUsername,
     FocusPassword,
+    FocusConfirmPassword,
 }
 
 pub struct Login {
     pub server_url: String,
     pub username: String,
     pub password: String,
+    pub confirm_password: String,
     pub registration_token: String,
     pub status: Status,
     pub mode: Mode,
@@ -45,6 +48,7 @@ impl Login {
             server_url,
             username: String::new(),
             password: String::new(),
+            confirm_password: String::new(),
             registration_token: String::new(),
             status: Status::Idle,
             mode: Mode::Login,
@@ -74,10 +78,15 @@ impl Login {
             .padding(10)
             .size(14);
 
+        let password_submit = if self.mode == Mode::Register {
+            Message::FocusConfirmPassword
+        } else {
+            Message::Submit
+        };
         let password_input = text_input("Password", &self.password)
             .id("login_password")
             .on_input(Message::PasswordChanged)
-            .on_submit(Message::Submit)
+            .on_submit(password_submit)
             .secure(true)
             .padding(10)
             .size(14);
@@ -161,6 +170,21 @@ impl Login {
         .max_width(400);
 
         if self.mode == Mode::Register {
+            let confirm_password_input = text_input("Confirm Password", &self.confirm_password)
+                .id("login_confirm_password")
+                .on_input(Message::ConfirmPasswordChanged)
+                .on_submit(Message::Submit)
+                .secure(true)
+                .padding(10)
+                .size(14);
+            form = form.push(Space::new().height(8));
+            form = form.push(
+                text("Confirm Password")
+                    .size(12)
+                    .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+            form = form.push(confirm_password_input);
+
             let token_input = text_input("Registration Token (optional)", &self.registration_token)
                 .id("login_registration_token")
                 .on_input(Message::RegistrationTokenChanged)

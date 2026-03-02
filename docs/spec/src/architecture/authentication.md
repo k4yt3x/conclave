@@ -35,7 +35,7 @@ To prevent username enumeration via timing analysis, the server MUST perform pas
 
 - Tokens MUST be 256-bit cryptographically random values, hex-encoded to 64 characters.
 - Tokens MUST be generated using a cryptographically secure random number generator.
-- Tokens MUST have a configurable time-to-live (TTL). The default TTL is **7 days** (604,800 seconds).
+- Tokens MUST have a configurable time-to-live (TTL). The default TTL is **30 days** (2,592,000 seconds). Token expiry is extended on every authenticated API call (sliding window), so active sessions do not expire.
 - The server SHOULD store a hash (e.g., SHA-256) of the token rather than the raw token value.
 
 ## Authenticated Requests
@@ -56,4 +56,4 @@ A client logs out by sending a `POST /api/v1/logout` request. The server MUST re
 
 ## Password Change
 
-Authenticated users can change their password via `POST /api/v1/change-password`. The server validates the new password (minimum 8 characters), hashes it with Argon2id, and updates the stored hash. Existing sessions MUST remain valid after a password change.
+Authenticated users can change their password via `POST /api/v1/change-password`. The request requires verification of the current password. The server validates the new password (minimum 8 characters), hashes it with Argon2id, and updates the stored hash. All existing sessions (including the current one) MUST be invalidated after a password change. The user must log in again with the new password.

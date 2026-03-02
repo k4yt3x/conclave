@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] - 2026-03-02
+
+### Changed
+
+- Default session token TTL increased from 7 days to 30 days
+- Default invitation TTL increased from 7 days to 30 days
+- Session tokens now use sliding TTL: expiry is extended on every authenticated API call
+- Password change now requires current password verification and invalidates all sessions
+- `/register` command format changed to `/register <server> <username> [token]` with interactive password prompt
+- `/login` command format changed to `/login <server> <username>` with interactive password prompt
+- `/passwd` command now uses interactive masked password prompt (current, new, confirm)
+- GUI registration now includes a confirm password field
+- Clients auto-logout on HTTP 401 instead of retrying indefinitely
 
 ## [0.1.0] - 2026-03-02
 

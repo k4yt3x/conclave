@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -76,6 +77,13 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             .db
             .validate_session(token)?
             .ok_or_else(|| Error::Unauthorized("invalid or expired token".into()))?;
+
+        let new_expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            + state.config.token_ttl_seconds;
+        state.db.extend_session(token, new_expires_at)?;
 
         Ok(AuthUser {
             user_id,

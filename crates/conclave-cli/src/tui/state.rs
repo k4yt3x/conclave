@@ -2,6 +2,47 @@ use std::collections::HashMap;
 
 pub use conclave_client::state::{ConnectionStatus, DisplayMessage, Room, VerificationStatus};
 
+/// What the password prompt is being used for, and the stored fields
+/// from the original command that triggered it.
+pub enum PasswordPromptPurpose {
+    ChangePassword,
+    Register {
+        server: String,
+        username: String,
+        token: Option<String>,
+    },
+    Login {
+        server: String,
+        username: String,
+    },
+}
+
+pub enum PasswordPromptStage {
+    Current,
+    New,
+    Confirm,
+}
+
+impl PasswordPromptStage {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PasswordPromptStage::Current => "Current password: ",
+            PasswordPromptStage::New => "New password: ",
+            PasswordPromptStage::Confirm => "Confirm password: ",
+        }
+    }
+}
+
+pub enum InputMode {
+    Normal,
+    PasswordPrompt {
+        purpose: PasswordPromptPurpose,
+        stage: PasswordPromptStage,
+        current_password: String,
+        new_password: String,
+    },
+}
+
 pub struct AppState {
     // Identity
     pub username: Option<String>,
@@ -32,6 +73,9 @@ pub struct AppState {
 
     // Whether to show indicators for verified users/rooms.
     pub show_verified_indicator: bool,
+
+    // Input mode (normal or password prompt).
+    pub input_mode: InputMode,
 }
 
 impl AppState {
@@ -51,6 +95,7 @@ impl AppState {
             terminal_cols: 80,
             system_messages: Vec::new(),
             show_verified_indicator: false,
+            input_mode: InputMode::Normal,
         }
     }
 

@@ -66,11 +66,11 @@ fn default_db_path() -> PathBuf {
 }
 
 fn default_token_ttl() -> i64 {
-    7 * 24 * 60 * 60 // 7 days
+    30 * 24 * 60 * 60 // 30 days
 }
 
 fn default_invite_ttl() -> i64 {
-    7 * 24 * 60 * 60 // 7 days
+    30 * 24 * 60 * 60 // 30 days
 }
 
 fn default_message_retention() -> String {

@@ -12,7 +12,7 @@ use conclave_client::state::{
 };
 
 use super::input::InputLine;
-use super::state::{AppState, ConnectionStatus, DisplayMessage};
+use super::state::{AppState, ConnectionStatus, DisplayMessage, InputMode};
 
 /// Return the verification indicator prefix for a user.
 fn verification_indicator(
@@ -273,14 +273,9 @@ pub fn render_input_line(
         Clear(ClearType::CurrentLine),
     )?;
 
-    let prefix = if let Some(room) = state.active_room_info() {
-        let name = sanitize_for_terminal(&room.display_name());
-        format!("[#{name}] ")
-    } else {
-        String::from("> ")
-    };
+    let (prefix, display_content) = password_or_normal_input(state, input);
 
-    write!(stdout, "{}{}", prefix, input.content())?;
+    write!(stdout, "{prefix}{display_content}")?;
 
     // Position cursor correctly.
     let cursor_col = prefix.len() + input.cursor_position();
@@ -296,6 +291,11 @@ pub fn render_input_area(
     input: &InputLine,
     row: u16,
 ) -> std::io::Result<()> {
+    // In password prompt mode, render a single masked line.
+    if !matches!(state.input_mode, InputMode::Normal) {
+        return render_input_line(stdout, state, input, row);
+    }
+
     let prefix = if let Some(room) = state.active_room_info() {
         let name = sanitize_for_terminal(&room.display_name());
         format!("[#{name}] ")
@@ -357,6 +357,25 @@ pub fn render_new_message(
     input: &InputLine,
 ) -> std::io::Result<()> {
     render_full(stdout, state, input)
+}
+
+/// Return the (prefix, display_content) for the input line, handling
+/// password prompt mode (masked with '*') vs normal mode.
+fn password_or_normal_input(state: &AppState, input: &InputLine) -> (String, String) {
+    if let InputMode::PasswordPrompt { ref stage, .. } = state.input_mode {
+        let prefix = stage.label().to_string();
+        let masked = "*".repeat(input.content().chars().count());
+        (prefix, masked)
+    } else {
+        let prefix = if let Some(room) = state.active_room_info() {
+            let name = sanitize_for_terminal(&room.display_name());
+            format!("[#{name}] ")
+        } else {
+            String::from("> ")
+        };
+        let content = input.content();
+        (prefix, content)
+    }
 }
 
 /// Get the active room's member list (empty slice if no active room).

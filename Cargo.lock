@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "conclave-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "conclave-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "conclave-proto",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "conclave-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "chrono",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "conclave-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "conclave-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",

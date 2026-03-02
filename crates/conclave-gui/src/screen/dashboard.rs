@@ -5,6 +5,7 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard;
 use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_editor,
+    text_input,
 };
 
 use conclave_client::state::{
@@ -25,6 +26,15 @@ pub enum DragTarget {
     RightHandle,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PasswordChangeDialog {
+    pub current_password: String,
+    pub new_password: String,
+    pub confirm_password: String,
+    pub error: Option<String>,
+    pub loading: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     RoomSelected(i64),
@@ -39,6 +49,12 @@ pub enum Message {
     DragUpdate(f32),
     DragEnded,
     VerifyResult(Result<(Option<(i64, VerificationStatus)>, Vec<DisplayMessage>), String>),
+    PasswordDialogCurrentChanged(String),
+    PasswordDialogNewChanged(String),
+    PasswordDialogConfirmChanged(String),
+    PasswordDialogSubmit,
+    PasswordDialogCancel,
+    PasswordDialogResult(Result<(), String>),
 }
 
 pub struct Dashboard {
@@ -49,6 +65,8 @@ pub struct Dashboard {
     pub right_sidebar_width: f32,
     pub dragging: Option<DragTarget>,
     pub last_drag_x: f32,
+    pub show_password_dialog: bool,
+    pub password_dialog: PasswordChangeDialog,
 }
 
 impl Dashboard {
@@ -61,6 +79,8 @@ impl Dashboard {
             right_sidebar_width: 180.0,
             dragging: None,
             last_drag_x: 0.0,
+            show_password_dialog: false,
+            password_dialog: PasswordChangeDialog::default(),
         }
     }
 
@@ -123,6 +143,9 @@ impl Dashboard {
             .on_release(Message::DragEnded)
             .interaction(iced::mouse::Interaction::ResizingHorizontally);
             stack![base, overlay].into()
+        } else if self.show_password_dialog {
+            let dialog = self.view_password_dialog();
+            stack![base, dialog].into()
         } else if self.show_user_popover {
             let popover = self.view_user_popover(username, user_alias, user_id, server_url);
             stack![base, popover].into()
@@ -362,6 +385,116 @@ impl Dashboard {
             .padding(iced::Padding::ZERO.bottom(40).left(12));
 
         opaque(mouse_area(positioned_card).on_press(Message::CloseUserPopover))
+    }
+
+    fn view_password_dialog(&self) -> Element<'_, Message> {
+        use iced::widget::Space;
+
+        let title = text("Change Password")
+            .size(18)
+            .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        let current_input = text_input("Current password", &self.password_dialog.current_password)
+            .on_input(Message::PasswordDialogCurrentChanged)
+            .secure(true)
+            .padding(10)
+            .size(14);
+
+        let new_input = text_input("New password", &self.password_dialog.new_password)
+            .on_input(Message::PasswordDialogNewChanged)
+            .secure(true)
+            .padding(10)
+            .size(14);
+
+        let confirm_input = text_input(
+            "Confirm new password",
+            &self.password_dialog.confirm_password,
+        )
+        .on_input(Message::PasswordDialogConfirmChanged)
+        .on_submit(Message::PasswordDialogSubmit)
+        .secure(true)
+        .padding(10)
+        .size(14);
+
+        let submit_label = if self.password_dialog.loading {
+            "Changing..."
+        } else {
+            "Change Password"
+        };
+
+        let submit_btn = button(
+            text(submit_label)
+                .size(14)
+                .align_x(Horizontal::Center)
+                .width(Length::Fill)
+                .class(Box::new(theme::text::on_primary) as Box<dyn Fn(&theme::Theme) -> _>),
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .on_press_maybe(if self.password_dialog.loading {
+            None
+        } else {
+            Some(Message::PasswordDialogSubmit)
+        });
+
+        let cancel_btn = button(
+            text("Cancel")
+                .size(14)
+                .align_x(Horizontal::Center)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>)
+        .on_press_maybe(if self.password_dialog.loading {
+            None
+        } else {
+            Some(Message::PasswordDialogCancel)
+        });
+
+        let mut form = column![
+            title,
+            Space::new().height(16),
+            text("Current Password")
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            current_input,
+            Space::new().height(8),
+            text("New Password")
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            new_input,
+            Space::new().height(8),
+            text("Confirm New Password")
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            confirm_input,
+            Space::new().height(16),
+            row![submit_btn, cancel_btn].spacing(8),
+        ]
+        .spacing(4)
+        .max_width(400);
+
+        if let Some(error) = &self.password_dialog.error {
+            form = form.push(Space::new().height(8));
+            form = form.push(
+                text(error.clone())
+                    .size(13)
+                    .class(Box::new(theme::text::error) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+        }
+
+        let card = container(form)
+            .padding(32)
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        let centered = container(opaque(card))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center);
+
+        opaque(mouse_area(centered).on_press(Message::PasswordDialogCancel))
     }
 
     #[allow(clippy::too_many_arguments)]

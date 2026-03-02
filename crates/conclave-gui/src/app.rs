@@ -251,6 +251,9 @@ impl Conclave {
             Message::MessagesFetched(result) => self.handle_messages_fetched(result),
             Message::KeyPackageUploaded(result) => {
                 if let Err(e) = result {
+                    if let Some(task) = self.check_unauthorized(&e) {
+                        return task;
+                    }
                     self.push_system_message(&format!("Key package upload failed: {e}"));
                 }
                 Task::none()
@@ -268,7 +271,12 @@ impl Conclave {
                             self.add_message(None, msg);
                         }
                     }
-                    Err(e) => self.push_system_message(&format!("Error: {e}")),
+                    Err(e) => {
+                        if let Some(task) = self.check_unauthorized(&e) {
+                            return task;
+                        }
+                        self.push_system_message(&format!("Error: {e}"));
+                    }
                 }
                 Task::none()
             }
@@ -280,7 +288,12 @@ impl Conclave {
                             self.add_message(None, msg);
                         }
                     }
-                    Err(e) => self.push_system_message(&format!("Error: {e}")),
+                    Err(e) => {
+                        if let Some(task) = self.check_unauthorized(&e) {
+                            return task;
+                        }
+                        self.push_system_message(&format!("Error: {e}"));
+                    }
                 }
                 self.load_rooms_task()
             }
@@ -411,7 +424,11 @@ impl Conclave {
             }
         };
 
-        if on_dashboard {
+        let dialog_open = matches!(
+            &self.screen,
+            screen::Screen::Dashboard(d) if d.show_password_dialog
+        );
+        if on_dashboard && !dialog_open {
             Task::batch([task, focus("chat_input")])
         } else {
             task
@@ -516,6 +533,18 @@ impl Conclave {
         }
 
         Subscription::batch(subs)
+    }
+
+    /// Check if an error string indicates a 401 Unauthorized response.
+    /// If so, perform auto-logout and return the logout task.
+    fn check_unauthorized(&mut self, error: &str) -> Option<Task<Message>> {
+        if error.contains("server error (401)") {
+            let task = self.perform_logout();
+            self.push_system_message("Session expired. Please log in again.");
+            Some(task)
+        } else {
+            None
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────

@@ -4,14 +4,16 @@ use tokio::sync::Mutex;
 
 use conclave_client::api::ApiClient;
 pub use conclave_client::command::Command;
-use conclave_client::config::{ClientConfig, build_group_mapping};
+use conclave_client::config::ClientConfig;
 use conclave_client::duration::{compute_effective, format_duration, parse_duration};
 use conclave_client::mls::MlsManager;
 use conclave_client::operations;
 
 pub use conclave_client::command::parse;
 
-use super::state::{AppState, DisplayMessage, Room};
+use super::state::{
+    AppState, DisplayMessage, InputMode, PasswordPromptPurpose, PasswordPromptStage, Room,
+};
 use super::store::MessageStore;
 
 type Result<T> = conclave_client::error::Result<T>;
@@ -61,7 +63,7 @@ pub async fn execute(
         | Command::Verify { .. }
         | Command::Unverify { .. }
         | Command::Trusted
-        | Command::Passwd { .. }
+        | Command::Passwd
         | Command::Help
         | Command::Quit
         | Command::Reset => execute_profile(cmd, api, state, mls, config, msg_store).await,
@@ -74,100 +76,48 @@ async fn execute_account(
     state: &mut AppState,
     mls: &mut Option<MlsManager>,
     config: &ClientConfig,
-    msg_store: &Option<MessageStore>,
+    _msg_store: &Option<MessageStore>,
 ) -> Result<(Vec<DisplayMessage>, bool)> {
     let mut msgs = Vec::new();
-    let mut start_sse = false;
+    let start_sse = false;
 
     match cmd {
         Command::Register {
             server,
-            token,
             username,
-            password,
+            token,
         } => {
-            let result = operations::register_and_login(
-                &server,
-                &username,
-                &password,
-                token.as_deref(),
-                config.accept_invalid_certs,
-                &config.data_dir,
-            )
-            .await?;
-
-            tracing::debug!(
-                count = result.key_packages_uploaded,
-                "key packages uploaded"
-            );
-
-            *api.lock().await = result.into_api_client(config.accept_invalid_certs);
-            state.username = Some(result.username.clone());
-            state.user_id = Some(result.user_id);
-            state.logged_in = true;
-
-            result.save_session(&config.data_dir)?;
-
-            *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
-
-            let room_infos = load_rooms(api, state, msg_store).await?;
-            state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
-
-            msgs.push(DisplayMessage::system(&format!(
-                "Registered and logged in as {} (user ID {})",
-                result.username, result.user_id
-            )));
-            start_sse = true;
+            if state.logged_in {
+                msgs.push(DisplayMessage::system(
+                    "Already logged in. Use /logout first.",
+                ));
+            } else {
+                state.input_mode = InputMode::PasswordPrompt {
+                    purpose: PasswordPromptPurpose::Register {
+                        server,
+                        username,
+                        token,
+                    },
+                    stage: PasswordPromptStage::New,
+                    current_password: String::new(),
+                    new_password: String::new(),
+                };
+            }
         }
 
-        Command::Login {
-            server,
-            username,
-            password,
-        } => {
-            let result = operations::login(
-                &server,
-                &username,
-                &password,
-                config.accept_invalid_certs,
-                &config.data_dir,
-            )
-            .await?;
-
-            tracing::debug!(
-                count = result.key_packages_uploaded,
-                "key packages uploaded"
-            );
-
-            *api.lock().await = result.into_api_client(config.accept_invalid_certs);
-            state.username = Some(result.username.clone());
-            state.user_id = Some(result.user_id);
-            state.logged_in = true;
-
-            result.save_session(&config.data_dir)?;
-
-            *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
-
-            let room_infos = load_rooms(api, state, msg_store).await?;
-            state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
-
-            let unmapped_count = state
-                .rooms
-                .keys()
-                .filter(|gid| !state.group_mapping.contains_key(gid))
-                .count();
-            if unmapped_count > 0 {
-                msgs.push(DisplayMessage::system(&format!(
-                    "{unmapped_count} group(s) have no local encryption state. \
-                     Run /reset to rejoin them with a new identity."
-                )));
+        Command::Login { server, username } => {
+            if state.logged_in {
+                msgs.push(DisplayMessage::system(
+                    "Already logged in. Use /logout first.",
+                ));
+            } else {
+                state.input_mode = InputMode::PasswordPrompt {
+                    purpose: PasswordPromptPurpose::Login { server, username },
+                    stage: PasswordPromptStage::New,
+                    current_password: String::new(),
+                    new_password: String::new(),
+                };
             }
-
-            msgs.push(DisplayMessage::system(&format!(
-                "Logged in as {} (user ID {})",
-                result.username, result.user_id
-            )));
-            start_sse = true;
         }
 
         Command::Logout => {
@@ -1197,9 +1147,17 @@ async fn execute_profile(
             }
         }
 
-        Command::Passwd { new_password } => {
-            api.lock().await.change_password(&new_password).await?;
-            msgs.push(DisplayMessage::system("Password changed successfully."));
+        Command::Passwd => {
+            if !state.logged_in {
+                msgs.push(DisplayMessage::system("Not logged in."));
+            } else {
+                state.input_mode = InputMode::PasswordPrompt {
+                    purpose: PasswordPromptPurpose::ChangePassword,
+                    stage: PasswordPromptStage::Current,
+                    current_password: String::new(),
+                    new_password: String::new(),
+                };
+            }
         }
 
         Command::Help => {

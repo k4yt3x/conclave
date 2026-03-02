@@ -32,7 +32,10 @@ use conclave_client::operations;
 
 use self::commands::Command;
 use self::input::InputLine;
-use self::state::{AppState, ConnectionStatus, DisplayMessage};
+use self::state::{
+    AppState, ConnectionStatus, DisplayMessage, InputMode, PasswordPromptPurpose,
+    PasswordPromptStage,
+};
 use self::store::MessageStore;
 
 /// Run the interactive TUI.
@@ -345,15 +348,21 @@ async fn main_loop(
                             }
                         }
                     }
-                    Err(_) => {
-                        state.connection_status = ConnectionStatus::Disconnected;
-                        *sse_source = None;
-                        let _ = render::render_status_line(
-                            stdout, state, state.terminal_rows.saturating_sub(2),
-                        );
-                        let _ = render::render_input_line(
-                            stdout, state, input, state.terminal_rows.saturating_sub(1),
-                        );
+                    Err(error) => {
+                        if is_sse_unauthorized(&error) {
+                            auto_logout(
+                                stdout, state, input, api, sse_source, msg_store, notifications,
+                            ).await;
+                        } else {
+                            state.connection_status = ConnectionStatus::Disconnected;
+                            *sse_source = None;
+                            let _ = render::render_status_line(
+                                stdout, state, state.terminal_rows.saturating_sub(2),
+                            );
+                            let _ = render::render_input_line(
+                                stdout, state, input, state.terminal_rows.saturating_sub(1),
+                            );
+                        }
                     }
                 }
             }
@@ -422,15 +431,47 @@ async fn handle_key_event(
     msg_store: &mut Option<MessageStore>,
     notifications: &NotificationMethod,
 ) -> crate::error::Result<LoopAction> {
+    let in_password_mode = !matches!(state.input_mode, InputMode::Normal);
+
     // Handle keys that have special control flow (quit, command dispatch,
     // scrolling) before falling through to the common input-editing path.
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(LoopAction::Quit),
 
-        (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) => {
+        // Escape cancels password prompt mode.
+        (KeyCode::Esc, _) if in_password_mode => {
+            state.input_mode = InputMode::Normal;
+            input.submit(true);
+            let msg = DisplayMessage::system("Cancelled.");
+            add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+            let _ = render::render_full(stdout, state, input);
+            return Ok(LoopAction::Continue);
+        }
+
+        // Block multiline in password mode.
+        (KeyCode::Enter, m)
+            if !in_password_mode
+                && (m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT)) =>
+        {
             input.insert('\n');
             let _ = render::render_full(stdout, state, input);
             return Ok(LoopAction::Continue);
+        }
+
+        // Enter in password mode advances the prompt stage.
+        (KeyCode::Enter, _) if in_password_mode => {
+            return handle_password_enter(
+                stdout,
+                state,
+                input,
+                api,
+                mls,
+                config,
+                sse_source,
+                msg_store,
+                notifications,
+            )
+            .await;
         }
 
         (KeyCode::Enter, _) => {
@@ -466,7 +507,11 @@ async fn handle_key_event(
     }
 
     // All remaining keys edit the input line, then re-render it.
+    // In password mode, block history navigation.
     let edited = match (key.code, key.modifiers) {
+        // Block history in password mode.
+        (KeyCode::Up | KeyCode::Down, _) if in_password_mode => false,
+
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
             if !input.is_empty() {
                 input.delete();
@@ -585,7 +630,7 @@ async fn handle_enter(
     if input.is_empty() {
         return Ok(LoopAction::Continue);
     }
-    let text = input.submit().trim_end_matches('\n').to_string();
+    let text = input.submit(false).trim_end_matches('\n').to_string();
     if text.is_empty() {
         let _ = render::render_full(stdout, state, input);
         return Ok(LoopAction::Continue);
@@ -630,16 +675,29 @@ async fn handle_enter(
                     }
                 }
                 Err(e) => {
-                    let msg = DisplayMessage::system(&format!("Error: {e}"));
-                    add_and_render_message(
-                        stdout,
-                        state,
-                        input,
-                        None,
-                        msg,
-                        msg_store,
-                        notifications,
-                    );
+                    if e.is_unauthorized() {
+                        auto_logout(
+                            stdout,
+                            state,
+                            input,
+                            api,
+                            sse_source,
+                            msg_store,
+                            notifications,
+                        )
+                        .await;
+                    } else {
+                        let msg = DisplayMessage::system(&format!("Error: {e}"));
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+                    }
                 }
             }
             let _ = render::render_full(stdout, state, input);
@@ -652,6 +710,309 @@ async fn handle_enter(
     }
 
     Ok(LoopAction::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_password_enter(
+    stdout: &mut impl Write,
+    state: &mut AppState,
+    input: &mut InputLine,
+    api: &Arc<Mutex<ApiClient>>,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+    sse_source: &mut Option<EventSource>,
+    msg_store: &mut Option<MessageStore>,
+    notifications: &NotificationMethod,
+) -> crate::error::Result<LoopAction> {
+    let text = input.submit(true);
+
+    // Take the current input mode, temporarily replacing with Normal.
+    let mode = std::mem::replace(&mut state.input_mode, InputMode::Normal);
+
+    let InputMode::PasswordPrompt {
+        purpose,
+        stage,
+        current_password,
+        new_password,
+    } = mode
+    else {
+        return Ok(LoopAction::Continue);
+    };
+
+    match (&purpose, &stage) {
+        // ── ChangePassword ───────────────────────────────────────
+        (PasswordPromptPurpose::ChangePassword, PasswordPromptStage::Current) => {
+            state.input_mode = InputMode::PasswordPrompt {
+                purpose,
+                stage: PasswordPromptStage::New,
+                current_password: text,
+                new_password,
+            };
+        }
+        (PasswordPromptPurpose::ChangePassword, PasswordPromptStage::New) => {
+            state.input_mode = InputMode::PasswordPrompt {
+                purpose,
+                stage: PasswordPromptStage::Confirm,
+                current_password,
+                new_password: text,
+            };
+        }
+        (PasswordPromptPurpose::ChangePassword, PasswordPromptStage::Confirm) => {
+            if text != new_password {
+                let msg =
+                    DisplayMessage::system("Passwords do not match. Password change cancelled.");
+                add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+            } else {
+                match api
+                    .lock()
+                    .await
+                    .change_password(&current_password, &new_password)
+                    .await
+                {
+                    Ok(()) => {
+                        let msg = DisplayMessage::system(
+                            "Password changed successfully. Please log in again.",
+                        );
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+                    }
+                    Err(e) => {
+                        let msg = DisplayMessage::system(&format!("Error: {e}"));
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Register ─────────────────────────────────────────────
+        (PasswordPromptPurpose::Register { .. }, PasswordPromptStage::New) => {
+            state.input_mode = InputMode::PasswordPrompt {
+                purpose,
+                stage: PasswordPromptStage::Confirm,
+                current_password,
+                new_password: text,
+            };
+        }
+        (PasswordPromptPurpose::Register { .. }, PasswordPromptStage::Confirm) => {
+            if text != new_password {
+                let msg = DisplayMessage::system("Passwords do not match. Registration cancelled.");
+                add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+            } else {
+                // Extract the fields from purpose (already moved out).
+                let PasswordPromptPurpose::Register {
+                    server,
+                    username,
+                    token,
+                } = purpose
+                else {
+                    unreachable!()
+                };
+                match operations::register_and_login(
+                    &server,
+                    &username,
+                    &new_password,
+                    token.as_deref(),
+                    config.accept_invalid_certs,
+                    &config.data_dir,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+                        state.username = Some(result.username.clone());
+                        state.user_id = Some(result.user_id);
+                        state.logged_in = true;
+                        if let Err(e) = result.save_session(&config.data_dir) {
+                            tracing::warn!(error = %e, "failed to save session");
+                        }
+                        *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
+
+                        let room_infos = commands::load_rooms(api, state, msg_store).await?;
+                        state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
+
+                        let msg = DisplayMessage::system(&format!(
+                            "Registered and logged in as {} (user ID {})",
+                            result.username, result.user_id
+                        ));
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+
+                        if msg_store.is_none()
+                            && let Ok(store) = MessageStore::open(&config.data_dir)
+                        {
+                            *msg_store = Some(store);
+                        }
+                        if sse_source.is_none()
+                            && let Ok(es) = api.lock().await.connect_sse()
+                        {
+                            *sse_source = Some(es);
+                            state.connection_status = ConnectionStatus::Connecting;
+                        }
+                    }
+                    Err(e) => {
+                        let msg = DisplayMessage::system(&format!("Error: {e}"));
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Login ────────────────────────────────────────────────
+        (PasswordPromptPurpose::Login { .. }, PasswordPromptStage::New) => {
+            let PasswordPromptPurpose::Login { server, username } = purpose else {
+                unreachable!()
+            };
+            match operations::login(
+                &server,
+                &username,
+                &text,
+                config.accept_invalid_certs,
+                &config.data_dir,
+            )
+            .await
+            {
+                Ok(result) => {
+                    *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+                    state.username = Some(result.username.clone());
+                    state.user_id = Some(result.user_id);
+                    state.logged_in = true;
+                    if let Err(e) = result.save_session(&config.data_dir) {
+                        tracing::warn!(error = %e, "failed to save session");
+                    }
+                    *mls = Some(MlsManager::new(&config.data_dir, result.user_id)?);
+
+                    let room_infos = commands::load_rooms(api, state, msg_store).await?;
+                    state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
+
+                    let unmapped_count = state
+                        .rooms
+                        .keys()
+                        .filter(|gid| !state.group_mapping.contains_key(gid))
+                        .count();
+                    if unmapped_count > 0 {
+                        let msg = DisplayMessage::system(&format!(
+                            "{unmapped_count} group(s) have no local encryption state. \
+                             Run /reset to rejoin them with a new identity."
+                        ));
+                        add_and_render_message(
+                            stdout,
+                            state,
+                            input,
+                            None,
+                            msg,
+                            msg_store,
+                            notifications,
+                        );
+                    }
+
+                    let msg = DisplayMessage::system(&format!(
+                        "Logged in as {} (user ID {})",
+                        result.username, result.user_id
+                    ));
+                    add_and_render_message(
+                        stdout,
+                        state,
+                        input,
+                        None,
+                        msg,
+                        msg_store,
+                        notifications,
+                    );
+
+                    if msg_store.is_none()
+                        && let Ok(store) = MessageStore::open(&config.data_dir)
+                    {
+                        *msg_store = Some(store);
+                    }
+                    if sse_source.is_none()
+                        && let Ok(es) = api.lock().await.connect_sse()
+                    {
+                        *sse_source = Some(es);
+                        state.connection_status = ConnectionStatus::Connecting;
+                    }
+                }
+                Err(e) => {
+                    let msg = DisplayMessage::system(&format!("Error: {e}"));
+                    add_and_render_message(
+                        stdout,
+                        state,
+                        input,
+                        None,
+                        msg,
+                        msg_store,
+                        notifications,
+                    );
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    let _ = render::render_full(stdout, state, input);
+    Ok(LoopAction::Continue)
+}
+
+/// Perform auto-logout: clear auth state and stop SSE reconnection.
+/// Used when the server returns 401 (expired/invalidated token).
+async fn auto_logout(
+    stdout: &mut impl Write,
+    state: &mut AppState,
+    input: &InputLine,
+    api: &Arc<Mutex<ApiClient>>,
+    sse_source: &mut Option<EventSource>,
+    msg_store: &Option<MessageStore>,
+    notifications: &NotificationMethod,
+) {
+    api.lock().await.set_token(String::new());
+    state.logged_in = false;
+    state.username = None;
+    state.user_id = None;
+    state.connection_status = ConnectionStatus::Disconnected;
+    *sse_source = None;
+
+    let msg = DisplayMessage::system("Session expired. Please log in again.");
+    add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+    let _ = render::render_full(stdout, state, input);
+}
+
+/// Check if an SSE error represents an HTTP 401 Unauthorized response.
+fn is_sse_unauthorized(error: &reqwest_eventsource::Error) -> bool {
+    matches!(
+        error,
+        reqwest_eventsource::Error::InvalidStatusCode(status, _)
+            if *status == reqwest::StatusCode::UNAUTHORIZED
+    )
 }
 
 /// Add a message to state, persist it, and render it if it belongs to the active view.

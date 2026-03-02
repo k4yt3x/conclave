@@ -26,6 +26,11 @@ impl Conclave {
                 self.connection_status = ConnectionStatus::Disconnected;
                 Task::none()
             }
+            SseUpdate::Unauthorized => {
+                let task = self.perform_logout();
+                self.push_system_message("Session expired. Please log in again.");
+                task
+            }
             SseUpdate::NewMessage { group_id } => {
                 // Deduplicate: skip if we're already fetching for this group.
                 if self.fetching_groups.contains(&group_id) {

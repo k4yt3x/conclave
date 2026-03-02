@@ -37,4 +37,11 @@ pub enum Error {
     Other(String),
 }
 
+impl Error {
+    /// Check if this error represents an HTTP 401 Unauthorized response.
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, Error::Server { status: 401, .. })
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

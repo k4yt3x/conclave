@@ -149,10 +149,12 @@ impl InputLine {
     }
 
     /// Submit the current input. Returns the content and resets the buffer.
-    /// Commands containing credentials (/login, /register) are excluded from history.
-    pub fn submit(&mut self) -> String {
+    /// When `skip_history` is true the input is never recorded (used for
+    /// password prompts). Otherwise, commands containing credentials
+    /// (/login, /register) are also excluded from history.
+    pub fn submit(&mut self, skip_history: bool) -> String {
         let text = self.content();
-        if !text.is_empty() {
+        if !skip_history && !text.is_empty() {
             let lower = text.to_lowercase();
             let has_credentials = lower.starts_with("/login ") || lower.starts_with("/register ");
             if !has_credentials {
@@ -276,7 +278,7 @@ mod tests {
         for ch in "hello".chars() {
             input.insert(ch);
         }
-        let result = input.submit();
+        let result = input.submit(false);
         assert_eq!(result, "hello");
         assert!(input.is_empty());
     }
@@ -287,9 +289,20 @@ mod tests {
         for ch in "hello".chars() {
             input.insert(ch);
         }
-        input.submit();
+        input.submit(false);
         input.history_up();
         assert_eq!(input.content(), "hello");
+    }
+
+    #[test]
+    fn test_submit_skip_history() {
+        let mut input = InputLine::new();
+        for ch in "secret_password".chars() {
+            input.insert(ch);
+        }
+        input.submit(true);
+        input.history_up();
+        assert_eq!(input.content(), "");
     }
 
     #[test]
@@ -298,7 +311,7 @@ mod tests {
         for ch in "/login user pass".chars() {
             input.insert(ch);
         }
-        input.submit();
+        input.submit(false);
         input.history_up();
         assert_eq!(input.content(), "");
     }
@@ -309,7 +322,7 @@ mod tests {
         for ch in "/register user pass".chars() {
             input.insert(ch);
         }
-        input.submit();
+        input.submit(false);
         input.history_up();
         assert_eq!(input.content(), "");
     }
@@ -320,11 +333,11 @@ mod tests {
         for ch in "first".chars() {
             input.insert(ch);
         }
-        input.submit();
+        input.submit(false);
         for ch in "second".chars() {
             input.insert(ch);
         }
-        input.submit();
+        input.submit(false);
 
         input.history_up();
         assert_eq!(input.content(), "second");
@@ -385,7 +398,7 @@ mod tests {
     #[test]
     fn test_submit_empty_not_added_to_history() {
         let mut input = InputLine::new();
-        input.submit();
+        input.submit(false);
         input.history_up();
         assert_eq!(input.content(), "");
     }

@@ -7,6 +7,7 @@ use conclave_client::state::DisplayMessage;
 use conclave_client::store::MessageStore;
 
 use crate::screen;
+use crate::screen::dashboard::PasswordChangeDialog;
 
 use super::{Conclave, Message};
 
@@ -144,6 +145,91 @@ impl Conclave {
                         }
                     }
                     Err(e) => self.push_system_message(&format!("Error: {e}")),
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::PasswordDialogCurrentChanged(value) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.password_dialog.current_password = value;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::PasswordDialogNewChanged(value) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.password_dialog.new_password = value;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::PasswordDialogConfirmChanged(value) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.password_dialog.confirm_password = value;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::PasswordDialogSubmit => {
+                let (current, new, confirm) =
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                        if dashboard.password_dialog.loading {
+                            return Task::none();
+                        }
+                        (
+                            dashboard.password_dialog.current_password.clone(),
+                            dashboard.password_dialog.new_password.clone(),
+                            dashboard.password_dialog.confirm_password.clone(),
+                        )
+                    } else {
+                        return Task::none();
+                    };
+
+                if new != confirm {
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                        dashboard.password_dialog.error =
+                            Some("New passwords do not match.".to_string());
+                    }
+                    return Task::none();
+                }
+
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.password_dialog.loading = true;
+                    dashboard.password_dialog.error = None;
+                }
+
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        params
+                            .into_client()
+                            .change_password(&current, &new)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| {
+                        Message::Dashboard(screen::dashboard::Message::PasswordDialogResult(result))
+                    },
+                )
+            }
+            screen::dashboard::Message::PasswordDialogCancel => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_password_dialog = false;
+                    dashboard.password_dialog = PasswordChangeDialog::default();
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::PasswordDialogResult(result) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.password_dialog.loading = false;
+                    match result {
+                        Ok(()) => {
+                            dashboard.show_password_dialog = false;
+                            dashboard.password_dialog = PasswordChangeDialog::default();
+                            self.push_system_message(
+                                "Password changed successfully. Please log in again.",
+                            );
+                        }
+                        Err(e) => {
+                            dashboard.password_dialog.error = Some(e);
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -490,21 +576,12 @@ impl Conclave {
                     Message::NickResult,
                 )
             }
-            Ok(Command::Passwd { new_password }) => {
-                let params = self.api_params();
-                Task::perform(
-                    async move {
-                        params
-                            .into_client()
-                            .change_password(&new_password)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        Ok(vec![DisplayMessage::system(
-                            "Password changed successfully.",
-                        )])
-                    },
-                    Message::CommandResult,
-                )
+            Ok(Command::Passwd) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.show_password_dialog = true;
+                    dashboard.password_dialog = PasswordChangeDialog::default();
+                }
+                Task::none()
             }
 
             // Rooms (continued)

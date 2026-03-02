@@ -76,6 +76,8 @@ POST /api/v1/login
 
 The server MUST perform timing-equalized password verification to prevent username enumeration. When the requested username does not exist, the server runs password verification against a dummy hash to ensure consistent response times.
 
+Session tokens have a sliding time-to-live (TTL). The token expiry is extended on every authenticated API call. Active clients remain logged in indefinitely; only idle sessions expire after the configured TTL (default 30 days).
+
 ### SSE Events
 
 None.
@@ -197,6 +199,7 @@ POST /api/v1/change-password
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `current_password` | string | Yes | Current password for verification. |
 | `new_password` | string | Yes | The new password. Minimum 8 characters. |
 
 ### Response Body — `ChangePasswordResponse`
@@ -207,13 +210,13 @@ Empty message.
 
 | Code | Condition |
 |------|-----------|
-| 200 OK | Password changed. |
+| 200 OK | Password changed. All sessions invalidated. |
 | 400 Bad Request | New password too short. |
-| 401 Unauthorized | Invalid or expired token. |
+| 401 Unauthorized | Invalid or expired token, or current password is incorrect. |
 
 ### Notes
 
-Existing sessions remain valid after a password change. The server does NOT invalidate other sessions.
+Password change requires verification of the current password. All existing sessions (including the current one) are invalidated after a successful password change. The user must log in again with the new password.
 
 ### SSE Events
 

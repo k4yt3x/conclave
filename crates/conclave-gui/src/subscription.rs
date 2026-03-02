@@ -13,6 +13,7 @@ pub enum SseUpdate {
     Connected,
     Connecting,
     Disconnected,
+    Unauthorized,
     NewMessage {
         group_id: i64,
     },
@@ -123,7 +124,15 @@ fn sse_stream(
                             yield update;
                         }
                     }
-                    Err(_) => {
+                    Err(ref error) => {
+                        if matches!(
+                            error,
+                            reqwest_eventsource::Error::InvalidStatusCode(status, _)
+                                if *status == reqwest::StatusCode::UNAUTHORIZED
+                        ) {
+                            yield SseUpdate::Unauthorized;
+                            return;
+                        }
                         yield SseUpdate::Disconnected;
                         break;
                     }

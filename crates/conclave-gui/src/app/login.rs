@@ -29,12 +29,17 @@ impl Conclave {
                 login.password = pw;
                 Task::none()
             }
+            screen::login::Message::ConfirmPasswordChanged(pw) => {
+                login.confirm_password = pw;
+                Task::none()
+            }
             screen::login::Message::RegistrationTokenChanged(token) => {
                 login.registration_token = token;
                 Task::none()
             }
             screen::login::Message::FocusUsername => focus("login_username"),
             screen::login::Message::FocusPassword => focus("login_password"),
+            screen::login::Message::FocusConfirmPassword => focus("login_confirm_password"),
             screen::login::Message::ToggleMode => {
                 login.mode = match login.mode {
                     screen::login::Mode::Login => screen::login::Mode::Register,
@@ -42,6 +47,7 @@ impl Conclave {
                 };
                 login.status = screen::login::Status::Idle;
                 login.registration_token.clear();
+                login.confirm_password.clear();
                 Task::none()
             }
             screen::login::Message::Submit => {
@@ -55,6 +61,11 @@ impl Conclave {
                 if username.is_empty() || password.is_empty() {
                     login.status =
                         screen::login::Status::Error("Username and password required".into());
+                    return Task::none();
+                }
+
+                if mode == screen::login::Mode::Register && password != login.confirm_password {
+                    login.status = screen::login::Status::Error("Passwords do not match".into());
                     return Task::none();
                 }
 

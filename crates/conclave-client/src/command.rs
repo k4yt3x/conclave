@@ -51,14 +51,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "register",
         aliases: &[],
         category: CommandCategory::Account,
-        usage: "/register <server> [token] <user> <pass>",
+        usage: "/register <server> <username> [token]",
         description: "Register a new account and login",
     },
     CommandSpec {
         name: "login",
         aliases: &[],
         category: CommandCategory::Account,
-        usage: "/login <server> <user> <pass>",
+        usage: "/login <server> <username>",
         description: "Login to the server",
     },
     CommandSpec {
@@ -86,7 +86,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "passwd",
         aliases: &[],
         category: CommandCategory::Account,
-        usage: "/passwd <new_password>",
+        usage: "/passwd",
         description: "Change your password",
     },
     CommandSpec {
@@ -358,14 +358,12 @@ pub enum Command {
     // Account
     Register {
         server: String,
-        token: Option<String>,
         username: String,
-        password: String,
+        token: Option<String>,
     },
     Login {
         server: String,
         username: String,
-        password: String,
     },
     Logout,
     Reset,
@@ -383,9 +381,7 @@ pub enum Command {
         username: String,
     },
     Trusted,
-    Passwd {
-        new_password: String,
-    },
+    Passwd,
     Expunge {
         password: String,
     },
@@ -478,36 +474,30 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
     match name {
         // Account
         "register" => {
-            let parts: Vec<&str> = full_input.splitn(5, ' ').collect();
+            let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
             match parts.len() {
+                3 => Ok(Command::Register {
+                    server: parts[1].to_string(),
+                    username: parts[2].to_string(),
+                    token: None,
+                }),
                 4 => Ok(Command::Register {
                     server: parts[1].to_string(),
-                    token: None,
                     username: parts[2].to_string(),
-                    password: parts[3].to_string(),
-                }),
-                5 => Ok(Command::Register {
-                    server: parts[1].to_string(),
-                    token: Some(parts[2].to_string()),
-                    username: parts[3].to_string(),
-                    password: parts[4].to_string(),
+                    token: Some(parts[3].to_string()),
                 }),
                 _ => Err(Error::Other(
-                    "Usage: /register <server> [token] <username> <password>".into(),
+                    "Usage: /register <server> <username> [token]".into(),
                 )),
             }
         }
         "login" => {
-            let parts: Vec<&str> = full_input.splitn(4, ' ').collect();
-            if parts.len() < 4 {
-                return Err(Error::Other(
-                    "Usage: /login <server> <username> <password>".into(),
-                ));
+            if parts.len() < 3 {
+                return Err(Error::Other("Usage: /login <server> <username>".into()));
             }
             Ok(Command::Login {
                 server: parts[1].to_string(),
                 username: parts[2].to_string(),
-                password: parts[3].to_string(),
             })
         }
         "logout" => Ok(Command::Logout),
@@ -552,15 +542,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             })
         }
         "trusted" => Ok(Command::Trusted),
-        "passwd" => {
-            let parts: Vec<&str> = full_input.splitn(2, ' ').collect();
-            if parts.len() < 2 || parts[1].is_empty() {
-                return Err(Error::Other("Usage: /passwd <new_password>".into()));
-            }
-            Ok(Command::Passwd {
-                new_password: parts[1].to_string(),
-            })
-        }
+        "passwd" => Ok(Command::Passwd),
         "expunge" => {
             let parts: Vec<&str> = full_input.splitn(2, ' ').collect();
             if parts.len() < 2 || parts[1].is_empty() {
@@ -697,109 +679,68 @@ mod tests {
 
     #[test]
     fn test_parse_register() {
-        let cmd = parse("/register example.com alice pass1234").unwrap();
+        let cmd = parse("/register example.com alice").unwrap();
         let Command::Register {
             server,
-            token,
             username,
-            password,
+            token,
         } = cmd
         else {
             panic!("expected Register variant");
         };
         assert_eq!(server, "example.com");
-        assert_eq!(token, None);
         assert_eq!(username, "alice");
-        assert_eq!(password, "pass1234");
+        assert_eq!(token, None);
     }
 
     #[test]
     fn test_parse_register_with_token() {
-        let cmd = parse("/register example.com mytoken alice pass1234").unwrap();
+        let cmd = parse("/register example.com alice mytoken").unwrap();
         let Command::Register {
             server,
-            token,
             username,
-            password,
+            token,
         } = cmd
         else {
             panic!("expected Register variant");
         };
         assert_eq!(server, "example.com");
-        assert_eq!(token, Some("mytoken".to_string()));
         assert_eq!(username, "alice");
-        assert_eq!(password, "pass1234");
-    }
-
-    #[test]
-    fn test_parse_register_with_token_password_with_spaces() {
-        let cmd = parse("/register example.com tok user pass word here").unwrap();
-        let Command::Register {
-            server,
-            token,
-            username,
-            password,
-        } = cmd
-        else {
-            panic!("expected Register variant");
-        };
-        assert_eq!(server, "example.com");
-        assert_eq!(token, Some("tok".to_string()));
-        assert_eq!(username, "user");
-        assert_eq!(password, "pass word here");
+        assert_eq!(token, Some("mytoken".to_string()));
     }
 
     #[test]
     fn test_parse_register_missing_args() {
-        assert!(parse("/register example.com alice").is_err());
         assert!(parse("/register example.com").is_err());
         assert!(parse("/register").is_err());
     }
 
     #[test]
     fn test_parse_login() {
-        let cmd = parse("/login example.com alice pass1234").unwrap();
-        let Command::Login {
-            server,
-            username,
-            password,
-        } = cmd
-        else {
+        let cmd = parse("/login example.com alice").unwrap();
+        let Command::Login { server, username } = cmd else {
             panic!("expected Login variant");
         };
         assert_eq!(server, "example.com");
         assert_eq!(username, "alice");
-        assert_eq!(password, "pass1234");
     }
 
     #[test]
     fn test_parse_login_missing_args() {
-        assert!(parse("/login example.com alice").is_err());
         assert!(parse("/login example.com").is_err());
         assert!(parse("/login").is_err());
     }
 
     #[test]
     fn test_parse_passwd() {
-        let cmd = parse("/passwd newpass456").unwrap();
-        let Command::Passwd { new_password } = cmd else {
-            panic!("expected Passwd variant");
-        };
-        assert_eq!(new_password, "newpass456");
+        let cmd = parse("/passwd").unwrap();
+        assert!(matches!(cmd, Command::Passwd));
     }
 
     #[test]
-    fn test_parse_passwd_new_password_with_spaces() {
-        let cmd = parse("/passwd new pass with spaces").unwrap();
-        let Command::Passwd { new_password } = cmd else {
-            panic!("expected Passwd variant");
-        };
-        assert_eq!(new_password, "new pass with spaces");
-    }
-
-    #[test]
-    fn test_parse_passwd_missing_args() {
-        assert!(parse("/passwd").is_err());
+    fn test_parse_passwd_ignores_extra_args() {
+        let cmd = parse("/passwd extra args").unwrap();
+        assert!(matches!(cmd, Command::Passwd));
     }
 
     // Rooms
@@ -1059,19 +1000,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_password_with_spaces() {
-        let cmd = parse("/login example.com user pass word here").unwrap();
-        let Command::Login {
-            server,
-            username,
-            password,
-        } = cmd
-        else {
+    fn test_parse_login_extra_args_in_username() {
+        // Extra args after username are treated as part of the username
+        // since /login only has 2 positional args.
+        let cmd = parse("/login example.com alice extra").unwrap();
+        let Command::Login { server, username } = cmd else {
             panic!("expected Login variant");
         };
         assert_eq!(server, "example.com");
-        assert_eq!(username, "user");
-        assert_eq!(password, "pass word here");
+        assert_eq!(username, "alice extra");
     }
 
     // Rooms (continued)

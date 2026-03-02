@@ -213,10 +213,20 @@ pub async fn change_password(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::ChangePasswordRequest>(&body)?;
 
+    let password_hash = state
+        .db
+        .get_password_hash(auth.user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    if !auth::verify_password(&request.current_password, &password_hash)? {
+        return Err(Error::Unauthorized("invalid password".into()));
+    }
+
     validate_password(&request.new_password)?;
 
     let new_hash = auth::hash_password(&request.new_password)?;
     state.db.update_user_password(auth.user_id, &new_hash)?;
+    state.db.delete_user_sessions(auth.user_id)?;
 
     tracing::info!(user_id = auth.user_id, "password changed");
 

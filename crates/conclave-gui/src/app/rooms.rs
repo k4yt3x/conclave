@@ -146,6 +146,9 @@ impl Conclave {
                 }
             }
             Err(e) => {
+                if let Some(task) = self.check_unauthorized(&e) {
+                    return task;
+                }
                 self.push_system_message(&format!("Failed to load rooms: {e}"));
                 return Task::none();
             }
@@ -266,6 +269,9 @@ impl Conclave {
             }
             Err((group_id, error)) => {
                 self.fetching_groups.remove(&group_id);
+                if let Some(task) = self.check_unauthorized(&error) {
+                    return task;
+                }
                 self.push_system_message(&format!("Failed to fetch messages: {error}"));
             }
         }
@@ -305,6 +311,9 @@ impl Conclave {
                 }
             }
             Err(e) => {
+                if let Some(task) = self.check_unauthorized(&e) {
+                    return task;
+                }
                 self.push_system_message(&format!("Failed to send message: {e}"));
             }
         }

@@ -64,9 +64,9 @@ Conclave clients require HTTPS. The simplest approach is to run Caddy as a rever
 
 Launch `conclave-cli` (TUI) or `conclave-gui` (desktop). The commands below are for the TUI — the GUI provides equivalent functionality through its interface.
 
-1. Register an account:
+1. Register an account (you will be prompted for a password):
    ```
-   /register example.conclave.im alice secretpassword
+   /register example.conclave.im alice
    ```
 2. Create a room:
    ```

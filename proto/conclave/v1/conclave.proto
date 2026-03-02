@@ -271,6 +271,7 @@ message GetRetentionPolicyResponse {
 }
 
 message ChangePasswordRequest {
+  string current_password = 1;
   string new_password = 2;
 }
 

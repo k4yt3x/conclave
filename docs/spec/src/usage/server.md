@@ -28,13 +28,13 @@ All fields have sensible defaults and can be omitted.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `token_ttl_seconds` | integer | `604800` (7 days) | Session token lifetime in seconds. Tokens older than this are expired. |
+| `token_ttl_seconds` | integer | `2592000` (30 days) | Session token lifetime in seconds. Token expiry is extended on every authenticated API call (sliding window). Idle sessions expire after this duration. |
 
 ### Invitations
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `invite_ttl_seconds` | integer | `604800` (7 days) | Pending invite lifetime in seconds. Expired invites are cleaned up by the background task. |
+| `invite_ttl_seconds` | integer | `2592000` (30 days) | Pending invite lifetime in seconds. Expired invites are cleaned up by the background task. |
 
 ### Message Retention
 
@@ -103,10 +103,10 @@ listen_port = 8443
 database_path = "conclave.db"
 
 # Sessions
-token_ttl_seconds = 604800
+token_ttl_seconds = 2592000
 
 # Invitations
-invite_ttl_seconds = 604800
+invite_ttl_seconds = 2592000
 
 # Message retention
 message_retention = "-1"

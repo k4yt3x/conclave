@@ -37,6 +37,24 @@ impl Database {
         Ok(())
     }
 
+    /// Extend a session's expiration time.
+    pub fn extend_session(&self, token: &str, new_expires_at: i64) -> Result<()> {
+        let token_hash = hash_token(token);
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE sessions SET expires_at = ?1 WHERE token = ?2",
+            params![new_expires_at, token_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all sessions for a given user.
+    pub fn delete_user_sessions(&self, user_id: i64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let count = conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+        Ok(count as u64)
+    }
+
     /// Delete all expired sessions.
     pub fn cleanup_expired_sessions(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
