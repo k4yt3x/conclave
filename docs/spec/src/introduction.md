@@ -8,7 +8,7 @@ This document is the formal protocol specification for Conclave, a self-hosted, 
 
 ## What Is Conclave
 
-Conclave is a private, encrypted chat system designed for small-to-medium communities. It provides:
+Conclave is a private, encrypted chat system designed to make secure group communication accessible to everyone. It provides:
 
 - **End-to-end encryption** via MLS — the server never sees plaintext message content.
 - **Forward secrecy** and **post-compromise security** through MLS key ratcheting and epoch advancement.
@@ -19,7 +19,7 @@ Conclave is a building block for third-party clients. Any application that imple
 
 ## What Conclave Is Not
 
-- **Not federated.** Each Conclave server is an isolated community. There is no server-to-server protocol.
+- **Not federated.** Each Conclave server is an isolated community. There is no server-to-server protocol. This is a deliberate choice to reduce protocol complexity, metadata leakage, and attack surface.
 - **Not a user discovery service.** Users find each other out-of-band and connect to a known server.
 
 ## Design Principles

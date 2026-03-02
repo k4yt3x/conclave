@@ -21,7 +21,7 @@ graph LR
     Client <-->|"HTTPS / HTTP/2<br>Protobuf request/response<br>SSE event stream"| Server
 ```
 
-Each Conclave deployment consists of a single server and one or more clients. There is no server-to-server federation protocol — each server is an isolated community.
+Each Conclave deployment consists of a single server and one or more clients. There is no server-to-server federation protocol — each server is an isolated community. All communication uses standard HTTP/2 with protobuf encoding and SSE for real-time events, making the server compatible with reverse proxies and CDNs.
 
 ## Component Roles
 
