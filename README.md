@@ -20,6 +20,7 @@ Conclave aims to make secure group communication accessible to everyone. All mes
 - **Simple protocol**: single-server, no federation, minimal attack surface
 - **Standard HTTP transport**: protobuf over HTTP/2 with SSE, compatible with reverse proxies and CDNs
 - **Message expiration**: server-wide and per-room retention policies
+- **Hardware security** (planned): TPM 2.0 support for key protection and database encryption at rest
 
 ## Comparison
 
