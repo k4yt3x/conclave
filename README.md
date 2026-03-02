@@ -23,6 +23,12 @@ Conclave aims to make secure group communication accessible to everyone. All mes
 - **Hardware security** (planned): TPM 2.0 support for key protection and database encryption at rest
 - **Pure Rust reference implementation**: for better memory safety and performance
 
+## Demo Server
+
+A public demo server running the latest version of Conclave is available at `demo.conclave.im`. You can [download a client](https://github.com/k4yt3x/conclave/releases/latest) and register an account on this server to try it out.
+
+Note that the server may be wiped at any time due to backward-compatible protocol changes. For a stable setup, see the [Quick Start](https://docs.conclave.im/usage/quickstart.html) guide to host your own instance.
+
 ## Comparison
 
 - **vs. Signal**
