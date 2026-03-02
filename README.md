@@ -1,9 +1,9 @@
 # Conclave
 
-A minimalistic, self-hosted, end-to-end encrypted group messaging system built on [MLS](https://www.rfc-editor.org/rfc/rfc9420.txt).
-
 > [!IMPORTANT]
-> Conclave is in early stages of development. The API is not yet stable and the codebase has not yet been audited.
+> Conclave is still in early stages of development. The API is not yet stable and the codebase has not yet been audited.
+
+A minimalistic, self-hosted, end-to-end encrypted group messaging system built on [MLS](https://www.rfc-editor.org/rfc/rfc9420.txt).
 
 Full protocol specification and documentation: **[docs.conclave.im](https://docs.conclave.im)**
 
