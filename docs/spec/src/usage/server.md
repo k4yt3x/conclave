@@ -7,6 +7,8 @@ The server is configured via a TOML file. The server searches for configuration 
 3. `/etc/conclave/config.toml`.
 4. Built-in defaults (if no config file is found).
 
+All fields have sensible defaults and can be omitted.
+
 ## Configuration Fields
 
 ### Network
@@ -38,7 +40,7 @@ The server is configured via a TOML file. The server searches for configuration 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `message_retention` | string | `"-1"` | Global message retention policy. `"-1"` disables retention (keep forever). `"0"` enables delete-after-fetch. Duration format (e.g., `"30d"`) sets maximum message age. See [Duration Format](duration-format.md). |
+| `message_retention` | string | `"-1"` | Global message retention policy. `"-1"` disables retention (keep forever). `"0"` enables delete-after-fetch. Duration format (e.g., `"30d"`) sets maximum message age. See [Duration Format](../appendices/duration-format.md). |
 | `cleanup_interval` | string | `"1h"` | Interval between background cleanup runs. Same duration format. |
 
 ### Registration Control
@@ -57,7 +59,7 @@ The server is configured via a TOML file. The server searches for configuration 
 
 When both `tls_cert_path` and `tls_key_path` are set, the server serves HTTPS directly. When neither is set, the server serves plain HTTP (suitable for running behind a reverse proxy). Setting only one of the two is invalid.
 
-## Example Configuration
+## Example Configurations
 
 ### Minimal (Plain HTTP Behind Reverse Proxy)
 
@@ -118,3 +120,17 @@ registration_enabled = true
 # tls_cert_path = "/path/to/cert.pem"
 # tls_key_path = "/path/to/key.pem"
 ```
+
+## Systemd Service
+
+A production-ready systemd unit file is provided in `contrib/conclave-server.service`. It runs the server as a dedicated `conclave` user with security hardening (sandboxed filesystem, restricted system calls, no new privileges).
+
+To install:
+
+```bash
+sudo cp contrib/conclave-server.service /etc/systemd/system/
+sudo useradd -r -s /usr/sbin/nologin conclave
+sudo systemctl enable --now conclave-server
+```
+
+Place your config file at `/etc/conclave/config.toml`. The database is stored in `/var/lib/conclave/`.

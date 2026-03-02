@@ -49,10 +49,15 @@
 - [Security Properties](security/properties.md)
 - [Threat Model and Mitigations](security/threats.md)
 
+# Usage Guide
+
+- [Quick Start](usage/quickstart.md)
+- [Server Configuration](usage/server.md)
+- [Client Configuration](usage/client.md)
+
 # Appendices
 
 - [Protobuf Schema Reference](appendices/protobuf-schema.md)
 - [Validation Rules](appendices/validation-rules.md)
 - [Duration Format](appendices/duration-format.md)
 - [Error Codes](appendices/error-codes.md)
-- [Server Configuration](appendices/server-configuration.md)

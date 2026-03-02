@@ -146,6 +146,6 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
 - `docs/SPEC.md` is the authoritative technical specification.
 - Config lives in `~/.config/conclave/`, data in `~/.local/share/conclave/` (XDG).
 - Server URL is specified at login time, not in config files — stored in `session.toml`.
-- Theme presets in `themes/` directory; users copy `[theme]` section into their config.
+- Theme presets in `assets/themes/` directory; users copy `[theme]` section into their config.
 - Server config includes a `message_retention` field (string, default `"-1"`) for global message retention policy, `registration_enabled` (bool, default `true`) for controlling public registration, and `registration_token` (optional string) for invite-only registration. Tests that need custom server config use `setup_with_config()` instead of `setup()`.
-- When changing config fields (adding, removing, renaming, or updating descriptions), update the example config files in `configs/` and ensure the doc comments on the config struct fields match the comments in the example files.
+- When changing config fields (adding, removing, renaming, or updating descriptions), update the example configs in `docs/spec/src/usage/server.md` and `docs/spec/src/usage/client.md`, and ensure the doc comments on the config struct fields match.
