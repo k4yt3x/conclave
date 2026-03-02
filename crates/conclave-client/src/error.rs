@@ -30,6 +30,9 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("another conclave instance is already running")]
+    InstanceAlreadyRunning,
+
     #[error("{0}")]
     Other(String),
 }

@@ -13,6 +13,7 @@ command = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fd-lock = "4"
 conclave-proto = { workspace = true }
 directories = "6"
 hex = { workspace = true }

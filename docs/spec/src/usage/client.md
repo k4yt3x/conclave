@@ -82,8 +82,11 @@ After logging in, the client stores data under `data_dir`:
 
 ```
 ~/.local/share/conclave/
+  conclave.lock             # Exclusive file lock (prevents multiple instances)
   session.toml              # Server URL, auth token, user ID
   users/<username>/
     mls.db                  # MLS key material (SQLite)
     message_history.db      # Message store and TOFU fingerprints (SQLite)
 ```
+
+Only one Conclave client instance can run at a time per data directory. Launching a second instance will fail with an error. The lock is released automatically when the process exits.

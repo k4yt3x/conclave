@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Result};
 use crate::mls::MlsManager;
 
 /// Client configuration stored in a TOML file.
@@ -173,6 +174,33 @@ pub fn build_group_mapping(
         }
     }
     mapping
+}
+
+/// Guard that holds an exclusive file lock on the data directory.
+/// Only one instance can hold this lock at a time per data directory.
+/// The lock is released when this value is dropped.
+pub struct InstanceLock {
+    _lock: fd_lock::RwLock<std::fs::File>,
+}
+
+/// Acquire an exclusive instance lock on the given data directory.
+///
+/// Creates `conclave.lock` in `data_dir` and acquires an exclusive OS-level
+/// file lock. Returns [`Error::InstanceAlreadyRunning`] if another process
+/// already holds the lock. The lock is automatically released when the
+/// returned [`InstanceLock`] is dropped or the process exits.
+pub fn acquire_instance_lock(data_dir: &Path) -> Result<InstanceLock> {
+    std::fs::create_dir_all(data_dir)?;
+    let file = std::fs::File::create(data_dir.join("conclave.lock"))?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let guard = lock
+        .try_write()
+        .map_err(|_| Error::InstanceAlreadyRunning)?;
+    // Forget the guard to avoid calling flock(LOCK_UN) / UnlockFileEx on drop.
+    // The OS-level lock remains held until the File is closed (when InstanceLock
+    // is dropped), which is correct behavior for both Unix and Windows.
+    std::mem::forget(guard);
+    Ok(InstanceLock { _lock: lock })
 }
 
 pub fn generate_initial_key_packages(

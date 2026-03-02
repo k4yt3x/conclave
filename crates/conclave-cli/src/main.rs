@@ -8,7 +8,9 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
 use conclave_client::api::ApiClient;
-use conclave_client::config::{ClientConfig, SessionState, load_group_mapping, save_group_mapping};
+use conclave_client::config::{
+    ClientConfig, SessionState, acquire_instance_lock, load_group_mapping, save_group_mapping,
+};
 use conclave_client::error::Error;
 use conclave_client::operations::{self, AuthResult};
 
@@ -149,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
     } else {
         notifications
     };
+
+    let _lock = acquire_instance_lock(&config.data_dir)?;
 
     match cli.command {
         None => {
