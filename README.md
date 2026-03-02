@@ -31,6 +31,7 @@ Conclave aims to make secure group communication accessible to everyone. All mes
 - **vs. Matrix**
     - Federation adds protocol complexity, metadata leakage, attack surface, and is more error-prone
     - Olm library shipped with [known cryptographic vulnerabilities](https://soatok.blog/2024/08/14/security-issues-in-matrixs-olm-library/) (cache-timing side-channels, malleable signatures) for years
+    - Poorly specified protocol leading to bugs (e.g., [canonical JSON issues reversing bans](https://neilalexander.dev/2024/06/05/canonical-json))
     - Heavy infrastructure requirements (Synapse, PostgreSQL)
 - **vs. XMPP**
     - [E2E encryption (OMEMO) bolted on after the fact](https://soatok.blog/2024/08/04/against-xmppomemo/), with inconsistent client support
@@ -42,6 +43,8 @@ In contrast, Conclave:
 - has a simple design that can be self-hosted with no federation;
 - enforces end-to-end encryption for all conversations; and
 - uses MLS (RFC 9420), an IETF standard designed for group encryption from the ground up with formal security proofs.
+
+It should be noted that Conclave does not aim to fully replace any of these products, but to fill a niche while avoiding what this project considers undesirable design trade-offs.
 
 ## AI Use Declaration and Policy
 
