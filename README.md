@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Conclave is still in early stages of development. The API is not yet stable and the codebase has not yet been audited.
 
-A minimalistic, self-hosted, end-to-end encrypted group messaging system built on [MLS](https://www.rfc-editor.org/rfc/rfc9420.txt).
+A minimalistic, self-hosted, end-to-end encrypted group messaging system built on [MLS (RFC 9420)](https://www.rfc-editor.org/rfc/rfc9420.txt).
 
 Full protocol specification and documentation: **[docs.conclave.im](https://docs.conclave.im)**
 
@@ -16,11 +16,12 @@ Conclave aims to make secure group communication accessible to everyone. All mes
 ## Properties
 
 - **5-minute setup**: single binary, no config required, no domain required
-- **End-to-end encrypted**: MLS (RFC 9420) with forward secrecy and post-compromise security
+- **End-to-end encryption enforced**: MLS (RFC 9420) with forward secrecy and post-compromise security
 - **Simple protocol**: single-server, no federation, minimal attack surface
 - **Standard HTTP transport**: protobuf over HTTP/2 with SSE, compatible with reverse proxies and CDNs
 - **Message expiration**: server-wide and per-room retention policies
 - **Hardware security** (planned): TPM 2.0 support for key protection and database encryption at rest
+- **Pure Rust reference implementation**: for better memory safety and performance
 
 ## Comparison
 
