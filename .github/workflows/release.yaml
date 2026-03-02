@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "crates/**"
+      - "proto/**"
+      - "assets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
     tags:
       - "*"
   workflow_dispatch:
