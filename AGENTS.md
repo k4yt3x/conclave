@@ -58,7 +58,7 @@ cargo run --bin conclave-gui        # GUI client
 
 ## Project Overview
 
-Conclave is a self-hosted, end-to-end encrypted group messaging system using MLS (RFC 9420). Single-server architecture with HTTP/2 transport, SSE for real-time push, and protobuf wire format. The server never sees plaintext — all messages are opaque MLS ciphertexts.
+Conclave is a self-hosted, end-to-end encrypted group messaging system using MLS (RFC 9420). Single-server architecture with HTTP/2 transport, SSE for real-time push, and protobuf wire format. The server never sees plaintext — all messages are opaque MLS ciphertexts. The server provides both the Authentication Service (AS) and Delivery Service (DS) as defined in RFC 9420 Section 3 — the AS is the trusted identity registry binding users to MLS credentials, while the DS is the untrusted message relay.
 
 ## Workspace Structure
 

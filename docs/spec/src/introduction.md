@@ -73,6 +73,8 @@ This specification uses the following conventions:
 | **TOFU** | Trust On First Use — a trust model where the first observed signing key fingerprint for a user is assumed authentic and stored locally. Subsequent changes are flagged as warnings. |
 | **Fingerprint** | The SHA-256 hash of a user's MLS signing public key, represented as a 64-character lowercase hexadecimal string. Used for identity verification. |
 | **Sequence number** | A per-group, server-assigned monotonically increasing integer that orders messages within a group. |
+| **Authentication Service (AS)** | The service that authenticates MLS credentials, as defined in RFC 9420 Section 3. In Conclave, the server provides this through user registration, signing key fingerprint storage and distribution, and bearer-token-gated access to MLS operations. Clients complement the AS with [TOFU fingerprint verification](mls/tofu.md). |
+| **Delivery Service (DS)** | The service that stores and routes MLS messages among participants, as defined in RFC 9420 Section 3. In Conclave, the server provides this through message storage, key package distribution, GroupInfo storage, and SSE event delivery. The DS is untrusted with respect to message content — it handles only opaque MLS ciphertexts. |
 
 ## Normative References
 

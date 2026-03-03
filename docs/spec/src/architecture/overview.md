@@ -13,9 +13,15 @@ graph LR
     end
 
     subgraph Server
-        API[HTTP API]
-        DB[SQLite DB]
-        SSE[SSE Broadcast]
+        subgraph AS ["Authentication Service (AS)"]
+            Auth[User Registry]
+            FP[Fingerprint Store]
+        end
+        subgraph DS ["Delivery Service (DS)"]
+            API[HTTP API]
+            DB[Message Store]
+            SSE[SSE Broadcast]
+        end
     end
 
     Client <-->|"HTTPS / HTTP/2<br>Protobuf request/response<br>SSE event stream"| Server
@@ -23,19 +29,34 @@ graph LR
 
 Each Conclave deployment consists of a single server and one or more clients. There is no server-to-server federation protocol — each server is an isolated community. All communication uses standard HTTP/2 with protobuf encoding and SSE for real-time events, making the server compatible with reverse proxies and CDNs.
 
+## Service Roles
+
+RFC 9420 Section 3 defines two external services that every MLS deployment must provide: an **Authentication Service (AS)** that authenticates the credentials presented by group members, and a **Delivery Service (DS)** that routes MLS messages among participants. Conclave's server provides both in a single process.
+
+**Authentication Service (AS)** — The AS is the trusted, authoritative registry that binds user identities to MLS credentials. It handles:
+
+- **User registration and authentication**: Creating accounts, verifying passwords, issuing session tokens.
+- **Signing key fingerprint storage and distribution**: Storing each user's MLS signing key fingerprint and distributing it to other members via group member lists and user lookup endpoints.
+- **Access control**: All MLS operations (key package upload, group creation, messaging) require bearer-token authentication, ensuring only the registered owner of a `user_id` can publish credentials for that identity.
+
+Clients complement the server-side AS with [TOFU fingerprint verification](../mls/tofu.md) to detect post-first-contact key changes.
+
+**Delivery Service (DS)** — The DS is untrusted with respect to message content. MLS guarantees confidentiality and integrity regardless of DS behavior. It handles:
+
+- **Message storage and forwarding**: Storing opaque MLS ciphertext blobs and returning them to clients on request.
+- **Key package storage**: Holding pre-published MLS key packages for asynchronous group additions.
+- **Group metadata**: Tracking group membership, roles, and MLS GroupInfo for external joins.
+- **Escrowed invite materials**: Storing pre-built MLS commits and Welcomes for the two-phase invite system.
+- **Real-time push**: Broadcasting events to connected clients via Server-Sent Events (SSE).
+- **Retention enforcement**: Periodically deleting expired messages based on server-wide and per-group policies.
+
+The trust asymmetry between these services is important: a compromised DS cannot read message contents or forge messages, but a compromised AS can substitute credentials for new contacts before TOFU fingerprints are stored. See [Server Compromise](../security/threats.md#threat-server-compromise) for the full threat analysis.
+
 ## Component Roles
 
 ### Server
 
-The server is a stateless relay for encrypted MLS messages. It provides:
-
-- **HTTP API**: Accepts protobuf-encoded requests over HTTP/2 and returns protobuf-encoded responses.
-- **Message storage**: Stores opaque MLS ciphertext blobs. The server never interprets message contents.
-- **Key package storage**: Holds pre-published MLS key packages for asynchronous group additions.
-- **Group metadata**: Tracks group membership, roles, and MLS group state (GroupInfo) for external joins.
-- **User management**: Handles registration, authentication, and profile storage.
-- **Real-time push**: Broadcasts events to connected clients via Server-Sent Events (SSE).
-- **Retention enforcement**: Periodically deletes expired messages based on server-wide and per-group policies.
+The server is a stateless relay for encrypted MLS messages. Its responsibilities are divided between the Authentication Service and Delivery Service as described above.
 
 The server MUST NOT attempt to decrypt, interpret, or validate the contents of MLS messages. All MLS data (key packages, commits, welcomes, application messages) are treated as opaque byte blobs.
 

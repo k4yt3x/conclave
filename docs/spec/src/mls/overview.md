@@ -2,9 +2,22 @@
 
 ## Overview
 
-Conclave uses the Messaging Layer Security (MLS) protocol ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.txt)) for all end-to-end encryption. Every conversation — whether between two people or a large group — is an MLS group. There is no separate direct messaging protocol.
+Conclave uses the Messaging Layer Security (MLS) protocol ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.txt)) for all end-to-end encryption. Every conversation — whether between two people or a large group — is an MLS group. There is no separate direct messaging protocol. All cryptographic operations (key generation, encryption, decryption, group state management) are performed exclusively on the client.
 
-The server acts as a delivery service (as defined in RFC 9420 Section 3): it stores and forwards opaque MLS messages without interpreting their contents. All cryptographic operations (key generation, encryption, decryption, group state management) are performed exclusively on the client.
+## Service Model
+
+RFC 9420 Section 3 defines two external services that every MLS deployment requires:
+
+- **Authentication Service (AS)**: Authenticates the credentials presented by group members, providing the trusted binding between human identities and MLS signing keys.
+- **Delivery Service (DS)**: Routes MLS messages among participants. The DS is largely untrusted — MLS guarantees confidentiality and integrity regardless of DS behavior.
+
+In Conclave, a single server provides both services:
+
+**Delivery Service**: The server stores and forwards opaque MLS messages (application ciphertexts, commits, welcomes, key packages, GroupInfo) without interpreting their contents. It broadcasts real-time event notifications to connected clients via SSE.
+
+**Authentication Service**: The server maintains the authoritative identity registry, binding usernames to user IDs to MLS signing key fingerprints. All MLS operations require bearer-token authentication, ensuring only the registered owner of a `user_id` can publish credentials for that identity. Clients complement the server-side AS with [TOFU fingerprint verification](tofu.md) to detect post-first-contact key changes.
+
+Unlike some MLS deployments that separate the AS and DS into distinct services, Conclave combines them in a single process for deployment simplicity. This means a compromised server can manipulate both identity bindings (AS) and message routing (DS). See [Architecture Overview](../architecture/overview.md#service-roles) for the trust model and [Server Compromise](../security/threats.md#threat-server-compromise) for the threat analysis.
 
 ## Cipher Suite
 

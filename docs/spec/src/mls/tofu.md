@@ -2,6 +2,8 @@
 
 ## Overview
 
+RFC 9420 requires an Authentication Service (AS) to let group members authenticate each other's credentials. In Conclave, the server-side AS provides the initial identity binding (username → user ID → signing key fingerprint), and client-side TOFU verification ensures continuity of that binding after first contact.
+
 Conclave uses a **Trust On First Use (TOFU)** model — similar to SSH `known_hosts` — to let users detect signing key changes after initial contact. Each user's MLS signing public key is hashed to produce a fingerprint. Clients store the first-seen fingerprint for each user and flag any subsequent changes.
 
 ## Fingerprint Computation
