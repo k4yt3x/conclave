@@ -16,7 +16,7 @@ conclave-proto = { workspace = true }
 futures-util = "0.3"
 hex = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "advanced", "image"] }
-notify-rust = "4.11"
+notify-rust = "4.12"
 prost = { workspace = true }
 reqwest = { version = "0.12", features = ["http2"] }
 reqwest-eventsource = "0.6"

@@ -30,32 +30,6 @@ This file provides guidance to AI agents when working with code in this reposito
     });
     ```
 
-## Build Commands
-
-```bash
-cargo build                               # Debug build (all crates)
-cargo build --release                     # Release build (LTO, stripped symbols)
-cargo test --workspace                    # Run all tests
-cargo test -p conclave-server --test "*"  # Server integration tests only
-cargo test -p conclave-client             # Client library tests only
-cargo clippy --workspace                  # Lint
-cargo fmt --all -- --check                # Format check
-```
-
-Run individual test by name:
-
-```bash
-cargo test -p conclave-server test_register_and_login
-```
-
-Run the server/clients:
-
-```bash
-cargo run --bin conclave-server -- -c conclave.toml
-cargo run --bin conclave-cli        # Interactive TUI (no subcommand)
-cargo run --bin conclave-gui        # GUI client
-```
-
 ## Project Overview
 
 Conclave is a self-hosted, end-to-end encrypted group messaging system using MLS (RFC 9420). Single-server architecture with HTTP/2 transport, SSE for real-time push, and protobuf wire format. The server never sees plaintext — all messages are opaque MLS ciphertexts. The server provides both the Authentication Service (AS) and Delivery Service (DS) as defined in RFC 9420 Section 3 — the AS is the trusted identity registry binding users to MLS credentials, while the DS is the untrusted message relay.
@@ -143,7 +117,7 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
 
 ## Conventions
 
-- Run `cargo build --release` after completing a task to verify the release build succeeds.
+- Run `cargo build` after completing a task to verify the release build succeeds.
 - Run `cargo fmt` after completing all tasks to ensure consistent formatting.
 - Update `docs/SPEC.md` when changes affect the technical specification (architecture, protocol, API, MLS behavior, storage, etc.).
 - Update `AGENTS.md` after completing work.
