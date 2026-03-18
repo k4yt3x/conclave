@@ -3,6 +3,7 @@
 
 # mdBook generated files
 /docs/spec/book
+/docs/usage/book
 
 # Project-specific files
 /temp
