@@ -118,7 +118,13 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "conclave_cli=info".into()),
+                .unwrap_or_else(|_| {
+                    if cfg!(debug_assertions) {
+                        "conclave_cli=info".into()
+                    } else {
+                        "conclave_cli=warn".into()
+                    }
+                }),
         )
         .init();
 

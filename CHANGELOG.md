@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING**: User and group IDs changed from integers to UUID v4 to prevent information disclosure.
 - **BREAKING**: MLS BasicCredential identity format changed from 8-byte big-endian i64 to 16-byte UUID.
-- **BREAKING**: Protobuf wire format changed: all ID fields switched from `int64` to `string`
+- **BREAKING**: Protobuf wire format changed: all ID fields switched from `int64` to `bytes`
+- Default log level changed to `warn` in release builds, `info` in debug builds.
 - Document AS/DS service roles in spec per RFC 9420 Section 3
 
 ## [0.1.1] - 2026-03-02
