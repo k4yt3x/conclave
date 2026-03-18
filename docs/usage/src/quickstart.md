@@ -76,15 +76,20 @@ Launch `conclave-cli` (TUI) or `conclave-gui` (desktop). The commands below are 
    ```
    /invite bob,charlie
    ```
-4. Send a message (type text without a `/` prefix):
+4. On the invited user's client, accept the invite:
+   ```
+   /accept
+   ```
+   This accepts all pending invites. To accept a specific invite, use `/accept <invite_id>`.
+5. Send a message (type text without a `/` prefix):
    ```
    Hello, world!
    ```
-5. View a user's signing key fingerprint:
+6. View a user's signing key fingerprint:
    ```
    /whois bob
    ```
-6. After confirming the fingerprint out-of-band, verify their identity:
+7. After confirming the fingerprint out-of-band, verify their identity:
    ```
    /verify bob a1b2c3d4 e5f6a7b8 c9d0e1f2 a3b4c5d6 e7f8a9b0 c1d2e3f4 a5b6c7d8 e9f0a1b2
    ```
