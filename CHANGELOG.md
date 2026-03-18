@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Custom HTTP headers support (`[custom_headers]` in client config) for reverse proxy authentication and anti-active-probing.
+
 ### Changed
 
 - **BREAKING**: User and group IDs changed from integers to UUID v4 to prevent information disclosure.

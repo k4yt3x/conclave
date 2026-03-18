@@ -117,14 +117,13 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    if cfg!(debug_assertions) {
-                        "conclave_cli=info".into()
-                    } else {
-                        "conclave_cli=warn".into()
-                    }
-                }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                if cfg!(debug_assertions) {
+                    "conclave_cli=info".into()
+                } else {
+                    "conclave_cli=warn".into()
+                }
+            }),
         )
         .init();
 
@@ -182,7 +181,8 @@ fn api_from_session(
         .server_url
         .as_ref()
         .ok_or_else(|| Error::Other("not logged in -- run login first".into()))?;
-    let mut api = ApiClient::new(server_url, config.accept_invalid_certs);
+    let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
+    let mut api = ApiClient::new(server_url, config.accept_invalid_certs, custom_headers);
     if let Some(token) = &session.token {
         api.set_token(token.clone());
     }
@@ -225,12 +225,14 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
+            let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
             let result = operations::register_and_login(
                 &server,
                 &username,
                 &password,
                 token.as_deref(),
                 config.accept_invalid_certs,
+                custom_headers,
                 &config.data_dir,
             )
             .await?;
@@ -243,11 +245,13 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
+            let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
             let result = operations::login(
                 &server,
                 &username,
                 &password,
                 config.accept_invalid_certs,
+                custom_headers,
                 &config.data_dir,
             )
             .await?;

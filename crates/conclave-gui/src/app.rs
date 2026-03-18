@@ -26,11 +26,16 @@ pub(crate) struct ApiParams {
     pub(crate) server_url: String,
     pub(crate) accept_invalid_certs: bool,
     pub(crate) token: String,
+    pub(crate) custom_headers: reqwest::header::HeaderMap,
 }
 
 impl ApiParams {
     pub(crate) fn into_client(self) -> ApiClient {
-        let mut api = ApiClient::new(&self.server_url, self.accept_invalid_certs);
+        let mut api = ApiClient::new(
+            &self.server_url,
+            self.accept_invalid_certs,
+            self.custom_headers,
+        );
         api.set_token(self.token);
         api
     }
@@ -166,7 +171,13 @@ impl Conclave {
             session.username,
             session.user_id,
         ) {
-            let mut api = ApiClient::new(&server_url, app.config.accept_invalid_certs);
+            let custom_headers =
+                conclave_client::api::parse_custom_headers(&app.config.custom_headers);
+            let mut api = ApiClient::new(
+                &server_url,
+                app.config.accept_invalid_certs,
+                custom_headers.clone(),
+            );
             api.set_token(token.clone());
             app.api = Some(api);
             app.server_url = Some(normalize_server_url(&server_url));
@@ -195,7 +206,7 @@ impl Conclave {
             let token_clone = token.clone();
             let keygen_task = Task::perform(
                 async move {
-                    let mut api = ApiClient::new(&server_url, accept_invalid_certs);
+                    let mut api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers);
                     api.set_token(token_clone);
                     operations::initialize_mls_and_upload_key_packages(&api, &data_dir, user_id)
                         .await
@@ -231,6 +242,7 @@ impl Conclave {
             server_url: self.server_url.clone().unwrap_or_default(),
             accept_invalid_certs: self.config.accept_invalid_certs,
             token: self.token.clone().unwrap_or_default(),
+            custom_headers: conclave_client::api::parse_custom_headers(&self.config.custom_headers),
         }
     }
 
@@ -522,6 +534,7 @@ impl Conclave {
                     self.server_url.clone().unwrap_or_default(),
                     token.clone(),
                     self.config.accept_invalid_certs,
+                    conclave_client::api::parse_custom_headers(&self.config.custom_headers),
                 )
                 .map(Message::SseEvent),
             );

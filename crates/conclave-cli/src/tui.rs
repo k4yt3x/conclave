@@ -47,9 +47,11 @@ pub async fn run(
     // Load session state.
     let session = SessionState::load(&config.data_dir);
     let initial_url = session.server_url.as_deref().unwrap_or("");
+    let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
     let api = Arc::new(Mutex::new(ApiClient::new(
         initial_url,
         config.accept_invalid_certs,
+        custom_headers,
     )));
 
     let mut state = AppState::new();
@@ -823,18 +825,21 @@ async fn handle_password_enter(
                 else {
                     unreachable!()
                 };
+                let headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
                 match operations::register_and_login(
                     &server,
                     &username,
                     &new_password,
                     token.as_deref(),
                     config.accept_invalid_certs,
+                    headers.clone(),
                     &config.data_dir,
                 )
                 .await
                 {
                     Ok(result) => {
-                        *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+                        *api.lock().await =
+                            result.into_api_client(config.accept_invalid_certs, headers);
                         state.username = Some(result.username.clone());
                         state.user_id = Some(result.user_id);
                         state.logged_in = true;
@@ -893,17 +898,20 @@ async fn handle_password_enter(
             let PasswordPromptPurpose::Login { server, username } = purpose else {
                 unreachable!()
             };
+            let headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
             match operations::login(
                 &server,
                 &username,
                 &text,
                 config.accept_invalid_certs,
+                headers.clone(),
                 &config.data_dir,
             )
             .await
             {
                 Ok(result) => {
-                    *api.lock().await = result.into_api_client(config.accept_invalid_certs);
+                    *api.lock().await =
+                        result.into_api_client(config.accept_invalid_certs, headers);
                     state.username = Some(result.username.clone());
                     state.user_id = Some(result.user_id);
                     state.logged_in = true;

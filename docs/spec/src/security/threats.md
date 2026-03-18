@@ -106,3 +106,31 @@ Conclave currently uses `BasicCredential` with `BasicIdentityProvider`, which do
 3. **Out-of-band verification**: `/verify` command for strong fingerprint confirmation.
 
 For communities requiring stronger identity assurance (e.g., binding MLS identities to organizational PKI), future versions may support X.509 credentials with certificate authority validation.
+
+## Threat: Active Probing / Server Fingerprinting
+
+**Attack**: An adversary sends probe requests to discover whether a server is running a messaging service. Distinctive API paths, content types, or response patterns reveal the service's identity, allowing the adversary to block or target the server.
+
+**Mitigations**:
+
+- Deploy behind an authenticating reverse proxy so unauthenticated probes never reach the application.
+- Serve the application under a non-default path prefix; expose a benign site at the default path.
+- Use a CDN or tunnel service to obscure the origin server's identity and IP address.
+
+See [Censorship Circumvention](../usage/censorship.md) for deployment guidance.
+
+## Threat: Origin Server Discovery
+
+**Attack**: An adversary identifies the origin server's IP address through DNS records, certificate transparency logs, or direct connections, bypassing CDN or proxy protections.
+
+**Mitigations**:
+
+- Restrict the origin server's firewall to only accept connections from the CDN or tunnel service.
+- Use tunnel-based exposure so the origin server has no public IP or open inbound ports.
+- Avoid leaking the origin IP in TLS certificates, DNS records, or error pages.
+
+## Threat: Traffic Analysis
+
+**Attack**: An adversary observes connection timing, message volume, and traffic patterns to infer messaging activity, even without access to message contents.
+
+**Limitation**: The countermeasures above do not address traffic analysis. Message timing, frequency, and connection patterns remain observable at the network level. Dedicated traffic-shaping or padding mechanisms would be needed but are outside the current scope.

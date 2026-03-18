@@ -13,14 +13,13 @@ use conclave_client::config::{ClientConfig, acquire_instance_lock};
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    if cfg!(debug_assertions) {
-                        "conclave_gui=info".into()
-                    } else {
-                        "conclave_gui=warn".into()
-                    }
-                }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                if cfg!(debug_assertions) {
+                    "conclave_gui=info".into()
+                } else {
+                    "conclave_gui=warn".into()
+                }
+            }),
         )
         .init();
 

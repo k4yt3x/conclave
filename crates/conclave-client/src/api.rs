@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use prost::Message;
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_eventsource::EventSource;
 use uuid::Uuid;
 
@@ -23,9 +26,27 @@ pub fn normalize_server_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
 }
 
+/// Parse a string-keyed header map into a [`HeaderMap`], skipping invalid entries.
+pub fn parse_custom_headers(headers: &HashMap<String, String>) -> HeaderMap {
+    let mut header_map = HeaderMap::new();
+    for (name, value) in headers {
+        let Ok(header_name) = name.parse::<HeaderName>() else {
+            tracing::warn!(header_name = name, "skipping invalid custom header name");
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(value) else {
+            tracing::warn!(header_name = name, "skipping invalid custom header value");
+            continue;
+        };
+        header_map.insert(header_name, header_value);
+    }
+    header_map
+}
+
 impl ApiClient {
-    pub fn new(base_url: &str, accept_invalid_certs: bool) -> Self {
+    pub fn new(base_url: &str, accept_invalid_certs: bool, custom_headers: HeaderMap) -> Self {
         let client = Client::builder()
+            .default_headers(custom_headers)
             .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
             .unwrap_or_else(|error| {

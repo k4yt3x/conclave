@@ -71,6 +71,9 @@ impl Conclave {
 
                 login.status = screen::login::Status::Loading;
 
+                let custom_headers =
+                    conclave_client::api::parse_custom_headers(&self.config.custom_headers);
+
                 match mode {
                     screen::login::Mode::Login => Task::perform(
                         async move {
@@ -79,6 +82,7 @@ impl Conclave {
                                 &username,
                                 &password,
                                 accept_invalid_certs,
+                                custom_headers,
                                 &data_dir,
                             )
                             .await
@@ -107,6 +111,7 @@ impl Conclave {
                                     &password,
                                     registration_token.as_deref(),
                                     accept_invalid_certs,
+                                    custom_headers,
                                     &data_dir,
                                 )
                                 .await
@@ -134,7 +139,13 @@ impl Conclave {
             Ok(info) => {
                 self.server_url = Some(normalize_server_url(&info.server_url));
 
-                let mut api = ApiClient::new(&info.server_url, self.config.accept_invalid_certs);
+                let custom_headers =
+                    conclave_client::api::parse_custom_headers(&self.config.custom_headers);
+                let mut api = ApiClient::new(
+                    &info.server_url,
+                    self.config.accept_invalid_certs,
+                    custom_headers,
+                );
                 api.set_token(info.token.clone());
                 self.api = Some(api);
                 self.username = Some(info.username.clone());

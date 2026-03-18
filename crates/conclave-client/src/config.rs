@@ -34,6 +34,12 @@ pub struct ClientConfig {
     /// Default: false (hides verified indicators to reduce visual clutter).
     #[serde(default)]
     pub show_verified_indicator: bool,
+
+    /// Arbitrary HTTP headers to include in every request to the server.
+    /// Useful for authenticating with a reverse proxy (e.g., Basic Auth)
+    /// to prevent active probing of the Conclave server.
+    #[serde(default)]
+    pub custom_headers: HashMap<String, String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -67,6 +73,7 @@ impl Default for ClientConfig {
             config_dir: default_config_dir(),
             accept_invalid_certs: false,
             show_verified_indicator: false,
+            custom_headers: HashMap::new(),
         }
     }
 }

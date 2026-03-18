@@ -25,6 +25,27 @@ Running `conclave-cli` with no subcommand launches the interactive TUI. Running 
 | `show_verified_indicator` | boolean | `false` | Show verification indicators next to verified users and fully-verified rooms. When `false`, only unverified `[?]` and changed `[!]` indicators are shown. |
 | `notifications` | string | `"Native"` | TUI-only. Notification method for new messages: `"Native"`, `"Bell"`, `"Both"`, or `"None"`. |
 
+## Custom Headers
+
+The `[custom_headers]` section allows sending arbitrary HTTP headers with every request. This is useful for authenticating with a reverse proxy in front of the Conclave server, which can help prevent active probing of the server.
+
+```toml
+[custom_headers]
+Authorization = "Basic dXNlcjpwYXNz"
+```
+
+Headers are sent on all requests including SSE connections. Conclave's own `Authorization: Bearer` token for session auth is set per-request and takes precedence over any `Authorization` header in `[custom_headers]`.
+
+### Path prefix
+
+If the reverse proxy serves Conclave under a path prefix, include the prefix in the server URL at login time. For example, if the proxy maps `/myapp/` to the Conclave server:
+
+```
+/login https://example.com/myapp username
+```
+
+The client builds all API URLs from the server URL, so paths like `/myapp/api/v1/...` work automatically. No additional client configuration is needed.
+
 ## Theme Customization
 
 The GUI supports theme customization via the `[theme]` section. All fields are optional — unset fields keep the built-in defaults. Colors use `#rrggbb` hex format.
@@ -52,6 +73,12 @@ Available presets: `conclave`, `ferra`, `greyscale`, `navy`.
 # TUI-only: notification method for new messages.
 # Possible values: "Native" (default), "Bell", "Both", "None".
 #notifications = "Native"
+
+# Arbitrary HTTP headers sent with every request. Useful for authenticating
+# with a reverse proxy to prevent active probing of the Conclave server.
+#[custom_headers]
+#Authorization = "Basic dXNlcjpwYXNz"
+#X-Custom-Token = "my-secret"
 
 # GUI theme overrides. All fields are optional; unset fields keep the
 # built-in defaults. Colors use "#rrggbb" hex format.

@@ -56,6 +56,7 @@
 - [Quick Start](usage/quickstart.md)
 - [Server Configuration](usage/server.md)
 - [Client Configuration](usage/client.md)
+- [Censorship Circumvention](usage/censorship.md)
 
 # Appendices
 
