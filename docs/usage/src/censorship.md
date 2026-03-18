@@ -2,7 +2,7 @@
 
 In censored environments, operators need to make a Conclave server indistinguishable from ordinary web traffic. This page covers deployment patterns that help resist active probing and server identification.
 
-These techniques address the [Active Probing](../security/threats.md#threat-active-probing--server-fingerprinting) and [Origin Server Discovery](../security/threats.md#threat-origin-server-discovery) threats described in the threat model.
+These techniques address the [Active Probing](/spec/security/threats.html#threat-active-probing--server-fingerprinting) and [Origin Server Discovery](/spec/security/threats.html#threat-origin-server-discovery) threats described in the protocol specification's threat model.
 
 ## CDN Fronting
 

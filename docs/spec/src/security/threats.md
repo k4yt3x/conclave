@@ -117,7 +117,7 @@ For communities requiring stronger identity assurance (e.g., binding MLS identit
 - Serve the application under a non-default path prefix; expose a benign site at the default path.
 - Use a CDN or tunnel service to obscure the origin server's identity and IP address.
 
-See [Censorship Circumvention](../usage/censorship.md) for deployment guidance.
+See [Censorship Circumvention](/censorship.html) in the user guide for deployment guidance.
 
 ## Threat: Origin Server Discovery
 

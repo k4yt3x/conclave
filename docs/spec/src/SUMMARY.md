@@ -51,13 +51,6 @@
 - [Security Properties](security/properties.md)
 - [Threat Model and Mitigations](security/threats.md)
 
-# Usage Guide
-
-- [Quick Start](usage/quickstart.md)
-- [Server Configuration](usage/server.md)
-- [Client Configuration](usage/client.md)
-- [Censorship Circumvention](usage/censorship.md)
-
 # Appendices
 
 - [Protobuf Schema Reference](appendices/protobuf-schema.md)

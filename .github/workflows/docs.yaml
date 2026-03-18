@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - "docs/spec/**"
+      - "docs/usage/**"
   workflow_dispatch:
 
 permissions:
@@ -39,7 +40,10 @@ jobs:
           curl -sSL "https://github.com/badboy/mdbook-mermaid/releases/download/$version/mdbook-mermaid-$version-x86_64-unknown-linux-musl.tar.gz" | tar -xz
           sudo mv mdbook-mermaid /usr/local/bin/
 
-      - name: Build Docs with mdBook
+      - name: Build User Guide
+        run: mdbook build -d "$PWD/build/docs" docs/usage
+
+      - name: Build Protocol Spec
         run: mdbook build -d "$PWD/build/docs/spec" docs/spec
 
       - name: Setup Pages
@@ -48,7 +52,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: "build/docs/spec"
+          path: "build/docs"
 
       - name: Deploy to GitHub Pages
         id: deployment
