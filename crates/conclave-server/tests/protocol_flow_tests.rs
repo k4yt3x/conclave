@@ -8,6 +8,7 @@ use http_body_util::BodyExt;
 use prost::Message;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use conclave_client::mls::MlsManager;
 use conclave_server::{api, config, db, state};
@@ -21,7 +22,7 @@ fn setup() -> Router {
     api::router().with_state(app_state)
 }
 
-async fn register_and_login(app: &Router, username: &str) -> (i64, String) {
+async fn register_and_login(app: &Router, username: &str) -> (Uuid, String) {
     let password = format!("{username}_password");
 
     let req_body = conclave_proto::RegisterRequest {
@@ -61,7 +62,10 @@ async fn register_and_login(app: &Router, username: &str) -> (i64, String) {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let login_resp = conclave_proto::LoginResponse::decode(body_bytes).unwrap();
 
-    (register_resp.user_id, login_resp.token)
+    (
+        Uuid::from_slice(&register_resp.user_id).unwrap(),
+        login_resp.token,
+    )
 }
 
 /// Upload MLS key packages (1 last-resort + 5 regular) via the batch API.
@@ -93,7 +97,7 @@ async fn upload_real_key_packages(app: &Router, token: &str, mls: &MlsManager) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-async fn create_server_group(app: &Router, token: &str, name: &str) -> i64 {
+async fn create_server_group(app: &Router, token: &str, name: &str) -> Uuid {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: name.to_string(),
         group_name: name.to_string(),
@@ -111,17 +115,19 @@ async fn create_server_group(app: &Router, token: &str, name: &str) -> i64 {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::CreateGroupResponse::decode(body_bytes).unwrap();
-    resp.group_id
+    Uuid::from_slice(&resp.group_id).unwrap()
 }
 
 /// Fetch key packages for the given user IDs via the /invite endpoint.
 async fn invite_members(
     app: &Router,
     token: &str,
-    group_id: i64,
-    user_ids: Vec<i64>,
-) -> HashMap<i64, Vec<u8>> {
-    let req_body = conclave_proto::InviteToGroupRequest { user_ids };
+    group_id: Uuid,
+    user_ids: Vec<Uuid>,
+) -> HashMap<Uuid, Vec<u8>> {
+    let req_body = conclave_proto::InviteToGroupRequest {
+        user_ids: user_ids.iter().map(|id| id.as_bytes().to_vec()).collect(),
+    };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
@@ -136,12 +142,20 @@ async fn invite_members(
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::InviteToGroupResponse::decode(body_bytes).unwrap();
     resp.member_key_packages
+        .into_iter()
+        .map(|mkp| {
+            (
+                Uuid::from_slice(&mkp.user_id).unwrap(),
+                mkp.key_package_data,
+            )
+        })
+        .collect()
 }
 
 async fn upload_commit(
     app: &Router,
     token: &str,
-    group_id: i64,
+    group_id: Uuid,
     commit_message: Vec<u8>,
     group_info: Vec<u8>,
     mls_group_id: String,
@@ -164,7 +178,7 @@ async fn upload_commit(
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-async fn send_mls_message(app: &Router, token: &str, group_id: i64, mls_message: Vec<u8>) -> u64 {
+async fn send_mls_message(app: &Router, token: &str, group_id: Uuid, mls_message: Vec<u8>) -> u64 {
     let req_body = conclave_proto::SendMessageRequest { mls_message };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -185,7 +199,7 @@ async fn send_mls_message(app: &Router, token: &str, group_id: i64, mls_message:
 async fn get_messages(
     app: &Router,
     token: &str,
-    group_id: i64,
+    group_id: Uuid,
     after: i64,
 ) -> Vec<conclave_proto::StoredMessage> {
     let request = Request::builder()
@@ -217,10 +231,11 @@ async fn get_pending_welcomes(app: &Router, token: &str) -> Vec<conclave_proto::
     resp.welcomes
 }
 
-async fn accept_welcome(app: &Router, token: &str, welcome_id: i64) {
+async fn accept_welcome(app: &Router, token: &str, welcome_id: &[u8]) {
+    let welcome_uuid = Uuid::from_slice(welcome_id).unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/welcomes/{welcome_id}/accept"))
+        .uri(format!("/api/v1/welcomes/{welcome_uuid}/accept"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -234,14 +249,14 @@ async fn escrow_and_accept_invite(
     app: &Router,
     admin_token: &str,
     member_token: &str,
-    group_id: i64,
-    member_id: i64,
+    group_id: Uuid,
+    member_id: Uuid,
     commit_message: Vec<u8>,
     welcome_message: Vec<u8>,
     group_info: Vec<u8>,
 ) {
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: member_id,
+        invitee_id: member_id.as_bytes().to_vec(),
         commit_message,
         welcome_message,
         group_info,
@@ -272,13 +287,16 @@ async fn escrow_and_accept_invite(
     let invite = resp
         .invites
         .iter()
-        .find(|i| i.group_id == group_id)
+        .find(|i| i.group_id == group_id.as_bytes().to_vec())
         .expect("expected pending invite for group");
 
     // Member accepts the invite.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{}/accept", invite.invite_id))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite.invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
         .body(Body::empty())
         .unwrap();
@@ -346,12 +364,12 @@ async fn test_e2e_group_creation_and_messaging() {
     // Bob processes the welcome from the pending welcomes.
     let welcomes = get_pending_welcomes(&app, &bob_token).await;
     assert_eq!(welcomes.len(), 1);
-    assert_eq!(welcomes[0].group_id, server_group_id);
+    assert_eq!(welcomes[0].group_id, server_group_id.as_bytes().to_vec());
 
     let bob_mls_group_id = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_group_id, mls_group_id);
 
-    accept_welcome(&app, &bob_token, welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &welcomes[0].welcome_id).await;
 
     let plaintext = b"Hello from Alice!";
     let encrypted = alice_mls.encrypt_message(&mls_group_id, plaintext).unwrap();
@@ -482,7 +500,7 @@ async fn test_e2e_three_party_messaging() {
     let bob_mls_gid = bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &bob_welcomes[0].welcome_id).await;
 
     // Charlie processes welcome.
     let charlie_welcomes = get_pending_welcomes(&app, &charlie_token).await;
@@ -490,7 +508,7 @@ async fn test_e2e_three_party_messaging() {
     let charlie_mls_gid = charlie_mls
         .join_group(&charlie_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &charlie_token, charlie_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &charlie_token, &charlie_welcomes[0].welcome_id).await;
 
     assert_eq!(bob_mls_gid, mls_group_id);
     assert_eq!(charlie_mls_gid, mls_group_id);
@@ -600,7 +618,7 @@ async fn test_e2e_post_creation_invite_flow() {
     assert_eq!(welcomes.len(), 1);
     let bob_mls_gid = bob_mls.join_group(&welcomes[0].welcome_message).unwrap();
     assert_eq!(bob_mls_gid, mls_group_id);
-    accept_welcome(&app, &bob_token, welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &welcomes[0].welcome_id).await;
 
     let encrypted = alice_mls
         .encrypt_message(&mls_group_id, b"Post-invite message")
@@ -702,13 +720,13 @@ async fn test_e2e_member_removal_flow() {
     let bob_mls_gid = bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &bob_welcomes[0].welcome_id).await;
 
     let charlie_welcomes = get_pending_welcomes(&app, &charlie_token).await;
     let charlie_mls_gid = charlie_mls
         .join_group(&charlie_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &charlie_token, charlie_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &charlie_token, &charlie_welcomes[0].welcome_id).await;
 
     assert_eq!(bob_mls_gid, mls_group_id);
     assert_eq!(charlie_mls_gid, mls_group_id);
@@ -722,7 +740,7 @@ async fn test_e2e_member_removal_flow() {
         alice_mls.remove_member(&mls_group_id, bob_index).unwrap();
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: bob_id,
+        user_id: bob_id.as_bytes().to_vec(),
         commit_message: remove_commit.clone(),
         group_info: remove_group_info,
     };
@@ -835,7 +853,7 @@ async fn test_e2e_key_rotation_continuity() {
     let bob_mls_gid = bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &bob_welcomes[0].welcome_id).await;
     assert_eq!(bob_mls_gid, mls_group_id);
 
     let pre_rotation = b"Before key rotation";
@@ -936,7 +954,7 @@ async fn test_e2e_external_rejoin_after_removal() {
     bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &bob_welcomes[0].welcome_id).await;
 
     let bob_index = alice_mls
         .find_member_index(&mls_group_id, bob_id)
@@ -947,7 +965,7 @@ async fn test_e2e_external_rejoin_after_removal() {
         alice_mls.remove_member(&mls_group_id, bob_index).unwrap();
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: bob_id,
+        user_id: bob_id.as_bytes().to_vec(),
         commit_message: remove_commit,
         group_info: remove_group_info,
     };
@@ -1117,7 +1135,7 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     bob_mls
         .join_group(&bob_welcomes[0].welcome_message)
         .unwrap();
-    accept_welcome(&app, &bob_token, bob_welcomes[0].welcome_id).await;
+    accept_welcome(&app, &bob_token, &bob_welcomes[0].welcome_id).await;
 
     // Alice sends 10 sequential messages.
     let mut sent_seqs = Vec::new();

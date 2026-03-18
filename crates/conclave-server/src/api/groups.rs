@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
@@ -35,7 +36,9 @@ pub async fn create_group(
 
     Ok(proto_response(
         StatusCode::CREATED,
-        &conclave_proto::CreateGroupResponse { group_id },
+        &conclave_proto::CreateGroupResponse {
+            group_id: group_id.as_bytes().to_vec(),
+        },
     ))
 }
 
@@ -51,7 +54,7 @@ pub async fn list_groups(
         let member_protos = members
             .into_iter()
             .map(|m| conclave_proto::GroupMember {
-                user_id: m.user_id,
+                user_id: m.user_id.as_bytes().to_vec(),
                 username: m.username,
                 alias: m.alias.unwrap_or_default(),
                 role: m.role,
@@ -60,7 +63,7 @@ pub async fn list_groups(
             .collect();
 
         group_infos.push(conclave_proto::GroupInfo {
-            group_id: row.group_id,
+            group_id: row.group_id.as_bytes().to_vec(),
             alias: row.alias.unwrap_or_default(),
             group_name: row.group_name,
             members: member_protos,
@@ -81,7 +84,7 @@ pub async fn list_groups(
 pub async fn update_group(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::UpdateGroupRequest>(&body)?;
@@ -126,7 +129,7 @@ pub async fn update_group(
         group_id,
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-            group_id,
+            group_id: group_id.as_bytes().to_vec(),
             update_type: "group_settings".into(),
         }),
     );
@@ -140,7 +143,7 @@ pub async fn update_group(
 pub async fn delete_group(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.group_exists(group_id)? {
         return Err(Error::NotFound("group not found".into()));
@@ -154,7 +157,7 @@ pub async fn delete_group(
 
     // Collect all group members for SSE before deletion.
     let members = state.db.get_group_members(group_id)?;
-    let target_ids: Vec<i64> = members.iter().map(|m| m.user_id).collect();
+    let target_ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
 
     state.db.delete_group(group_id)?;
 
@@ -163,14 +166,16 @@ pub async fn delete_group(
             &state.sse_tx,
             conclave_proto::ServerEvent {
                 event: Some(conclave_proto::server_event::Event::GroupDeleted(
-                    conclave_proto::GroupDeletedEvent { group_id },
+                    conclave_proto::GroupDeletedEvent {
+                        group_id: group_id.as_bytes().to_vec(),
+                    },
                 )),
             },
             target_ids,
         );
     }
 
-    tracing::info!(group_id = group_id, user_id = auth.user_id, "group deleted");
+    tracing::info!(group_id = %group_id, user_id = %auth.user_id, "group deleted");
 
     Ok(proto_response(
         StatusCode::OK,
@@ -181,7 +186,7 @@ pub async fn delete_group(
 pub async fn get_retention_policy(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));
@@ -202,7 +207,7 @@ pub async fn get_retention_policy(
 pub async fn get_group_info(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));

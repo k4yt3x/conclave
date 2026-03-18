@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use iced::Task;
+use uuid::Uuid;
 
 use conclave_client::config::build_group_mapping;
 use conclave_client::mls::MlsManager;
@@ -90,7 +91,7 @@ impl Conclave {
                 }
 
                 // Prune rooms that the server no longer returns.
-                let stale_ids: Vec<i64> = self
+                let stale_ids: Vec<Uuid> = self
                     .rooms
                     .keys()
                     .filter(|id| !server_group_ids.contains(id))
@@ -198,7 +199,7 @@ impl Conclave {
 
     pub(crate) fn handle_messages_fetched(
         &mut self,
-        result: Result<operations::FetchedMessages, (i64, String)>,
+        result: Result<operations::FetchedMessages, (Uuid, String)>,
     ) -> Task<Message> {
         match result {
             Ok(fetched) => {
@@ -210,7 +211,7 @@ impl Conclave {
                         DisplayMessage::system(&msg.content)
                     } else {
                         DisplayMessage::user(
-                            msg.sender_id,
+                            msg.sender_id.unwrap_or(Uuid::nil()),
                             &msg.sender,
                             &msg.content,
                             msg.timestamp,
@@ -284,7 +285,7 @@ impl Conclave {
     ) -> Task<Message> {
         match result {
             Ok((info, text)) => {
-                let sender_id = self.user_id.unwrap_or(0);
+                let sender_id = self.user_id.unwrap_or(Uuid::nil());
                 let sender = self
                     .user_alias
                     .as_deref()
@@ -412,7 +413,7 @@ impl Conclave {
         self.send_to_group(group_id, &text)
     }
 
-    fn send_to_group(&mut self, group_id: i64, text: &str) -> Task<Message> {
+    fn send_to_group(&mut self, group_id: Uuid, text: &str) -> Task<Message> {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
@@ -516,7 +517,9 @@ impl Conclave {
                         .get_user_by_username(username)
                         .await
                         .map_err(|e| e.to_string())?;
-                    member_ids.push(user_info.user_id);
+                    let uid = Uuid::from_slice(&user_info.user_id)
+                        .map_err(|e| format!("Invalid user ID for {username}: {e}"))?;
+                    member_ids.push(uid);
                 }
 
                 let invited = operations::invite_members(
@@ -573,9 +576,12 @@ impl Conclave {
                         } else {
                             &invite.group_alias
                         };
+                        let invite_uuid = Uuid::from_slice(&invite.invite_id)
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|_| "?".into());
                         messages.push(DisplayMessage::system(&format!(
-                            "[{}] #{display} — invited by {}",
-                            invite.invite_id, invite.inviter_username
+                            "[{invite_uuid}] #{display} — invited by {}",
+                            invite.inviter_username
                         )));
                     }
                     messages.push(DisplayMessage::system(
@@ -621,9 +627,12 @@ impl Conclave {
                         "Pending invites for #{room_name}:"
                     ))];
                     for invite in &invites {
+                        let invitee_display = Uuid::from_slice(&invite.invitee_id)
+                            .map(|id| format!("user#{id}"))
+                            .unwrap_or_else(|_| "user#?".into());
                         messages.push(DisplayMessage::system(&format!(
-                            "  user#{} — invited by {}",
-                            invite.invitee_id, invite.inviter_username
+                            "  {invitee_display} — invited by {}",
+                            invite.inviter_username
                         )));
                     }
                     Ok(messages)
@@ -652,7 +661,9 @@ impl Conclave {
                     .get_user_by_username(&username)
                     .await
                     .map_err(|e| e.to_string())?;
-                operations::cancel_invite(&api, group_id, user_info.user_id)
+                let invitee_id = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| format!("Invalid user ID: {e}"))?;
+                operations::cancel_invite(&api, group_id, invitee_id)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(vec![DisplayMessage::system(&format!(
@@ -663,7 +674,7 @@ impl Conclave {
         )
     }
 
-    pub(crate) fn accept_invites(&mut self, invite_id: Option<i64>) -> Task<Message> {
+    pub(crate) fn accept_invites(&mut self, invite_id: Option<Uuid>) -> Task<Message> {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
@@ -679,13 +690,16 @@ impl Conclave {
             async move {
                 let api = params.into_client();
 
-                let invite_ids = if let Some(id) = invite_id {
+                let invite_ids: Vec<Uuid> = if let Some(id) = invite_id {
                     vec![id]
                 } else {
                     let pending = operations::list_pending_invites(&api)
                         .await
                         .map_err(|e| e.to_string())?;
-                    pending.iter().map(|i| i.invite_id).collect()
+                    pending
+                        .iter()
+                        .filter_map(|i| Uuid::from_slice(&i.invite_id).ok())
+                        .collect()
                 };
 
                 if invite_ids.is_empty() {
@@ -715,7 +729,7 @@ impl Conclave {
         )
     }
 
-    pub(crate) fn decline_invite(&mut self, invite_id: i64) -> Task<Message> {
+    pub(crate) fn decline_invite(&mut self, invite_id: Uuid) -> Task<Message> {
         let params = self.api_params();
 
         Task::perform(

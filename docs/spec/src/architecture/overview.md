@@ -68,7 +68,7 @@ A Conclave client is responsible for:
 - **API communication**: Sending protobuf-encoded HTTP requests to the server and processing responses.
 - **SSE consumption**: Maintaining a persistent connection to the server's event stream for real-time notifications.
 - **Local state**: Persisting MLS group state, signing keys, message history, and session information.
-- **Name resolution**: Resolving integer IDs to human-readable display names using the local member cache or server lookup endpoints.
+- **Name resolution**: Resolving UUIDs to human-readable display names using the local member cache or server lookup endpoints.
 - **Identity verification**: Managing the local TOFU fingerprint store for signing key verification.
 
 Clients MAY implement any user interface (terminal, graphical, headless bot, etc.) as long as they conform to this specification's API and MLS requirements.
@@ -81,7 +81,7 @@ The server maintains the following logical entities:
 
 Each user has:
 
-- A unique integer ID (`user_id`), auto-assigned at registration.
+- A unique UUID (`user_id`), randomly generated at registration.
 - A unique `username` (ASCII alphanumeric + underscores, 1–64 characters).
 - An optional `alias` (display name, up to 64 characters).
 - A password hash (Argon2id).
@@ -99,7 +99,7 @@ Each session has:
 
 Each group has:
 
-- A unique integer ID (`group_id`), auto-assigned at creation.
+- A unique UUID (`group_id`), randomly generated at creation.
 - A unique `group_name` (same format as username).
 - An optional `alias` (display name).
 - An `mls_group_id` (hex-encoded MLS opaque group identifier, set on first commit).

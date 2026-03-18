@@ -21,7 +21,7 @@ POST /api/v1/groups
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The server-assigned unique group ID. |
+| `group_id` | bytes | The server-assigned unique group ID (UUID). |
 
 ### Notes
 
@@ -70,7 +70,7 @@ Each `GroupInfo`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | Server-assigned group ID. |
+| `group_id` | bytes | Server-assigned group ID (UUID). |
 | `alias` | string | Display name (may be empty). |
 | `group_name` | string | Unique group name. |
 | `members` | repeated `GroupMember` | All members of the group. |
@@ -82,7 +82,7 @@ Each `GroupMember`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | int64 | Member's user ID. |
+| `user_id` | bytes | Member's user ID (UUID). |
 | `username` | string | Member's username. |
 | `alias` | string | Member's display name (may be empty). |
 | `role` | string | Either `"admin"` or `"member"`. |
@@ -115,7 +115,7 @@ PATCH /api/v1/groups/{group_id}
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to update. |
+| `group_id` | string | The group to update. |
 
 ### Request Body — `UpdateGroupRequest`
 
@@ -165,7 +165,7 @@ GET /api/v1/groups/{group_id}/group-info
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group whose GroupInfo to fetch. |
+| `group_id` | string | The group whose GroupInfo to fetch. |
 
 ### Request Body
 
@@ -205,7 +205,7 @@ GET /api/v1/groups/{group_id}/retention
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to query. |
+| `group_id` | string | The group to query. |
 
 ### Request Body
 
@@ -245,7 +245,7 @@ POST /api/v1/groups/{group_id}/delete
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to delete. |
+| `group_id` | string | The group to delete. |
 
 ### Request Body
 

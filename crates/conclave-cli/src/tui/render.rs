@@ -5,6 +5,7 @@ use crossterm::{
     style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{Clear, ClearType},
 };
+use uuid::Uuid;
 
 use conclave_client::state::{
     INDICATOR_COLOR_RISKY, INDICATOR_COLOR_UNVERIFIED, INDICATOR_COLOR_VERIFIED, RoomMember,
@@ -16,8 +17,8 @@ use super::state::{AppState, ConnectionStatus, DisplayMessage, InputMode};
 
 /// Return the verification indicator prefix for a user.
 fn verification_indicator(
-    sender_id: Option<i64>,
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    sender_id: Option<Uuid>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
 ) -> &'static str {
     match sender_id.and_then(|id| verification_status.get(&id)) {
@@ -30,8 +31,8 @@ fn verification_indicator(
 
 /// Return the color for a verification indicator.
 fn verification_color(
-    sender_id: Option<i64>,
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    sender_id: Option<Uuid>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
 ) -> Option<Color> {
     match sender_id.and_then(|id| verification_status.get(&id)) {
@@ -78,7 +79,7 @@ fn rows_for_width(width: usize, cols: usize) -> u16 {
 fn message_prefix_width(
     msg: &DisplayMessage,
     members: &[RoomMember],
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
 ) -> usize {
     // "[HH:MM] " = 8 columns (time is always 5 chars: HH:MM or ??:??)
@@ -99,7 +100,7 @@ fn visual_line_count(
     msg: &DisplayMessage,
     cols: u16,
     members: &[RoomMember],
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
 ) -> usize {
     let cols_usize = cols as usize;
@@ -395,7 +396,7 @@ fn write_message(
     msg: &DisplayMessage,
     cols: u16,
     members: &[RoomMember],
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
     row: u16,
 ) -> std::io::Result<u16> {
@@ -421,7 +422,7 @@ fn write_message(
         queue!(stdout, ResetColor)?;
     } else {
         let sender = sanitize_for_terminal(&resolve_sender_name(msg, members));
-        let nick_color = username_color(msg.sender_id.unwrap_or(0));
+        let nick_color = username_color(msg.sender_id.unwrap_or(Uuid::nil()));
         let indicator = verification_indicator(msg.sender_id, verification_status, show_verified);
 
         for (i, line) in content.split('\n').enumerate() {
@@ -453,7 +454,7 @@ fn write_message(
 }
 
 /// Assign a consistent ANSI color to a sender based on their user ID.
-fn username_color(sender_id: i64) -> Color {
+fn username_color(sender_id: Uuid) -> Color {
     let colors = [
         Color::Red,
         Color::Green,
@@ -468,7 +469,7 @@ fn username_color(sender_id: i64) -> Color {
         Color::DarkMagenta,
         Color::DarkCyan,
     ];
-    let hash = (sender_id as usize).wrapping_mul(2654435761);
+    let hash = (sender_id.as_u128() as usize).wrapping_mul(2654435761);
     colors[hash % colors.len()]
 }
 

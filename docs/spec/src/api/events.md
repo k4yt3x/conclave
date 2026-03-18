@@ -50,9 +50,9 @@ A new encrypted message was stored in a group.
 
 ```protobuf
 message NewMessageEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   uint64 sequence_num = 2;
-  int64 sender_id = 3;
+  bytes sender_id = 3;
 }
 ```
 
@@ -64,7 +64,7 @@ Group state changed (member roster, metadata, or roles).
 
 ```protobuf
 message GroupUpdateEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string update_type = 2;
 }
 ```
@@ -82,7 +82,7 @@ A pending Welcome message is ready for the user to process.
 
 ```protobuf
 message WelcomeEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string group_alias = 2;
 }
 ```
@@ -95,8 +95,8 @@ A member was removed or left a group.
 
 ```protobuf
 message MemberRemovedEvent {
-  int64 group_id = 1;
-  int64 removed_user_id = 2;
+  bytes group_id = 1;
+  bytes removed_user_id = 2;
 }
 ```
 
@@ -108,8 +108,8 @@ A member rejoined a group with a new MLS identity via external commit.
 
 ```protobuf
 message IdentityResetEvent {
-  int64 group_id = 1;
-  int64 user_id = 2;
+  bytes group_id = 1;
+  bytes user_id = 2;
 }
 ```
 
@@ -121,11 +121,11 @@ A pending invite was created for this user.
 
 ```protobuf
 message InviteReceivedEvent {
-  int64 invite_id = 1;
-  int64 group_id = 2;
+  bytes invite_id = 1;
+  bytes group_id = 2;
   string group_name = 3;
   string group_alias = 4;
-  int64 inviter_id = 5;
+  bytes inviter_id = 5;
 }
 ```
 
@@ -137,8 +137,8 @@ An invitee declined a pending invite, or an admin cancelled an invite.
 
 ```protobuf
 message InviteDeclinedEvent {
-  int64 group_id = 1;
-  int64 declined_user_id = 2;
+  bytes group_id = 1;
+  bytes declined_user_id = 2;
 }
 ```
 
@@ -150,7 +150,7 @@ An admin cancelled a pending invite for this user.
 
 ```protobuf
 message InviteCancelledEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
 }
 ```
 
@@ -162,7 +162,7 @@ A group was permanently deleted by an admin.
 
 ```protobuf
 message GroupDeletedEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
 }
 ```
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
@@ -19,10 +20,10 @@ pub async fn list_pending_welcomes(
     let pending: Vec<conclave_proto::PendingWelcome> = welcomes
         .into_iter()
         .map(|row| conclave_proto::PendingWelcome {
-            group_id: row.group_id,
+            group_id: row.group_id.as_bytes().to_vec(),
             group_alias: row.group_alias.unwrap_or_default(),
             welcome_message: row.welcome_data,
-            welcome_id: row.welcome_id,
+            welcome_id: row.welcome_id.as_bytes().to_vec(),
         })
         .collect();
 
@@ -35,7 +36,7 @@ pub async fn list_pending_welcomes(
 pub async fn accept_welcome(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(welcome_id): Path<i64>,
+    Path(welcome_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let welcomes = state.db.get_pending_welcomes(auth.user_id)?;
     if !welcomes.iter().any(|row| row.welcome_id == welcome_id) {

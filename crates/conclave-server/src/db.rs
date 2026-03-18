@@ -11,13 +11,14 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::error::Result;
 
 /// A user record from the `users` table.
 #[derive(Debug)]
 pub struct UserRow {
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub username: String,
     pub password_hash: String,
     pub alias: Option<String>,
@@ -27,8 +28,8 @@ pub struct UserRow {
 /// A pending welcome from the `pending_welcomes` table.
 #[derive(Debug)]
 pub struct PendingWelcomeRow {
-    pub welcome_id: i64,
-    pub group_id: i64,
+    pub welcome_id: Uuid,
+    pub group_id: Uuid,
     pub group_alias: Option<String>,
     pub welcome_data: Vec<u8>,
 }
@@ -42,10 +43,10 @@ pub struct CommitResult {
 /// A pending invite held in escrow until the invitee accepts or declines.
 #[derive(Debug)]
 pub struct PendingInviteRow {
-    pub invite_id: i64,
-    pub group_id: i64,
-    pub inviter_id: i64,
-    pub invitee_id: i64,
+    pub invite_id: Uuid,
+    pub group_id: Uuid,
+    pub inviter_id: Uuid,
+    pub invitee_id: Uuid,
     pub commit_message: Vec<u8>,
     pub welcome_data: Vec<u8>,
     pub group_info: Vec<u8>,
@@ -55,9 +56,9 @@ pub struct PendingInviteRow {
 /// Result of accepting a pending invite.
 #[derive(Debug)]
 pub struct AcceptedInvite {
-    pub group_id: i64,
-    pub inviter_id: i64,
-    pub invitee_id: i64,
+    pub group_id: Uuid,
+    pub inviter_id: Uuid,
+    pub invitee_id: Uuid,
     pub invitee_username: String,
     pub group_alias: Option<String>,
     pub sequence_number: i64,
@@ -65,7 +66,7 @@ pub struct AcceptedInvite {
 
 /// A row from the `groups` table joined with membership info.
 pub struct UserGroupRow {
-    pub group_id: i64,
+    pub group_id: Uuid,
     pub group_name: String,
     pub alias: Option<String>,
     pub created_at: i64,
@@ -75,7 +76,7 @@ pub struct UserGroupRow {
 
 /// A group member row from the `group_members` table joined with user info.
 pub struct GroupMemberRow {
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub username: String,
     pub alias: Option<String>,
     pub role: String,
@@ -85,7 +86,7 @@ pub struct GroupMemberRow {
 /// A row from the `messages` table.
 pub struct StoredMessageRow {
     pub sequence_num: i64,
-    pub sender_id: i64,
+    pub sender_id: Uuid,
     pub mls_message: Vec<u8>,
     pub created_at: i64,
 }
@@ -129,7 +130,7 @@ impl Database {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 alias TEXT,
@@ -138,21 +139,21 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 expires_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS key_packages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 key_package_data BLOB NOT NULL,
                 is_last_resort INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
             CREATE TABLE IF NOT EXISTS groups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 group_name TEXT UNIQUE NOT NULL,
                 alias TEXT,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -161,16 +162,16 @@ impl Database {
             );
 
             CREATE TABLE IF NOT EXISTS group_members (
-                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 role TEXT NOT NULL DEFAULT 'member',
                 PRIMARY KEY (group_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                sender_id INTEGER NOT NULL REFERENCES users(id),
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                sender_id TEXT NOT NULL REFERENCES users(id),
                 mls_message BLOB NOT NULL,
                 sequence_num INTEGER NOT NULL,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -178,10 +179,10 @@ impl Database {
             );
 
             CREATE TABLE IF NOT EXISTS pending_welcomes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 group_alias TEXT,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 welcome_data BLOB NOT NULL,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
@@ -189,16 +190,16 @@ impl Database {
                 ON pending_welcomes(user_id);
 
             CREATE TABLE IF NOT EXISTS group_infos (
-                group_id INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+                group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
                 group_info_data BLOB NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
             CREATE TABLE IF NOT EXISTS pending_invites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                inviter_id INTEGER NOT NULL REFERENCES users(id),
-                invitee_id INTEGER NOT NULL REFERENCES users(id),
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                inviter_id TEXT NOT NULL REFERENCES users(id),
+                invitee_id TEXT NOT NULL REFERENCES users(id),
                 commit_message BLOB NOT NULL,
                 welcome_data BLOB NOT NULL,
                 group_info BLOB NOT NULL,
@@ -209,8 +210,8 @@ impl Database {
                 ON pending_invites(invitee_id);
 
             CREATE TABLE IF NOT EXISTS message_fetch_watermarks (
-                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 last_fetched_seq INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (group_id, user_id)
             );
@@ -252,6 +253,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use rusqlite::{OptionalExtension, params};
+    use uuid::Uuid;
 
     use super::*;
     use crate::validation::validate_alias;
@@ -263,7 +265,6 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let id = db.create_user("alice", "hash123").unwrap();
-        assert!(id > 0);
 
         let user = db.get_user_by_username("alice").unwrap().unwrap();
         assert_eq!(user.user_id, id);
@@ -363,7 +364,7 @@ mod tests {
     #[test]
     fn test_get_user_by_id_nonexistent() {
         let db = Database::open_in_memory().unwrap();
-        let result = db.get_user_by_id(9999).unwrap();
+        let result = db.get_user_by_id(Uuid::new_v4()).unwrap();
         assert!(result.is_none());
     }
 
@@ -500,7 +501,7 @@ mod tests {
     #[test]
     fn test_consume_key_package_nonexistent_user() {
         let db = Database::open_in_memory().unwrap();
-        let result = db.consume_key_package(9999).unwrap();
+        let result = db.consume_key_package(Uuid::new_v4()).unwrap();
         assert!(result.is_none());
     }
 
@@ -713,7 +714,7 @@ mod tests {
     #[test]
     fn test_get_group_info_nonexistent() {
         let db = Database::open_in_memory().unwrap();
-        let result = db.get_group_info(9999).unwrap();
+        let result = db.get_group_info(Uuid::new_v4()).unwrap();
         assert!(result.is_none());
     }
 
@@ -826,7 +827,7 @@ mod tests {
             .unwrap();
 
         assert!(db.group_exists(group_id).unwrap());
-        assert!(!db.group_exists(9999).unwrap());
+        assert!(!db.group_exists(Uuid::new_v4()).unwrap());
     }
 
     #[test]
@@ -899,7 +900,7 @@ mod tests {
         db.create_session(raw_token, uid, i64::MAX).unwrap();
 
         let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let found: Option<i64> = conn
+        let found: Option<String> = conn
             .prepare("SELECT user_id FROM sessions WHERE token = ?1")
             .unwrap()
             .query_row(params![raw_token], |row| row.get(0))
@@ -911,13 +912,13 @@ mod tests {
         );
 
         let token_hash = hash_token(raw_token);
-        let found: Option<i64> = conn
+        let found: Option<String> = conn
             .prepare("SELECT user_id FROM sessions WHERE token = ?1")
             .unwrap()
             .query_row(params![token_hash], |row| row.get(0))
             .optional()
             .unwrap();
-        assert_eq!(found, Some(uid));
+        assert_eq!(found, Some(uid.to_string()));
     }
 
     // Aliases
@@ -1204,7 +1205,6 @@ mod tests {
         let invite_id = db
             .create_pending_invite(group_id, alice, bob, b"commit", b"welcome", b"ginfo")
             .unwrap();
-        assert!(invite_id > 0);
 
         let invite = db.get_pending_invite(invite_id).unwrap().unwrap();
         assert_eq!(invite.group_id, group_id);
@@ -1317,7 +1317,7 @@ mod tests {
     #[test]
     fn test_accept_nonexistent_invite() {
         let db = Database::open_in_memory().unwrap();
-        let result = db.accept_pending_invite(9999);
+        let result = db.accept_pending_invite(Uuid::new_v4());
         assert!(result.is_err());
     }
 }

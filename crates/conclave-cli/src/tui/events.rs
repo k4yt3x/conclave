@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use conclave_client::api::ApiClient;
 use conclave_client::error::Result;
@@ -21,7 +22,7 @@ pub async fn handle_sse_message(
     state: &mut AppState,
     data_dir: &Path,
     msg_store: &Option<MessageStore>,
-) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+) -> Result<Vec<(Option<Uuid>, DisplayMessage)>> {
     let event = operations::decode_sse_event(hex_data)?;
 
     match event {
@@ -138,10 +139,10 @@ pub async fn handle_sse_message(
 }
 
 async fn handle_group_deleted(
-    group_id: i64,
+    group_id: Uuid,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+) -> Result<Vec<(Option<Uuid>, DisplayMessage)>> {
     let room_name = state
         .rooms
         .get(&group_id)
@@ -169,11 +170,11 @@ async fn handle_group_deleted(
 }
 
 async fn handle_new_message(
-    group_id: i64,
+    group_id: Uuid,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+) -> Result<Vec<(Option<Uuid>, DisplayMessage)>> {
     let last_seq = state
         .rooms
         .get(&group_id)
@@ -215,7 +216,12 @@ async fn handle_new_message(
         let mut display_msg = if msg.is_system {
             DisplayMessage::system(&msg.content)
         } else {
-            DisplayMessage::user(msg.sender_id, &msg.sender, &msg.content, msg.timestamp)
+            DisplayMessage::user(
+                msg.sender_id.unwrap_or(Uuid::nil()),
+                &msg.sender,
+                &msg.content,
+                msg.timestamp,
+            )
         };
         display_msg.sequence_num = Some(msg.sequence_num);
         display_msg.epoch = Some(msg.epoch);
@@ -230,13 +236,13 @@ async fn handle_new_message(
 }
 
 async fn handle_welcome(
-    group_id: i64,
+    group_id: Uuid,
     group_alias: &str,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
     msg_store: &Option<MessageStore>,
-) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+) -> Result<Vec<(Option<Uuid>, DisplayMessage)>> {
     let user_id = match state.user_id {
         Some(id) => id,
         None => return Ok(vec![]),
@@ -283,12 +289,12 @@ async fn handle_welcome(
 }
 
 async fn handle_member_removed(
-    group_id: i64,
-    removed_user_id: i64,
+    group_id: Uuid,
+    removed_user_id: Uuid,
     api: &Arc<Mutex<ApiClient>>,
     state: &mut AppState,
     data_dir: &Path,
-) -> Result<Vec<(Option<i64>, DisplayMessage)>> {
+) -> Result<Vec<(Option<Uuid>, DisplayMessage)>> {
     let mut results = Vec::new();
 
     let is_self = state.user_id == Some(removed_user_id);

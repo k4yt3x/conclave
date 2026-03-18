@@ -18,6 +18,7 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, patch, post};
 use prost::Message;
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::state::{AppState, SseEvent};
@@ -193,6 +194,12 @@ fn validate_key_package_wire_format(data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Parse a UUID from a protobuf bytes field, returning a validation error
+/// if the bytes are not a valid UUID.
+fn parse_uuid(value: &[u8], field_name: &str) -> Result<Uuid> {
+    Uuid::from_slice(value).map_err(|_| Error::Validation(format!("invalid {field_name}")))
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -206,7 +213,7 @@ fn unix_now() -> i64 {
 fn broadcast_sse(
     sse_tx: &tokio::sync::broadcast::Sender<SseEvent>,
     event: conclave_proto::ServerEvent,
-    target_user_ids: Vec<i64>,
+    target_user_ids: Vec<Uuid>,
 ) {
     let mut data = Vec::new();
     if let Err(error) = event.encode(&mut data) {
@@ -225,19 +232,19 @@ fn broadcast_sse(
 /// to all remaining members. Does nothing if the resulting target list is empty.
 fn notify_group_members(
     state: &AppState,
-    group_id: i64,
-    exclude_user_id: Option<i64>,
+    group_id: Uuid,
+    exclude_user_id: Option<Uuid>,
     event: conclave_proto::server_event::Event,
 ) {
     let members = match state.db.get_group_members(group_id) {
         Ok(members) => members,
         Err(error) => {
-            tracing::warn!(%error, group_id = group_id, "failed to fetch group members for SSE notification");
+            tracing::warn!(%error, group_id = %group_id, "failed to fetch group members for SSE notification");
             return;
         }
     };
 
-    let target_ids: Vec<i64> = members
+    let target_ids: Vec<Uuid> = members
         .iter()
         .map(|m| m.user_id)
         .filter(|id| exclude_user_id.is_none_or(|exclude| *id != exclude))

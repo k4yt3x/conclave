@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use uuid::Uuid;
+
 use crate::api::ApiClient;
 use crate::error::{Error, Result};
 use crate::mls::{DecryptedMessage, MlsManager};
@@ -16,11 +18,11 @@ use super::{FetchedMessages, MessageSentResult, ProcessedMessage};
 /// - None -> skipped
 pub async fn fetch_and_decrypt(
     api: &ApiClient,
-    group_id: i64,
+    group_id: Uuid,
     after_sequence: u64,
     mls_group_id: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
     members: &[RoomMember],
 ) -> Result<FetchedMessages> {
     let response = api.get_messages(group_id, after_sequence as i64).await?;
@@ -43,13 +45,14 @@ pub async fn fetch_and_decrypt(
             .await
             .map_err(super::map_join_error)?;
 
-        let sender_display = resolve_user_display_name(Some(stored_message.sender_id), members);
+        let sender_id = Uuid::from_slice(&stored_message.sender_id).ok();
+        let sender_display = resolve_user_display_name(sender_id, members);
 
         match decrypted {
             Ok(DecryptedMessage::Application(plaintext)) => {
                 let text = String::from_utf8_lossy(&plaintext).to_string();
                 messages.push(ProcessedMessage {
-                    sender_id: stored_message.sender_id,
+                    sender_id,
                     sender: sender_display,
                     content: text,
                     timestamp: stored_message.created_at as i64,
@@ -138,7 +141,7 @@ fn process_commit_info(
 
 /// Resolve a user ID from an MLS credential to a display name using the room
 /// member list. Falls back to the user ID as a string.
-pub fn resolve_user_display_name(user_id: Option<i64>, members: &[RoomMember]) -> String {
+pub fn resolve_user_display_name(user_id: Option<Uuid>, members: &[RoomMember]) -> String {
     match user_id {
         Some(uid) => {
             if let Some(member) = members.iter().find(|m| m.user_id == uid) {
@@ -154,11 +157,11 @@ pub fn resolve_user_display_name(user_id: Option<i64>, members: &[RoomMember]) -
 /// Encrypt a text message via MLS and send it to the server.
 pub async fn send_message(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: &str,
     text: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<MessageSentResult> {
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();
@@ -186,10 +189,10 @@ pub async fn send_message(
 /// secrecy) and upload the commit.
 pub async fn rotate_keys(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();

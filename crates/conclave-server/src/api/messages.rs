@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
@@ -14,7 +15,7 @@ use super::{decode_proto, notify_group_members, proto_response};
 pub async fn upload_commit(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::UploadCommitRequest>(&body)?;
@@ -40,7 +41,7 @@ pub async fn upload_commit(
             group_id,
             Some(auth.user_id),
             conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-                group_id,
+                group_id: group_id.as_bytes().to_vec(),
                 update_type: "commit".into(),
             }),
         );
@@ -55,7 +56,7 @@ pub async fn upload_commit(
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::SendMessageRequest>(&body)?;
@@ -81,9 +82,9 @@ pub async fn send_message(
         group_id,
         Some(auth.user_id),
         conclave_proto::server_event::Event::NewMessage(conclave_proto::NewMessageEvent {
-            group_id,
+            group_id: group_id.as_bytes().to_vec(),
             sequence_num: sequence_num as u64,
-            sender_id: auth.user_id,
+            sender_id: auth.user_id.as_bytes().to_vec(),
         }),
     );
 
@@ -110,7 +111,7 @@ fn default_limit() -> i64 {
 pub async fn get_messages(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     Query(query): Query<GetMessagesQuery>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
@@ -126,7 +127,7 @@ pub async fn get_messages(
         .into_iter()
         .map(|row| conclave_proto::StoredMessage {
             sequence_num: row.sequence_num as u64,
-            sender_id: row.sender_id,
+            sender_id: row.sender_id.as_bytes().to_vec(),
             mls_message: row.mls_message,
             created_at: row.created_at as u64,
         })

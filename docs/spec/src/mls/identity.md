@@ -6,16 +6,16 @@ Conclave uses MLS `BasicCredential` for all group members. The credential contai
 
 ### Credential Format
 
-The `BasicCredential` identity field contains the user's `user_id` encoded as a **big-endian i64** (8 bytes).
+The `BasicCredential` identity field contains the user's `user_id` encoded as **raw UUID bytes** (16 bytes).
 
 ```mermaid
 packet-beta
-    0-63: "user_id (i64, big-endian, 8 bytes)"
+    0-127: "user_id (UUID v4, 16 bytes)"
 ```
 
-For example, a user with `user_id = 123` would have the identity bytes: `0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x7B`.
+For example, a user with `user_id = 550e8400-e29b-41d4-a716-446655440000` would have the 16-byte UUID representation as the identity bytes.
 
-Using integer IDs instead of usernames ensures credential stability — the credential remains valid even if the user changes their display name.
+Using UUIDs instead of usernames ensures credential stability — the credential remains valid even if the user changes their display name. UUIDs also prevent information disclosure about server population (unlike sequential integer IDs).
 
 ### Identity Provider
 
@@ -65,7 +65,7 @@ Fingerprints are used for [TOFU identity verification](tofu.md).
 
 ## Member Identification in Groups
 
-When a client decrypts an MLS message (application message or commit), it extracts the sender's `SigningIdentity` from the MLS protocol. The `user_id` is then extracted from the `BasicCredential` by reading the first 8 bytes as a big-endian i64.
+When a client decrypts an MLS message (application message or commit), it extracts the sender's `SigningIdentity` from the MLS protocol. The `user_id` is then extracted from the `BasicCredential` by reading the 16-byte identity as a UUID.
 
 This allows the client to map decrypted messages to user IDs for display name resolution via the [ID-first referencing](../architecture/id-referencing.md) system.
 

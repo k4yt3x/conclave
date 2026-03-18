@@ -14,7 +14,7 @@ POST /api/v1/groups/{group_id}/commit
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group the commit belongs to. |
+| `group_id` | string | The group the commit belongs to. |
 
 ### Request Body — `UploadCommitRequest`
 
@@ -61,7 +61,7 @@ POST /api/v1/groups/{group_id}/messages
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to send the message to. |
+| `group_id` | string | The group to send the message to. |
 
 ### Request Body — `SendMessageRequest`
 
@@ -108,7 +108,7 @@ GET /api/v1/groups/{group_id}/messages
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to fetch messages from. |
+| `group_id` | string | The group to fetch messages from. |
 
 ### Query Parameters
 
@@ -132,7 +132,7 @@ Each `StoredMessage`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `sequence_num` | uint64 | The message's sequence number within the group. |
-| `sender_id` | int64 | The user ID of the sender. |
+| `sender_id` | bytes | The user ID of the sender (UUID). |
 | `mls_message` | bytes | The encrypted MLS message (opaque ciphertext). |
 | `created_at` | uint64 | Unix timestamp of when the server received the message (seconds). |
 

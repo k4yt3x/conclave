@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
@@ -14,7 +15,7 @@ use super::{broadcast_sse, decode_proto, proto_response};
 pub async fn external_join(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::ExternalJoinRequest>(&body)?;
@@ -46,7 +47,7 @@ pub async fn external_join(
 
         // Notify existing members about the identity reset.
         let members = state.db.get_group_members(group_id)?;
-        let member_ids: Vec<i64> = members
+        let member_ids: Vec<Uuid> = members
             .iter()
             .map(|m| m.user_id)
             .filter(|id| *id != auth.user_id)
@@ -57,8 +58,8 @@ pub async fn external_join(
             conclave_proto::ServerEvent {
                 event: Some(conclave_proto::server_event::Event::IdentityReset(
                     conclave_proto::IdentityResetEvent {
-                        group_id,
-                        user_id: auth.user_id,
+                        group_id: group_id.as_bytes().to_vec(),
+                        user_id: auth.user_id.as_bytes().to_vec(),
                     },
                 )),
             },

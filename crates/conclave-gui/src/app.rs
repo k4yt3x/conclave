@@ -6,6 +6,7 @@ mod sse;
 use iced::widget::operation::{focus, focus_next};
 use iced::{Subscription, Task, keyboard};
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 use conclave_client::api::{ApiClient, normalize_server_url};
 use conclave_client::config::{ClientConfig, SessionState};
@@ -45,22 +46,22 @@ pub struct Conclave {
     pub(crate) mls: Option<MlsManager>,
     pub(crate) username: Option<String>,
     pub(crate) user_alias: Option<String>,
-    pub(crate) user_id: Option<i64>,
+    pub(crate) user_id: Option<Uuid>,
     pub(crate) token: Option<String>,
-    pub(crate) rooms: HashMap<i64, Room>,
-    pub(crate) active_room: Option<i64>,
-    pub(crate) room_messages: HashMap<i64, Vec<DisplayMessage>>,
+    pub(crate) rooms: HashMap<Uuid, Room>,
+    pub(crate) active_room: Option<Uuid>,
+    pub(crate) room_messages: HashMap<Uuid, Vec<DisplayMessage>>,
     pub(crate) system_messages: Vec<DisplayMessage>,
-    pub(crate) group_mapping: HashMap<i64, String>,
+    pub(crate) group_mapping: HashMap<Uuid, String>,
     pub(crate) connection_status: ConnectionStatus,
     pub(crate) msg_store: Option<MessageStore>,
     pub(crate) rooms_loaded: bool,
     pub(crate) welcomes_processed: bool,
-    pub(crate) fetching_groups: HashSet<i64>,
+    pub(crate) fetching_groups: HashSet<Uuid>,
     /// Set when welcome processing triggers a rooms reload — defers the
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     pub(crate) fetch_messages_on_rooms_load: bool,
-    pub(crate) verification_status: HashMap<i64, VerificationStatus>,
+    pub(crate) verification_status: HashMap<Uuid, VerificationStatus>,
     pub(crate) window_focused: bool,
 }
 
@@ -78,7 +79,7 @@ pub enum Message {
     // Room / message async results
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
-    MessagesFetched(Result<operations::FetchedMessages, (i64, String)>),
+    MessagesFetched(Result<operations::FetchedMessages, (Uuid, String)>),
     KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
 
@@ -113,7 +114,7 @@ pub enum Message {
 pub struct LoginInfo {
     pub server_url: String,
     pub token: String,
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub username: String,
 }
 
@@ -550,14 +551,14 @@ impl Conclave {
     // ── Helpers ───────────────────────────────────────────────────
 
     /// Return room IDs sorted by display name (matches sidebar order).
-    pub(crate) fn sorted_room_ids(&self) -> Vec<i64> {
+    pub(crate) fn sorted_room_ids(&self) -> Vec<Uuid> {
         let mut rooms: Vec<_> = self.rooms.values().collect();
         rooms.sort_by_key(|r| r.display_name());
         rooms.iter().map(|r| r.server_group_id).collect()
     }
 
     /// Select a room: set active, close popover, mark read.
-    pub(crate) fn select_room(&mut self, room_id: i64) {
+    pub(crate) fn select_room(&mut self, room_id: Uuid) {
         self.active_room = Some(room_id);
         if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
             dashboard.show_user_popover = false;
@@ -600,7 +601,7 @@ impl Conclave {
 
     pub(crate) fn fetch_messages_task(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         last_seq: u64,
         mls_group_id: String,
     ) -> Task<Message> {
@@ -640,7 +641,7 @@ impl Conclave {
         self.add_message(None, msg);
     }
 
-    pub(crate) fn add_message(&mut self, group_id: Option<i64>, msg: DisplayMessage) {
+    pub(crate) fn add_message(&mut self, group_id: Option<Uuid>, msg: DisplayMessage) {
         // Fall back to the active room for system messages that have no group_id.
         let effective_gid = group_id.or(self.active_room);
 
@@ -662,7 +663,7 @@ impl Conclave {
         }
     }
 
-    pub(crate) fn add_message_to_room(&mut self, group_id: i64, msg: DisplayMessage) {
+    pub(crate) fn add_message_to_room(&mut self, group_id: Uuid, msg: DisplayMessage) {
         if let Some(store) = &self.msg_store {
             store.push_message(group_id, &msg);
         }
@@ -672,7 +673,7 @@ impl Conclave {
     pub(crate) fn switch_to_room(&mut self, target: &str) {
         let resolved_gid = if let Some(room) = self.find_room_by_name(target) {
             Some(room.server_group_id)
-        } else if let Ok(id) = target.parse::<i64>() {
+        } else if let Ok(id) = Uuid::parse_str(target) {
             if self.rooms.contains_key(&id) {
                 Some(id)
             } else {

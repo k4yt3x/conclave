@@ -4,6 +4,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use iced::Subscription;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
+use uuid::Uuid;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
@@ -15,32 +16,32 @@ pub enum SseUpdate {
     Disconnected,
     Unauthorized,
     NewMessage {
-        group_id: i64,
+        group_id: Uuid,
     },
     Welcome,
     GroupUpdate,
     MemberRemoved {
-        group_id: i64,
-        removed_user_id: i64,
+        group_id: Uuid,
+        removed_user_id: Uuid,
     },
     IdentityReset {
-        group_id: i64,
-        user_id: i64,
+        group_id: Uuid,
+        user_id: Uuid,
     },
     InviteReceived {
-        invite_id: i64,
-        group_id: i64,
+        invite_id: Uuid,
+        group_id: Uuid,
         group_name: String,
         group_alias: String,
-        inviter_id: i64,
+        inviter_id: Uuid,
     },
     InviteDeclined {
-        group_id: i64,
-        declined_user_id: i64,
+        group_id: Uuid,
+        declined_user_id: Uuid,
     },
     InviteCancelled,
     GroupDeleted {
-        group_id: i64,
+        group_id: Uuid,
     },
 }
 

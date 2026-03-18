@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use uuid::Uuid;
+
 use crate::api::ApiClient;
 use crate::error::{Error, Result};
 use crate::mls::MlsManager;
@@ -14,10 +16,10 @@ pub async fn create_group(
     alias: Option<&str>,
     group_name: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<GroupCreatedResult> {
     let response = api.create_group(alias, group_name).await?;
-    let server_group_id = response.group_id;
+    let server_group_id = Uuid::from_slice(&response.group_id)?;
 
     let data_dir = data_dir.to_path_buf();
 
@@ -53,12 +55,12 @@ pub async fn create_group(
 /// already members or had no key packages).
 pub async fn invite_members(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: &str,
-    member_ids: Vec<i64>,
+    member_ids: Vec<Uuid>,
     data_dir: &Path,
-    user_id: i64,
-) -> Result<Vec<i64>> {
+    user_id: Uuid,
+) -> Result<Vec<Uuid>> {
     let mut invited = Vec::new();
 
     for &member_id in &member_ids {
@@ -67,7 +69,7 @@ pub async fn invite_members(
         let response = match response {
             Ok(r) => r,
             Err(error) => {
-                tracing::warn!(%error, member_id = member_id, "failed to get key package for invite");
+                tracing::warn!(%error, member_id = %member_id, "failed to get key package for invite");
                 continue;
             }
         };
@@ -76,7 +78,21 @@ pub async fn invite_members(
             continue;
         }
 
-        let member_key_packages = response.member_key_packages;
+        let member_key_packages: HashMap<Uuid, Vec<u8>> = {
+            let mut map = HashMap::new();
+            for entry in response.member_key_packages {
+                match Uuid::from_slice(&entry.user_id) {
+                    Ok(uid) => {
+                        map.insert(uid, entry.key_package_data);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to parse member key package UUID");
+                        continue;
+                    }
+                }
+            }
+            map
+        };
         let data_dir_clone = data_dir.to_path_buf();
         let mls_group_id_clone = mls_group_id.to_string();
 
@@ -90,7 +106,7 @@ pub async fn invite_members(
         let result = match result {
             Ok(r) => r,
             Err(error) => {
-                tracing::warn!(%error, member_id = member_id, "MLS invite failed");
+                tracing::warn!(%error, member_id = %member_id, "MLS invite failed");
                 continue;
             }
         };
@@ -123,9 +139,9 @@ pub async fn list_pending_invites(api: &ApiClient) -> Result<Vec<conclave_proto:
 /// processes the resulting welcome to join the MLS group.
 pub async fn accept_invite(
     api: &ApiClient,
-    invite_id: i64,
+    invite_id: Uuid,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<Vec<WelcomeJoinResult>> {
     api.accept_pending_invite(invite_id).await?;
 
@@ -137,29 +153,29 @@ pub async fn accept_invite(
 /// Fetch pending invites for a specific group (admin-only).
 pub async fn list_group_pending_invites(
     api: &ApiClient,
-    group_id: i64,
+    group_id: Uuid,
 ) -> Result<Vec<conclave_proto::PendingInvite>> {
     let response = api.list_group_pending_invites(group_id).await?;
     Ok(response.invites)
 }
 
 /// Cancel a pending invite by user ID.
-pub async fn cancel_invite(api: &ApiClient, group_id: i64, user_id: i64) -> Result<()> {
+pub async fn cancel_invite(api: &ApiClient, group_id: Uuid, user_id: Uuid) -> Result<()> {
     api.cancel_invite(group_id, user_id).await
 }
 
 /// Decline a pending invite.
-pub async fn decline_invite(api: &ApiClient, invite_id: i64) -> Result<()> {
+pub async fn decline_invite(api: &ApiClient, invite_id: Uuid) -> Result<()> {
     api.decline_pending_invite(invite_id).await
 }
 
 /// Handle an invite decline by rotating keys to clean up the phantom MLS leaf.
 pub async fn handle_invite_declined(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<()> {
     super::messaging::rotate_keys(api, server_group_id, mls_group_id, data_dir, user_id).await
 }
@@ -168,11 +184,11 @@ pub async fn handle_invite_declined(
 /// removal commit, and notify the server.
 pub async fn kick_member(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: &str,
-    target_user_id: i64,
+    target_user_id: Uuid,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();
@@ -206,10 +222,10 @@ pub async fn kick_member(
 /// delete local MLS group state.
 pub async fn leave_group(
     api: &ApiClient,
-    server_group_id: i64,
+    server_group_id: Uuid,
     mls_group_id: Option<&str>,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<()> {
     let (commit_bytes, group_info_bytes) = if let Some(mls_gid) = mls_group_id {
         let data_dir = data_dir.to_path_buf();
@@ -260,7 +276,7 @@ pub async fn leave_group(
 pub async fn delete_mls_group_state(
     mls_group_id: &str,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<()> {
     let data_dir = data_dir.to_path_buf();
     let mls_group_id = mls_group_id.to_string();
@@ -279,7 +295,7 @@ pub async fn delete_mls_group_state(
 pub async fn accept_welcomes(
     api: &ApiClient,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<Vec<WelcomeJoinResult>> {
     let response = api.list_pending_welcomes().await?;
 
@@ -308,12 +324,28 @@ pub async fn accept_welcomes(
             }
         };
 
-        if let Err(error) = api.accept_welcome(welcome.welcome_id).await {
+        let welcome_id = match Uuid::from_slice(&welcome.welcome_id) {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(%error, "failed to parse welcome_id UUID");
+                continue;
+            }
+        };
+
+        if let Err(error) = api.accept_welcome(welcome_id).await {
             tracing::warn!(%error, "failed to acknowledge welcome");
         }
 
+        let group_id = match Uuid::from_slice(&welcome.group_id) {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(%error, "failed to parse welcome group_id UUID");
+                continue;
+            }
+        };
+
         results.push(WelcomeJoinResult {
-            group_id: welcome.group_id,
+            group_id,
             group_alias: if welcome.group_alias.is_empty() {
                 None
             } else {

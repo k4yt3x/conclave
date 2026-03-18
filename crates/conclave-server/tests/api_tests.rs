@@ -6,6 +6,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use prost::Message;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use conclave_server::{api, config, db, state};
 
@@ -33,7 +34,7 @@ fn setup_with_state() -> (Router, Arc<state::AppState>) {
     (router, app_state)
 }
 
-async fn register_user(app: &Router, username: &str, password: &str) -> i64 {
+async fn register_user(app: &Router, username: &str, password: &str) -> Uuid {
     let req_body = conclave_proto::RegisterRequest {
         username: username.to_string(),
         password: password.to_string(),
@@ -55,7 +56,7 @@ async fn register_user(app: &Router, username: &str, password: &str) -> i64 {
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::RegisterResponse::decode(body_bytes).unwrap();
-    resp.user_id
+    Uuid::from_slice(&resp.user_id).unwrap()
 }
 
 async fn login_user(app: &Router, username: &str, password: &str) -> String {
@@ -81,7 +82,7 @@ async fn login_user(app: &Router, username: &str, password: &str) -> String {
     resp.token
 }
 
-async fn create_group_for(app: &Router, token: &str, name: &str) -> i64 {
+async fn create_group_for(app: &Router, token: &str, name: &str) -> Uuid {
     let req_body = conclave_proto::CreateGroupRequest {
         alias: name.to_string(),
         group_name: name.to_string(),
@@ -102,7 +103,7 @@ async fn create_group_for(app: &Router, token: &str, name: &str) -> i64 {
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::CreateGroupResponse::decode(body_bytes).unwrap();
-    resp.group_id
+    Uuid::from_slice(&resp.group_id).unwrap()
 }
 
 async fn upload_key_package_for(app: &Router, token: &str, data: &[u8]) {
@@ -157,7 +158,7 @@ async fn upload_key_packages_batch(
 async fn test_register_success() {
     let app = setup();
     let user_id = register_user(&app, "alice", "password123").await;
-    assert!(user_id > 0);
+    assert!(!user_id.is_nil());
 }
 
 #[tokio::test]
@@ -366,7 +367,7 @@ async fn test_me_authenticated() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.username, "alice");
-    assert!(resp.user_id > 0);
+    assert!(Uuid::from_slice(&resp.user_id).is_ok());
 }
 
 #[tokio::test]
@@ -628,7 +629,7 @@ async fn test_get_user_by_username_success() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.username, "alice");
-    assert_eq!(resp.user_id, user_id);
+    assert_eq!(resp.user_id, user_id.as_bytes().to_vec());
 }
 
 #[tokio::test]
@@ -666,7 +667,7 @@ async fn test_get_user_by_id_success() {
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
-    assert_eq!(resp.user_id, user_id);
+    assert_eq!(resp.user_id, user_id.as_bytes().to_vec());
     assert_eq!(resp.username, "alice");
 }
 
@@ -678,7 +679,7 @@ async fn test_get_user_by_id_not_found() {
 
     let request = Request::builder()
         .method("GET")
-        .uri("/api/v1/users/by-id/99999")
+        .uri("/api/v1/users/by-id/00000000-0000-0000-0000-000000099999")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -803,7 +804,7 @@ async fn test_create_group_success() {
     let token = login_user(&app, "alice", "password123").await;
 
     let group_id = create_group_for(&app, &token, "test_group").await;
-    assert!(group_id > 0);
+    assert!(!group_id.is_nil());
 }
 
 #[tokio::test]
@@ -899,7 +900,7 @@ async fn test_list_groups_with_groups() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups.len(), 1);
-    assert_eq!(resp.groups[0].group_id, group_id);
+    assert_eq!(resp.groups[0].group_id, group_id.as_bytes().to_vec());
     assert_eq!(resp.groups[0].alias, "my_group");
 }
 
@@ -1111,7 +1112,7 @@ async fn test_invite_not_member() {
     let charlie_id = register_user(&app, "charlie", "password123").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![charlie_id],
+        user_ids: vec![charlie_id.as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -1144,7 +1145,7 @@ async fn test_remove_member_success() {
 
     // Alice removes bob
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: bob_id,
+        user_id: bob_id.as_bytes().to_vec(),
         commit_message: b"remove_commit".to_vec(),
         group_info: b"updated_info".to_vec(),
     };
@@ -1193,7 +1194,7 @@ async fn test_remove_member_not_group_member() {
     let bob_token = login_user(&app, "bob", "password123").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: alice_id,
+        user_id: alice_id.as_bytes().to_vec(),
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -1223,7 +1224,7 @@ async fn test_remove_member_target_not_member() {
     let bob_id = register_user(&app, "bob", "password123").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: bob_id,
+        user_id: bob_id.as_bytes().to_vec(),
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -1250,7 +1251,7 @@ async fn test_remove_member_target_not_found() {
     let group_id = create_group_for(&app, &alice_token, "rm_group").await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: 999999,
+        user_id: Uuid::new_v4().as_bytes().to_vec(),
         commit_message: b"commit".to_vec(),
         group_info: b"info".to_vec(),
     };
@@ -1620,11 +1621,14 @@ async fn test_accept_welcome_success() {
     // Bob accepts the invite (this creates a pending welcome and adds bob to group).
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -1646,12 +1650,15 @@ async fn test_accept_welcome_success() {
     assert_eq!(resp.welcomes.len(), 1);
     assert_eq!(resp.welcomes[0].welcome_message, b"welcome_data");
 
-    let welcome_id = resp.welcomes[0].welcome_id;
+    let welcome_id = resp.welcomes[0].welcome_id.clone();
 
     // Bob accepts the welcome
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/welcomes/{welcome_id}/accept"))
+        .uri(format!(
+            "/api/v1/welcomes/{}/accept",
+            Uuid::from_slice(&welcome_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -1681,7 +1688,7 @@ async fn test_accept_welcome_not_found() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/welcomes/99999/accept")
+        .uri("/api/v1/welcomes/00000000-0000-0000-0000-000000999999/accept")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -2002,7 +2009,7 @@ async fn test_invite_consumes_key_package() {
 
     // Invite bob (this should consume his key package).
     let req_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![bob_id],
+        user_ids: vec![bob_id.as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2041,7 +2048,7 @@ async fn test_invite_existing_member_conflict() {
     upload_key_package_for(&app, &bob_token, &fake_key_package(b"bob_kp2")).await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![bob_id],
+        user_ids: vec![bob_id.as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2064,7 +2071,7 @@ async fn test_invite_nonexistent_user() {
     let group_id = create_group_for(&app, &alice_token, "ghost_invite").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![999999],
+        user_ids: vec![Uuid::new_v4().as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2097,11 +2104,14 @@ async fn test_escrow_invite_creates_pending_welcome_on_accept() {
     // Bob accepts the invite.
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -2119,7 +2129,7 @@ async fn test_escrow_invite_creates_pending_welcome_on_accept() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::ListPendingWelcomesResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.welcomes.len(), 1);
-    assert_eq!(resp.welcomes[0].group_id, group_id);
+    assert_eq!(resp.welcomes[0].group_id, group_id.as_bytes().to_vec());
     assert_eq!(resp.welcomes[0].welcome_message, b"welcome_data");
 }
 
@@ -2182,7 +2192,7 @@ async fn test_remove_member_stores_group_info() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     let req_body = conclave_proto::RemoveMemberRequest {
-        user_id: bob_id,
+        user_id: bob_id.as_bytes().to_vec(),
         commit_message: b"removal_commit".to_vec(),
         group_info: b"removal_gi_data".to_vec(),
     };
@@ -2465,7 +2475,7 @@ async fn test_send_message_to_nonexistent_group() {
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/999999/messages")
+        .uri("/api/v1/groups/00000000-0000-0000-0000-000000999999/messages")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
@@ -2530,7 +2540,7 @@ async fn test_invite_self_is_skipped() {
     let group_id = create_group_for(&app, &alice_token, "self_invite").await;
 
     let req_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![alice_id],
+        user_ids: vec![alice_id.as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
@@ -2568,7 +2578,7 @@ async fn test_external_join_nonexistent_group() {
     req_body.encode(&mut body).unwrap();
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/999999/external-join")
+        .uri("/api/v1/groups/00000000-0000-0000-0000-000000999999/external-join")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
@@ -2625,7 +2635,7 @@ async fn test_register_username_exactly_64_chars() {
     let app = setup();
     let username = "a".repeat(64);
     let user_id = register_user(&app, &username, "password123").await;
-    assert!(user_id > 0);
+    assert!(!user_id.is_nil());
 }
 
 #[tokio::test]
@@ -2701,7 +2711,7 @@ async fn test_register_username_starting_with_hyphen() {
 async fn test_register_username_valid_with_underscores() {
     let app = setup();
     let user_id = register_user(&app, "user_name_with_all123", "password123").await;
-    assert!(user_id > 0);
+    assert!(!user_id.is_nil());
 }
 
 #[tokio::test]
@@ -3051,7 +3061,7 @@ async fn test_create_group_alias_exactly_64_chars() {
 
     let group_alias = "g".repeat(64);
     let group_id = create_group_for(&app, &token, &group_alias).await;
-    assert!(group_id > 0);
+    assert!(!group_id.is_nil());
 }
 
 // ── Auth Header Format ────────────────────────────────────────────
@@ -3559,7 +3569,7 @@ async fn test_update_group_not_found() {
 
     let request = Request::builder()
         .method("PATCH")
-        .uri("/api/v1/groups/99999")
+        .uri("/api/v1/groups/00000000-0000-0000-0000-000000099999")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
@@ -4055,7 +4065,7 @@ async fn test_update_group_broadcasts_to_members() {
     let server_event = conclave_proto::ServerEvent::decode(event.data.as_slice()).unwrap();
     match server_event.event {
         Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
-            assert_eq!(update.group_id, group_id);
+            assert_eq!(update.group_id, group_id.as_bytes().to_vec());
             assert_eq!(update.update_type, "group_settings");
         }
         other => panic!("expected GroupUpdate event, got {other:?}"),
@@ -4068,12 +4078,12 @@ async fn add_member_via_escrow(
     app: &Router,
     admin_token: &str,
     member_token: &str,
-    group_id: i64,
-    member_id: i64,
+    group_id: Uuid,
+    member_id: Uuid,
 ) {
     // Step 1: Admin creates escrow invite
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: member_id,
+        invitee_id: member_id.as_bytes().to_vec(),
         commit_message: b"add_member".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: b"gi".to_vec(),
@@ -4104,13 +4114,16 @@ async fn add_member_via_escrow(
     let invite = resp
         .invites
         .iter()
-        .find(|i| i.group_id == group_id)
+        .find(|i| i.group_id == group_id.as_bytes().to_vec())
         .expect("expected pending invite for group");
 
     // Step 3: Member accepts the invite
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{}/accept", invite.invite_id))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite.invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
         .body(Body::empty())
         .unwrap();
@@ -4134,7 +4147,9 @@ async fn test_promote_member_success() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice promotes Bob.
-    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::PromoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4167,7 +4182,7 @@ async fn test_promote_member_not_admin_rejected() {
 
     // Bob (regular member) tries to promote Charlie.
     let request_body = conclave_proto::PromoteMemberRequest {
-        user_id: charlie_id,
+        user_id: charlie_id.as_bytes().to_vec(),
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4198,7 +4213,9 @@ async fn test_promote_member_already_admin() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
-    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::PromoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4213,7 +4230,9 @@ async fn test_promote_member_already_admin() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Promote Bob again — should conflict (409).
-    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::PromoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4239,7 +4258,9 @@ async fn test_promote_member_not_member_rejected() {
     let group_id = create_group_for(&app, &alice_token, "test_promote_nonmember").await;
 
     // Try to promote Bob who is not a member.
-    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::PromoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4269,7 +4290,9 @@ async fn test_demote_member_success() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Promote Bob first.
-    let request_body = conclave_proto::PromoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::PromoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
     let request = Request::builder()
@@ -4282,7 +4305,9 @@ async fn test_demote_member_success() {
     app.clone().oneshot(request).await.unwrap();
 
     // Alice demotes Bob.
-    let request_body = conclave_proto::DemoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::DemoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4312,7 +4337,9 @@ async fn test_demote_member_not_admin_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Bob (regular member) tries to demote Alice.
-    let request_body = conclave_proto::DemoteMemberRequest { user_id: alice_id };
+    let request_body = conclave_proto::DemoteMemberRequest {
+        user_id: alice_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4342,7 +4369,9 @@ async fn test_demote_last_admin_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice is the only admin — try to demote herself.
-    let request_body = conclave_proto::DemoteMemberRequest { user_id: alice_id };
+    let request_body = conclave_proto::DemoteMemberRequest {
+        user_id: alice_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4372,7 +4401,9 @@ async fn test_demote_regular_member_rejected() {
     add_member_via_escrow(&app, &alice_token, &bob_token, group_id, bob_id).await;
 
     // Alice tries to demote Bob who is not an admin.
-    let request_body = conclave_proto::DemoteMemberRequest { user_id: bob_id };
+    let request_body = conclave_proto::DemoteMemberRequest {
+        user_id: bob_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
 
@@ -4463,7 +4494,7 @@ async fn test_invite_requires_admin() {
 
     // Bob (regular member) tries to invite Charlie.
     let request_body = conclave_proto::InviteToGroupRequest {
-        user_ids: vec![charlie_id],
+        user_ids: vec![charlie_id.as_bytes().to_vec()],
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4497,7 +4528,7 @@ async fn test_remove_member_requires_admin() {
 
     // Bob (regular member) tries to remove Charlie.
     let request_body = conclave_proto::RemoveMemberRequest {
-        user_id: charlie_id,
+        user_id: charlie_id.as_bytes().to_vec(),
         commit_message: b"remove".to_vec(),
         group_info: b"gi".to_vec(),
     };
@@ -4596,11 +4627,11 @@ async fn test_group_member_role_in_list_groups() {
 async fn create_escrow_invite(
     app: &Router,
     admin_token: &str,
-    group_id: i64,
-    invitee_id: i64,
+    group_id: Uuid,
+    invitee_id: Uuid,
 ) -> StatusCode {
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id,
+        invitee_id: invitee_id.as_bytes().to_vec(),
         commit_message: b"commit_data".to_vec(),
         welcome_message: b"welcome_data".to_vec(),
         group_info: b"group_info_data".to_vec(),
@@ -4678,7 +4709,7 @@ async fn test_escrow_invite_nonexistent_user() {
 
     let group_id = create_group_for(&app, &alice_token, "escrow_nonexistent").await;
 
-    let status = create_escrow_invite(&app, &alice_token, group_id, 999999).await;
+    let status = create_escrow_invite(&app, &alice_token, group_id, Uuid::new_v4()).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -4709,9 +4740,9 @@ async fn test_escrow_invite_missing_fields() {
 
     let group_id = create_group_for(&app, &alice_token, "escrow_missing").await;
 
-    // Zero invitee_id.
+    // Empty invitee_id.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: 0,
+        invitee_id: Vec::new(),
         commit_message: b"commit".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: b"ginfo".to_vec(),
@@ -4732,7 +4763,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty commit_message.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: bob_id,
+        invitee_id: bob_id.as_bytes().to_vec(),
         commit_message: vec![],
         welcome_message: b"welcome".to_vec(),
         group_info: b"ginfo".to_vec(),
@@ -4753,7 +4784,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty welcome_message.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: bob_id,
+        invitee_id: bob_id.as_bytes().to_vec(),
         commit_message: b"commit".to_vec(),
         welcome_message: vec![],
         group_info: b"ginfo".to_vec(),
@@ -4774,7 +4805,7 @@ async fn test_escrow_invite_missing_fields() {
 
     // Empty group_info.
     let req_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: bob_id,
+        invitee_id: bob_id.as_bytes().to_vec(),
         commit_message: b"commit".to_vec(),
         welcome_message: b"welcome".to_vec(),
         group_info: vec![],
@@ -4821,11 +4852,11 @@ async fn test_list_pending_invites_success() {
     // Bob should see the invite.
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites[0].group_id, group_id);
+    assert_eq!(invites[0].group_id, group_id.as_bytes().to_vec());
     assert_eq!(invites[0].group_name, "escrow_list");
     assert_eq!(invites[0].inviter_username, "alice");
-    assert_eq!(invites[0].inviter_id, alice_id);
-    assert!(invites[0].invite_id > 0);
+    assert_eq!(invites[0].inviter_id, alice_id.as_bytes().to_vec());
+    assert!(Uuid::from_slice(&invites[0].invite_id).is_ok());
 
     // Alice should not see any invites (she is the inviter, not invitee).
     let alice_invites = list_pending_invites(&app, &alice_token).await;
@@ -4847,12 +4878,15 @@ async fn test_accept_invite_success() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // Bob accepts the invite.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -4874,7 +4908,7 @@ async fn test_accept_invite_success() {
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups.len(), 1);
-    assert_eq!(resp.groups[0].group_id, group_id);
+    assert_eq!(resp.groups[0].group_id, group_id.as_bytes().to_vec());
 
     // Verify the invite is gone.
     let invites = list_pending_invites(&app, &bob_token).await;
@@ -4898,12 +4932,15 @@ async fn test_accept_invite_not_invitee() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // Charlie tries to accept Bob's invite.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {charlie_token}"))
         .body(Body::empty())
         .unwrap();
@@ -4921,7 +4958,7 @@ async fn test_accept_invite_not_found() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/invites/99999/accept")
+        .uri("/api/v1/invites/00000000-0000-0000-0000-000000099999/accept")
         .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
         .body(Body::empty())
         .unwrap();
@@ -4945,12 +4982,15 @@ async fn test_decline_invite_success() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // Bob declines the invite.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/decline"))
+        .uri(format!(
+            "/api/v1/invites/{}/decline",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -4995,12 +5035,15 @@ async fn test_decline_invite_not_invitee() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // Charlie tries to decline Bob's invite.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/decline"))
+        .uri(format!(
+            "/api/v1/invites/{}/decline",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {charlie_token}"))
         .body(Body::empty())
         .unwrap();
@@ -5043,12 +5086,15 @@ async fn test_accept_invite_twice() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // First accept should succeed.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -5059,7 +5105,10 @@ async fn test_accept_invite_twice() {
     // Second accept should fail (invite no longer exists).
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/accept"))
+        .uri(format!(
+            "/api/v1/invites/{}/accept",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -5083,12 +5132,15 @@ async fn test_decline_invite_twice() {
 
     let invites = list_pending_invites(&app, &bob_token).await;
     assert_eq!(invites.len(), 1);
-    let invite_id = invites[0].invite_id;
+    let invite_id = invites[0].invite_id.clone();
 
     // First decline should succeed.
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/decline"))
+        .uri(format!(
+            "/api/v1/invites/{}/decline",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -5099,7 +5151,10 @@ async fn test_decline_invite_twice() {
     // Second decline should fail (invite no longer exists).
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/invites/{invite_id}/decline"))
+        .uri(format!(
+            "/api/v1/invites/{}/decline",
+            Uuid::from_slice(&invite_id).unwrap()
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
         .body(Body::empty())
         .unwrap();
@@ -5132,7 +5187,7 @@ async fn test_escrow_invite_unauthenticated() {
 
     // Attempt to create escrow invite without auth.
     let request_body = conclave_proto::EscrowInviteRequest {
-        invitee_id: 999,
+        invitee_id: Uuid::new_v4().as_bytes().to_vec(),
         commit_message: vec![1, 2, 3],
         welcome_message: vec![4, 5, 6],
         group_info: vec![7, 8, 9],
@@ -5141,7 +5196,7 @@ async fn test_escrow_invite_unauthenticated() {
     let body = prost::Message::encode_to_vec(&request_body);
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/1/escrow-invite")
+        .uri("/api/v1/groups/00000000-0000-0000-0000-000000000001/escrow-invite")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .body(Body::from(body))
         .unwrap();
@@ -5170,7 +5225,7 @@ async fn test_accept_invite_unauthenticated() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/invites/1/accept")
+        .uri("/api/v1/invites/00000000-0000-0000-0000-000000000001/accept")
         .body(Body::empty())
         .unwrap();
 
@@ -5184,7 +5239,7 @@ async fn test_decline_invite_unauthenticated() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/invites/1/decline")
+        .uri("/api/v1/invites/00000000-0000-0000-0000-000000000001/decline")
         .body(Body::empty())
         .unwrap();
 
@@ -5197,7 +5252,7 @@ async fn test_decline_invite_unauthenticated() {
 async fn list_group_pending_invites(
     app: &Router,
     token: &str,
-    group_id: i64,
+    group_id: Uuid,
 ) -> (StatusCode, Vec<conclave_proto::PendingInvite>) {
     let request = Request::builder()
         .method("GET")
@@ -5244,8 +5299,8 @@ async fn test_list_group_pending_invites_success() {
     let (status, invites) = list_group_pending_invites(&app, &alice_token, group_id).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(invites.len(), 1);
-    assert_eq!(invites[0].group_id, group_id);
-    assert_eq!(invites[0].invitee_id, bob_id);
+    assert_eq!(invites[0].group_id, group_id.as_bytes().to_vec());
+    assert_eq!(invites[0].invitee_id, bob_id.as_bytes().to_vec());
 }
 
 #[tokio::test]
@@ -5267,8 +5322,10 @@ async fn test_list_group_pending_invites_not_admin() {
 
 // ── Cancel invite ────────────────────────────────────────────────
 
-async fn cancel_invite(app: &Router, token: &str, group_id: i64, invitee_id: i64) -> StatusCode {
-    let req_body = conclave_proto::CancelInviteRequest { invitee_id };
+async fn cancel_invite(app: &Router, token: &str, group_id: Uuid, invitee_id: Uuid) -> StatusCode {
+    let req_body = conclave_proto::CancelInviteRequest {
+        invitee_id: invitee_id.as_bytes().to_vec(),
+    };
     let mut body = Vec::new();
     req_body.encode(&mut body).unwrap();
 
@@ -5341,9 +5398,8 @@ async fn test_cancel_invite_not_admin() {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-        conclave_proto::UserInfoResponse::decode(body_bytes)
-            .unwrap()
-            .user_id
+        let resp = conclave_proto::UserInfoResponse::decode(body_bytes).unwrap();
+        Uuid::from_slice(&resp.user_id).unwrap()
     };
 
     // Bob is a regular member, not admin.
@@ -5359,7 +5415,7 @@ async fn test_cancel_invite_nonexistent_user() {
     let alice_token = login_user(&app, "alice", "password123").await;
     let group_id = create_group_for(&app, &alice_token, "cancel_nouser").await;
 
-    let status = cancel_invite(&app, &alice_token, group_id, 99999).await;
+    let status = cancel_invite(&app, &alice_token, group_id, Uuid::new_v4()).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -6028,7 +6084,7 @@ async fn test_delete_group_not_found() {
 
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/groups/99999/delete")
+        .uri("/api/v1/groups/00000000-0000-0000-0000-000000099999/delete")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())

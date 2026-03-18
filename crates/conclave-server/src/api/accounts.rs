@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use subtle::ConstantTimeEq;
 
@@ -58,11 +59,13 @@ pub async fn register(
         state.db.update_user_alias(user_id, Some(&request.alias))?;
     }
 
-    tracing::info!(user_id, username = %request.username, "user registered");
+    tracing::info!(user_id = %user_id, username = %request.username, "user registered");
 
     Ok(proto_response(
         StatusCode::CREATED,
-        &conclave_proto::RegisterResponse { user_id },
+        &conclave_proto::RegisterResponse {
+            user_id: user_id.as_bytes().to_vec(),
+        },
     ))
 }
 
@@ -92,13 +95,13 @@ pub async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<im
         .db
         .create_session(&token, user_record.user_id, expires_at)?;
 
-    tracing::info!(user_id = user_record.user_id, username = %user_record.username, "user logged in");
+    tracing::info!(user_id = %user_record.user_id, username = %user_record.username, "user logged in");
 
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::LoginResponse {
             token,
-            user_id: user_record.user_id,
+            user_id: user_record.user_id.as_bytes().to_vec(),
             username: user_record.username,
         },
     ))
@@ -121,7 +124,7 @@ pub async fn me(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<im
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id,
+            user_id: user_id.as_bytes().to_vec(),
             username,
             alias: alias.unwrap_or_default(),
             signing_key_fingerprint: fingerprint.unwrap_or_default(),
@@ -152,7 +155,7 @@ pub async fn update_profile(
             group_row.group_id,
             None,
             conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-                group_id: group_row.group_id,
+                group_id: group_row.group_id.as_bytes().to_vec(),
                 update_type: "member_profile".into(),
             }),
         );
@@ -177,7 +180,7 @@ pub async fn get_user_by_username(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id: user.user_id,
+            user_id: user.user_id.as_bytes().to_vec(),
             username: user.username,
             alias: user.alias.unwrap_or_default(),
             signing_key_fingerprint: user.signing_key_fingerprint.unwrap_or_default(),
@@ -188,7 +191,7 @@ pub async fn get_user_by_username(
 pub async fn get_user_by_id(
     State(state): State<Arc<AppState>>,
     _auth: AuthUser,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let (uid, username, alias, fingerprint) = state
         .db
@@ -198,7 +201,7 @@ pub async fn get_user_by_id(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id: uid,
+            user_id: uid.as_bytes().to_vec(),
             username,
             alias: alias.unwrap_or_default(),
             signing_key_fingerprint: fingerprint.unwrap_or_default(),
@@ -228,7 +231,7 @@ pub async fn change_password(
     state.db.update_user_password(auth.user_id, &new_hash)?;
     state.db.delete_user_sessions(auth.user_id)?;
 
-    tracing::info!(user_id = auth.user_id, "password changed");
+    tracing::info!(user_id = %auth.user_id, "password changed");
 
     Ok(proto_response(
         StatusCode::OK,
@@ -254,7 +257,7 @@ pub async fn delete_account(
 
     // Collect group memberships and their members for SSE before deletion.
     let user_groups = state.db.list_user_groups(auth.user_id)?;
-    let group_members: Vec<(i64, Vec<i64>)> = user_groups
+    let group_members: Vec<(Uuid, Vec<Uuid>)> = user_groups
         .iter()
         .filter_map(|group| {
             state
@@ -284,8 +287,8 @@ pub async fn delete_account(
             conclave_proto::ServerEvent {
                 event: Some(conclave_proto::server_event::Event::MemberRemoved(
                     conclave_proto::MemberRemovedEvent {
-                        group_id,
-                        removed_user_id: auth.user_id,
+                        group_id: group_id.as_bytes().to_vec(),
+                        removed_user_id: auth.user_id.as_bytes().to_vec(),
                     },
                 )),
             },
@@ -293,7 +296,7 @@ pub async fn delete_account(
         );
     }
 
-    tracing::info!(user_id = auth.user_id, "account deleted");
+    tracing::info!(user_id = %auth.user_id, "account deleted");
 
     Ok(proto_response(
         StatusCode::OK,
@@ -307,7 +310,7 @@ pub async fn reset_account(
 ) -> Result<impl IntoResponse> {
     state.db.delete_key_packages(auth.user_id)?;
 
-    tracing::info!(user_id = auth.user_id, "account reset");
+    tracing::info!(user_id = %auth.user_id, "account reset");
 
     Ok(proto_response(
         StatusCode::OK,

@@ -14,13 +14,13 @@ POST /api/v1/groups/{group_id}/escrow-invite
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group the invite is for. |
+| `group_id` | string | The group the invite is for. |
 
 ### Request Body — `EscrowInviteRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `invitee_id` | int64 | Yes | The user being invited (must not be 0). |
+| `invitee_id` | bytes | Yes | The user being invited (must not be empty). |
 | `commit_message` | bytes | Yes | MLS commit that adds the invitee. Must not be empty. |
 | `welcome_message` | bytes | Yes | MLS Welcome message for the invitee. Must not be empty. |
 | `group_info` | bytes | Yes | Updated MLS GroupInfo. Must not be empty. |
@@ -40,7 +40,7 @@ Empty message.
 | Code | Condition |
 |------|-----------|
 | 200 OK | Invite escrowed successfully. |
-| 400 Bad Request | `invitee_id` is 0, or any required field is empty. |
+| 400 Bad Request | `invitee_id` is empty, or any required field is empty. |
 | 401 Unauthorized | Invalid token, not a member, or not an admin. |
 | 404 Not Found | Invitee does not exist. |
 | 409 Conflict | Invitee is already a group member, or a pending invite already exists for this group+invitee. |
@@ -75,13 +75,13 @@ Each `PendingInvite`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `invite_id` | int64 | Unique invite identifier. |
-| `group_id` | int64 | The group being invited to. |
+| `invite_id` | bytes | Unique invite identifier (UUID). |
+| `group_id` | bytes | The group being invited to. |
 | `group_name` | string | The group's name. |
 | `group_alias` | string | The group's display alias (may be empty). |
 | `inviter_username` | string | The inviting user's username. |
-| `inviter_id` | int64 | The inviting user's ID. |
-| `invitee_id` | int64 | The invited user's ID (the authenticated user). |
+| `inviter_id` | bytes | The inviting user's ID (UUID). |
+| `invitee_id` | bytes | The invited user's ID (the authenticated user). |
 | `created_at` | uint64 | Unix timestamp of invite creation (seconds). |
 
 ### Status Codes
@@ -111,7 +111,7 @@ POST /api/v1/invites/{invite_id}/accept
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `invite_id` | int64 | The invite to accept. |
+| `invite_id` | string | The invite to accept. |
 
 ### Request Body
 
@@ -168,7 +168,7 @@ POST /api/v1/invites/{invite_id}/decline
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `invite_id` | int64 | The invite to decline. |
+| `invite_id` | string | The invite to decline. |
 
 ### Request Body
 
@@ -210,7 +210,7 @@ GET /api/v1/groups/{group_id}/invites
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to query. |
+| `group_id` | string | The group to query. |
 
 ### Request Body
 
@@ -249,13 +249,13 @@ POST /api/v1/groups/{group_id}/cancel-invite
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group the invite belongs to. |
+| `group_id` | string | The group the invite belongs to. |
 
 ### Request Body — `CancelInviteRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `invitee_id` | int64 | Yes | The user whose invite to cancel. |
+| `invitee_id` | bytes | Yes | The user whose invite to cancel. |
 
 ### Response Body — `CancelInviteResponse`
 

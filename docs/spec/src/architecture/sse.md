@@ -48,9 +48,9 @@ Emitted when a new encrypted message is stored in a group.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The group the message was sent to |
+| `group_id` | bytes | The group the message was sent to |
 | `sequence_num` | uint64 | The server-assigned sequence number |
-| `sender_id` | int64 | The user who sent the message |
+| `sender_id` | bytes | The user who sent the message |
 
 **Recipients**: All group members except the sender.
 
@@ -62,7 +62,7 @@ Emitted when group state changes.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The affected group |
+| `group_id` | bytes | The affected group |
 | `update_type` | string | The type of update (see below) |
 
 **Update types**:
@@ -82,7 +82,7 @@ Emitted when a user has a pending Welcome message to process (after accepting an
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The group the user was invited to |
+| `group_id` | bytes | The group the user was invited to |
 | `group_alias` | string | The group's display alias |
 
 **Recipients**: The invitee only.
@@ -95,8 +95,8 @@ Emitted when a member is removed from or leaves a group.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The affected group |
-| `removed_user_id` | int64 | The user who was removed or left |
+| `group_id` | bytes | The affected group |
+| `removed_user_id` | bytes | The user who was removed or left |
 
 **Recipients**: All remaining group members AND the removed user.
 
@@ -108,8 +108,8 @@ Emitted when a member rejoins a group via external commit after an account reset
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The affected group |
-| `user_id` | int64 | The user who reset their identity |
+| `group_id` | bytes | The affected group |
+| `user_id` | bytes | The user who reset their identity |
 
 **Recipients**: All group members except the user who reset.
 
@@ -121,11 +121,11 @@ Emitted when a pending invite is created for a user.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `invite_id` | int64 | The invite's unique identifier |
-| `group_id` | int64 | The group being invited to |
+| `invite_id` | bytes | The invite's unique identifier |
+| `group_id` | bytes | The group being invited to |
 | `group_name` | string | The group's name |
 | `group_alias` | string | The group's display alias |
-| `inviter_id` | int64 | The user who sent the invite |
+| `inviter_id` | bytes | The user who sent the invite |
 
 **Recipients**: The invitee only.
 
@@ -137,8 +137,8 @@ Emitted when an invitee declines a pending invite, or when an admin cancels a pe
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The group the invite was for |
-| `declined_user_id` | int64 | The user who declined (or whose invite was cancelled) |
+| `group_id` | bytes | The group the invite was for |
+| `declined_user_id` | bytes | The user who declined (or whose invite was cancelled) |
 
 **Recipients**: The original inviter only.
 
@@ -150,7 +150,7 @@ Emitted when an admin cancels a pending invite for a user.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | int64 | The group the invite was for |
+| `group_id` | bytes | The group the invite was for |
 
 **Recipients**: The invitee only.
 

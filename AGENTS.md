@@ -46,25 +46,26 @@ Five crates in `crates/`:
 
 ## ID-First Referencing Convention
 
-Users and groups are always referenced by their integer IDs (`user_id`, `group_id`) throughout the codebase:
+Users and groups are always referenced by their UUID IDs (`user_id`, `group_id`) throughout the codebase. The Rust type is `uuid::Uuid` internally, stored as `TEXT` in SQLite, and transmitted as `bytes` in protobuf:
 
-- **API request bodies and path parameters** use IDs for all operations (invite, kick, promote, demote, message, etc.). The only exceptions are authentication endpoints (register/login accept usernames) and group creation (accepts a group name).
+- **API request bodies and path parameters** use UUIDs for all operations (invite, kick, promote, demote, message, etc.). The only exceptions are authentication endpoints (register/login accept usernames) and group creation (accepts a group name).
 - **Usernames and group names** are human-readable shortcuts. They are never passed in API calls except through the dedicated lookup endpoints: `GET /api/v1/users/{username}` (name→ID) and `GET /api/v1/users/by-id/{user_id}` (ID→name).
 - **Client command handling**: When a user types a command with a username (e.g., `/invite alice`), the CLI/GUI resolves the name to a user ID via the lookup endpoint at the UI boundary, then passes only the ID to the operations layer.
 - **Display name resolution**: Clients resolve user IDs to display names from their local member cache (populated by `ListGroupsResponse`). For cache misses (e.g., users who left the group), clients use the `GET /api/v1/users/by-id/{user_id}` endpoint. The fallback is `user#<id>`.
 - **API responses** that list members or groups (e.g., `ListGroupsResponse`, `PendingInvite`, `InviteReceivedEvent`) include names alongside IDs as a batch-lookup convenience for display. Operational responses do not include names.
-- **MLS layer** uses `user_id` exclusively — the credential embeds user_id as big-endian i64 bytes.
+- **MLS layer** uses `user_id` exclusively — the credential embeds user_id as raw UUID bytes (16 bytes).
 - **SSE events** reference users and groups by ID only, except `InviteReceivedEvent` and `PendingInvite` which include group name/alias because the invitee is not yet a member and cannot resolve the name from their local cache.
+- **Boundary conversion**: `Uuid::as_bytes().to_vec()` when encoding to protobuf, `Uuid::from_slice()` when decoding. `Uuid::to_string()` / `Uuid::parse_str()` for SQLite TEXT storage. Validation happens once at the boundary.
 
 ## Key Architecture Details
 
-**MLS integration**: mls-rs runs in sync mode (not async). CPU-bound crypto is wrapped in `tokio::task::spawn_blocking` where needed. Cipher suite: CURVE448_CHACHA (256-bit security). `BasicCredential` stores user_id as big-endian i64 bytes (8 bytes). Per-user MLS state stored in `data_dir/users/<username>/` with SQLite-backed persistence via mls-rs-provider-sqlite.
+**MLS integration**: mls-rs runs in sync mode (not async). CPU-bound crypto is wrapped in `tokio::task::spawn_blocking` where needed. Cipher suite: CURVE448_CHACHA (256-bit security). `BasicCredential` stores user_id as raw UUID bytes (16 bytes). Per-user MLS state stored in `data_dir/users/<username>/` with SQLite-backed persistence via mls-rs-provider-sqlite.
 
 **Key package lifecycle**: 5 regular + 1 last-resort per user. Regular packages consumed FIFO; last-resort never deleted. Server caps at 10 regular. Clients auto-replenish after consumption.
 
 **TOFU fingerprint verification**: Each user's MLS signing public key is hashed with SHA-256 to produce a 64-character lowercase hex fingerprint. Clients upload their fingerprint during key package upload (registration, login, reset). The server stores it in `users.signing_key_fingerprint` and distributes it via `GroupMember` and `UserInfoResponse` protos. Clients maintain a local TOFU store (`known_fingerprints` table in `message_history.db`) that tracks first-seen fingerprints per user. Verification states: `Unknown` (no fingerprint from server), `Unverified` (TOFU stored), `Verified` (manually confirmed via `/verify`), `Changed` (fingerprint mismatch — security warning). Users see `[?]` next to unverified senders and `[!]` for changed fingerprints. Security commands (`/verify`, `/unverify`, `/trusted`, `/rotate`) are in the SECURITY category. `/whois [username]` shows fingerprints and is in the MEMBERS category. Fingerprints are formatted as 8 groups of 8 hex characters separated by spaces for display. The `format_fingerprint()` and `normalize_fingerprint()` utilities live in `conclave-client/src/mls.rs`.
 
-**Group ID mapping**: Server uses auto-increment integer IDs (`i64`); MLS uses opaque byte IDs. The server stores `mls_group_id` in the `groups` table and returns it in `ListGroupsResponse`. TUI/GUI clients build the in-memory mapping (`HashMap<i64, String>`) from the server response on login/reconnect via `build_group_mapping()`. One-shot CLI commands still read/write `group_mapping.toml` per user as a local fallback.
+**Group ID mapping**: Server uses UUID IDs (`Uuid`); MLS uses opaque byte IDs. The server stores `mls_group_id` in the `groups` table and returns it in `ListGroupsResponse`. TUI/GUI clients build the in-memory mapping (`HashMap<Uuid, String>`) from the server response on login/reconnect via `build_group_mapping()`. One-shot CLI commands still read/write `group_mapping.toml` per user as a local fallback.
 
 **SSE events**: Server fans out via `tokio::sync::broadcast`. Events are hex-encoded protobuf `ServerEvent` messages. Types: NewMessageEvent, GroupUpdateEvent, WelcomeEvent, MemberRemovedEvent, IdentityResetEvent, InviteReceivedEvent, InviteDeclinedEvent, InviteCancelledEvent, GroupDeletedEvent. **Sender inclusion**: Metadata operations (`update_group`, `update_profile`, `promote_member`, `demote_member`) include the sender in SSE broadcasts (`None` exclude) so all clients — including the sender — receive the event and refresh via `load_rooms()`. MLS operations (`send_message`, `upload_commit`, `accept_invite`) exclude the sender (`Some(user_id)`) to avoid re-processing MLS state changes. This means metadata command handlers only need to make the API call and show a confirmation message; the SSE event handles the state refresh.
 

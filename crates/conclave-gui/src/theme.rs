@@ -108,7 +108,7 @@ impl iced::theme::Base for Theme {
 }
 
 /// Assign a consistent color to a sender based on their user ID.
-pub fn nick_color(sender_id: i64) -> Color {
+pub fn nick_color(sender_id: uuid::Uuid) -> Color {
     let colors = [
         Color::from_rgb8(0xe0, 0x6b, 0x75), // red
         Color::from_rgb8(0xb1, 0xb6, 0x95), // green
@@ -123,6 +123,9 @@ pub fn nick_color(sender_id: i64) -> Color {
         Color::from_rgb8(0xe5, 0xc8, 0x90), // gold
         Color::from_rgb8(0x8c, 0xaa, 0xee), // periwinkle
     ];
-    let hash = (sender_id as usize).wrapping_mul(2654435761);
+    let bytes = sender_id.as_bytes();
+    let hash = u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]) as usize;
     colors[hash % colors.len()]
 }

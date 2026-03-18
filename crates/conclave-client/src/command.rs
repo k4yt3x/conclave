@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,10 +432,10 @@ pub enum Command {
     // Invites
     Invites,
     Accept {
-        invite_id: Option<i64>,
+        invite_id: Option<Uuid>,
     },
     Decline {
-        invite_id: i64,
+        invite_id: Uuid,
     },
 
     // Security
@@ -638,8 +640,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
         "invites" => Ok(Command::Invites),
         "accept" => {
             let invite_id = parts.get(1).map(|s| {
-                s.parse::<i64>()
-                    .map_err(|_| Error::Other("Usage: /accept [invite_id]".into()))
+                Uuid::parse_str(s).map_err(|_| Error::Other("Usage: /accept [invite_id]".into()))
             });
             match invite_id {
                 Some(Ok(id)) => Ok(Command::Accept {
@@ -653,8 +654,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
             if parts.len() < 2 {
                 return Err(Error::Other("Usage: /decline <invite_id>".into()));
             }
-            let invite_id = parts[1]
-                .parse::<i64>()
+            let invite_id = Uuid::parse_str(parts[1])
                 .map_err(|_| Error::Other("Usage: /decline <invite_id>".into()))?;
             Ok(Command::Decline { invite_id })
         }
@@ -1102,25 +1102,27 @@ mod tests {
 
     #[test]
     fn test_parse_accept_with_id() {
-        let cmd = parse("/accept 42").unwrap();
+        let test_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let cmd = parse(&format!("/accept {test_uuid}")).unwrap();
         let Command::Accept { invite_id } = cmd else {
             panic!("expected Accept variant");
         };
-        assert_eq!(invite_id, Some(42));
+        assert_eq!(invite_id, Some(test_uuid));
     }
 
     #[test]
     fn test_parse_accept_invalid_id() {
-        assert!(parse("/accept abc").is_err());
+        assert!(parse("/accept not-a-uuid").is_err());
     }
 
     #[test]
     fn test_parse_decline() {
-        let cmd = parse("/decline 7").unwrap();
+        let test_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let cmd = parse(&format!("/decline {test_uuid}")).unwrap();
         let Command::Decline { invite_id } = cmd else {
             panic!("expected Decline variant");
         };
-        assert_eq!(invite_id, 7);
+        assert_eq!(invite_id, test_uuid);
     }
 
     #[test]

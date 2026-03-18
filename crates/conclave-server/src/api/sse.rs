@@ -13,7 +13,7 @@ pub async fn sse_stream(
     auth: AuthUser,
 ) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
     let user_id = auth.user_id;
-    tracing::debug!(user_id, "SSE client connected");
+    tracing::debug!(user_id = %user_id, "SSE client connected");
     let rx = state.sse_tx.subscribe();
 
     let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
@@ -23,7 +23,7 @@ pub async fn sse_stream(
         }
         Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
             tracing::warn!(
-                user_id = user_id,
+                user_id = %user_id,
                 count = count,
                 "SSE client lagged, events dropped"
             );

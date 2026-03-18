@@ -20,6 +20,7 @@ use crossterm::{
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use conclave_client::api::ApiClient;
 use conclave_client::config::{
@@ -1020,7 +1021,7 @@ fn add_and_render_message(
     stdout: &mut impl Write,
     state: &mut AppState,
     input: &InputLine,
-    group_id: Option<i64>,
+    group_id: Option<Uuid>,
     msg: DisplayMessage,
     msg_store: &Option<MessageStore>,
     notifications: &NotificationMethod,
@@ -1146,7 +1147,7 @@ async fn fetch_missed_messages(
     data_dir: &std::path::Path,
     store: &MessageStore,
 ) {
-    let room_ids: Vec<(i64, u64, String, Vec<conclave_client::state::RoomMember>)> = state
+    let room_ids: Vec<(Uuid, u64, String, Vec<conclave_client::state::RoomMember>)> = state
         .rooms
         .iter()
         .filter_map(|(id, room)| {
@@ -1189,7 +1190,12 @@ async fn fetch_missed_messages(
             let mut display_msg = if msg.is_system {
                 DisplayMessage::system(&msg.content)
             } else {
-                DisplayMessage::user(msg.sender_id, &msg.sender, &msg.content, msg.timestamp)
+                DisplayMessage::user(
+                    msg.sender_id.unwrap_or(Uuid::nil()),
+                    &msg.sender,
+                    &msg.content,
+                    msg.timestamp,
+                )
             };
             display_msg.sequence_num = Some(msg.sequence_num);
             display_msg.epoch = Some(msg.epoch);

@@ -30,6 +30,9 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("invalid UUID: {0}")]
+    InvalidUuid(#[from] uuid::Error),
+
     #[error("another conclave instance is already running")]
     InstanceAlreadyRunning,
 

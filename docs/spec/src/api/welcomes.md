@@ -24,8 +24,8 @@ Each `PendingWelcome`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `welcome_id` | int64 | Unique welcome identifier. |
-| `group_id` | int64 | The group this Welcome is for. |
+| `welcome_id` | bytes | Unique welcome identifier (UUID). |
+| `group_id` | bytes | The group this Welcome is for. |
 | `group_alias` | string | The group's display alias (may be empty). |
 | `welcome_message` | bytes | Raw MLS Welcome message bytes. |
 
@@ -60,7 +60,7 @@ POST /api/v1/welcomes/{welcome_id}/accept
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `welcome_id` | int64 | The welcome to acknowledge. |
+| `welcome_id` | string | The welcome to acknowledge. |
 
 ### Request Body
 

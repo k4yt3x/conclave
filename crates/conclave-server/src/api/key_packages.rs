@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
@@ -64,7 +65,7 @@ pub async fn upload_key_package(
 pub async fn get_key_package(
     State(state): State<Arc<AppState>>,
     _auth: AuthUser,
-    Path(user_id): Path<i64>,
+    Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let data = state
         .db

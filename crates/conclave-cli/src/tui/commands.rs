@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use conclave_client::api::ApiClient;
 pub use conclave_client::command::Command;
@@ -562,7 +563,9 @@ async fn execute_member(
             let mut member_names = Vec::new();
             for username in &members {
                 let user_info = api.lock().await.get_user_by_username(username).await?;
-                member_ids.push(user_info.user_id);
+                let uid = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
+                member_ids.push(uid);
                 member_names.push(username.clone());
             }
 
@@ -747,16 +750,23 @@ async fn execute_member(
                     "Pending invites for #{room_name}:"
                 )));
                 for invite in &invites {
+                    let invitee_uuid = Uuid::from_slice(&invite.invitee_id).ok();
                     let invitee_name = state
                         .rooms
                         .get(&group_id)
                         .and_then(|room| {
-                            room.members
-                                .iter()
-                                .find(|m| m.user_id == invite.invitee_id)
-                                .map(|m| m.display_name().to_string())
+                            invitee_uuid.and_then(|uid| {
+                                room.members
+                                    .iter()
+                                    .find(|m| m.user_id == uid)
+                                    .map(|m| m.display_name().to_string())
+                            })
                         })
-                        .unwrap_or_else(|| format!("user#{}", invite.invitee_id));
+                        .unwrap_or_else(|| {
+                            Uuid::from_slice(&invite.invitee_id)
+                                .map(|id| format!("user#{id}"))
+                                .unwrap_or_else(|_| "user#?".into())
+                        });
                     msgs.push(DisplayMessage::system(&format!(
                         "  {invitee_name} — invited by {}",
                         invite.inviter_username
@@ -778,10 +788,12 @@ async fn execute_member(
                 .await
                 .get_user_by_username(&target_username)
                 .await?;
+            let target_user_id = Uuid::from_slice(&user_info.user_id)
+                .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
 
             {
                 let api_guard = api.lock().await;
-                operations::cancel_invite(&api_guard, group_id, user_info.user_id).await?;
+                operations::cancel_invite(&api_guard, group_id, target_user_id).await?;
             }
 
             msgs.push(DisplayMessage::system(&format!(
@@ -859,9 +871,12 @@ async fn execute_invite(
                     } else {
                         &invite.group_alias
                     };
+                    let invite_uuid = Uuid::from_slice(&invite.invite_id)
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|_| "?".into());
                     msgs.push(DisplayMessage::system(&format!(
-                        "[{}] #{display} — invited by {}",
-                        invite.invite_id, invite.inviter_username
+                        "[{invite_uuid}] #{display} — invited by {}",
+                        invite.inviter_username
                     )));
                 }
                 msgs.push(DisplayMessage::system(
@@ -879,7 +894,10 @@ async fn execute_invite(
                     let api_guard = api.lock().await;
                     operations::list_pending_invites(&api_guard).await?
                 };
-                pending.iter().map(|i| i.invite_id).collect()
+                pending
+                    .iter()
+                    .filter_map(|i| Uuid::from_slice(&i.invite_id).ok())
+                    .collect()
             };
 
             if invites.is_empty() {
@@ -1018,9 +1036,12 @@ async fn execute_profile(
 
         Command::Whois { username: None } => {
             let resp = api.lock().await.me().await?;
+            let self_user_id = Uuid::from_slice(&resp.user_id)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| "?".into());
             msgs.push(DisplayMessage::system(&format!(
-                "User: {} (ID: {})",
-                resp.username, resp.user_id
+                "User: {} (ID: {self_user_id})",
+                resp.username
             )));
             if let Some(mls_mgr) = mls {
                 let fp = mls_mgr.signing_key_fingerprint();
@@ -1033,9 +1054,11 @@ async fn execute_profile(
             username: Some(target),
         } => {
             let resp = api.lock().await.get_user_by_username(&target).await?;
+            let resp_user_id = Uuid::from_slice(&resp.user_id)
+                .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
             msgs.push(DisplayMessage::system(&format!(
                 "User: {} (ID: {})",
-                resp.username, resp.user_id
+                resp.username, resp_user_id
             )));
             if !resp.signing_key_fingerprint.is_empty() {
                 let formatted =
@@ -1043,7 +1066,7 @@ async fn execute_profile(
                 msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
                 if let Some(store) = msg_store {
                     let status =
-                        store.get_verification_status(resp.user_id, &resp.signing_key_fingerprint);
+                        store.get_verification_status(resp_user_id, &resp.signing_key_fingerprint);
                     let label = match status {
                         conclave_client::state::VerificationStatus::Unknown => "Unknown",
                         conclave_client::state::VerificationStatus::Unverified => "Unverified",
@@ -1063,14 +1086,16 @@ async fn execute_profile(
         } => {
             let normalized = conclave_client::mls::normalize_fingerprint(&fingerprint)?;
             let resp = api.lock().await.get_user_by_username(&username).await?;
+            let resp_user_id = Uuid::from_slice(&resp.user_id)
+                .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
 
             if let Some(store) = msg_store {
-                let stored = store.get_stored_fingerprint(resp.user_id);
+                let stored = store.get_stored_fingerprint(resp_user_id);
                 match stored {
                     Some((stored_fp, _)) if stored_fp == normalized => {
-                        store.verify_user(resp.user_id);
+                        store.verify_user(resp_user_id);
                         state.verification_status.insert(
-                            resp.user_id,
+                            resp_user_id,
                             conclave_client::state::VerificationStatus::Verified,
                         );
                         msgs.push(DisplayMessage::system(&format!(
@@ -1101,10 +1126,12 @@ async fn execute_profile(
 
         Command::Unverify { username } => {
             let resp = api.lock().await.get_user_by_username(&username).await?;
+            let resp_user_id = Uuid::from_slice(&resp.user_id)
+                .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
             if let Some(store) = msg_store {
-                if store.unverify_user(resp.user_id) {
+                if store.unverify_user(resp_user_id) {
                     state.verification_status.insert(
-                        resp.user_id,
+                        resp_user_id,
                         conclave_client::state::VerificationStatus::Unverified,
                     );
                     msgs.push(DisplayMessage::system(&format!(
@@ -1198,13 +1225,13 @@ async fn execute_profile(
     Ok((msgs, false))
 }
 
-fn require_user_id(state: &AppState) -> Result<i64> {
+fn require_user_id(state: &AppState) -> Result<Uuid> {
     state
         .user_id
         .ok_or_else(|| Error::Other("not logged in".into()))
 }
 
-fn resolve_display_name(user_id: i64, state: &AppState) -> String {
+fn resolve_display_name(user_id: Uuid, state: &AppState) -> String {
     for room in state.rooms.values() {
         if let Some(member) = room.members.iter().find(|m| m.user_id == user_id) {
             return member.display_name().to_string();
@@ -1253,7 +1280,7 @@ pub async fn load_rooms(
         );
     }
 
-    let stale_ids: Vec<i64> = state
+    let stale_ids: Vec<Uuid> = state
         .rooms
         .keys()
         .filter(|id| !server_group_ids.contains(id))
@@ -1301,7 +1328,7 @@ async fn send_to_group(
     state: &mut AppState,
     config: &ClientConfig,
     msg_store: &Option<MessageStore>,
-    group_id: i64,
+    group_id: Uuid,
     text: &str,
 ) -> Result<()> {
     let user_id = require_user_id(state)?;

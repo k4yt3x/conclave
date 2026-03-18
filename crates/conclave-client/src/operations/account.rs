@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use uuid::Uuid;
+
 use crate::api::{ApiClient, normalize_server_url};
 use crate::config::{SessionState, generate_initial_key_packages};
 use crate::error::{Error, Result};
@@ -13,7 +15,7 @@ use super::{ResetResult, load_rooms};
 pub struct AuthResult {
     pub server_url: String,
     pub token: String,
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub username: String,
     pub key_packages_uploaded: usize,
 }
@@ -53,7 +55,7 @@ pub async fn register_and_login(
     let register_response = api
         .register(username, password, None, registration_token)
         .await?;
-    let user_id = register_response.user_id;
+    let user_id = Uuid::from_slice(&register_response.user_id)?;
 
     let login_response = api.login(username, password).await?;
     let canonical_username = if login_response.username.is_empty() {
@@ -97,13 +99,13 @@ pub async fn login(
     let mut auth_api = ApiClient::new(&server_url, accept_invalid_certs);
     auth_api.set_token(login_response.token.clone());
 
-    let count =
-        initialize_mls_and_upload_key_packages(&auth_api, data_dir, login_response.user_id).await?;
+    let user_id = Uuid::from_slice(&login_response.user_id)?;
+    let count = initialize_mls_and_upload_key_packages(&auth_api, data_dir, user_id).await?;
 
     Ok(AuthResult {
         server_url,
         token: login_response.token,
-        user_id: login_response.user_id,
+        user_id,
         username: canonical_username,
         key_packages_uploaded: count,
     })
@@ -117,7 +119,7 @@ pub async fn login(
 pub async fn initialize_mls_and_upload_key_packages(
     api: &ApiClient,
     data_dir: &Path,
-    user_id: i64,
+    user_id: Uuid,
 ) -> Result<usize> {
     std::fs::create_dir_all(data_dir)?;
 
@@ -152,15 +154,15 @@ pub async fn delete_account(api: &ApiClient, password: &str, data_dir: &Path) ->
 ///
 /// Groups are discovered from the server (not from local state), so this works
 /// even when the user has lost their local data directory.
-pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: i64) -> Result<ResetResult> {
+pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: Uuid) -> Result<ResetResult> {
     // Step 1: Fetch group list from the server.
     let rooms = load_rooms(api).await?;
-    let groups_to_rejoin: Vec<i64> = rooms.iter().map(|r| r.group_id).collect();
+    let groups_to_rejoin: Vec<Uuid> = rooms.iter().map(|r| r.group_id).collect();
     let total_groups = groups_to_rejoin.len();
 
     // Step 2: Collect old leaf indices before wiping state (best-effort;
     // the mapping and MLS state may be missing after data loss).
-    let old_indices: HashMap<i64, Option<u32>> = {
+    let old_indices: HashMap<Uuid, Option<u32>> = {
         let data_dir = data_dir.to_path_buf();
         let groups = groups_to_rejoin.clone();
         let group_mapping = crate::config::build_group_mapping(&rooms, &data_dir);
@@ -232,11 +234,11 @@ pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: i64) -> Re
 
 async fn rejoin_groups_via_external_commit(
     api: &ApiClient,
-    groups: &[i64],
-    old_indices: &HashMap<i64, Option<u32>>,
+    groups: &[Uuid],
+    old_indices: &HashMap<Uuid, Option<u32>>,
     data_dir: &Path,
-    user_id: i64,
-) -> Result<(HashMap<i64, String>, usize, Vec<String>)> {
+    user_id: Uuid,
+) -> Result<(HashMap<Uuid, String>, usize, Vec<String>)> {
     let mut new_group_mapping = HashMap::new();
     let mut errors = Vec::new();
     let mut rejoin_count = 0;

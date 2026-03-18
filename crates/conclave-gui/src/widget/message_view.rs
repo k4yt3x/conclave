@@ -4,6 +4,7 @@ use std::time::Duration;
 use iced::Length;
 use iced::advanced::text::Span;
 use iced::widget::{column, container, text, tooltip};
+use uuid::Uuid;
 
 use conclave_client::state::{DisplayMessage, RoomMember, VerificationStatus, resolve_sender_name};
 
@@ -14,10 +15,10 @@ use crate::widget::selectable_rich_text::SelectableRichText;
 pub fn message_list<'a, M: Clone + 'a>(
     messages: &'a [DisplayMessage],
     members: &[RoomMember],
-    group_id: Option<i64>,
+    group_id: Option<Uuid>,
     group_name: Option<&str>,
     theme: &crate::theme::Theme,
-    verification_status: &HashMap<i64, VerificationStatus>,
+    verification_status: &HashMap<Uuid, VerificationStatus>,
     show_verified_indicator: bool,
 ) -> iced::widget::Column<'a, M, crate::theme::Theme, crate::widget::Renderer> {
     let mut messages_column = column![].spacing(2).width(Length::Fill);
@@ -42,7 +43,7 @@ pub fn message_list<'a, M: Clone + 'a>(
                 .into()
         } else {
             let sender_name = resolve_sender_name(message, members);
-            let nick_color = theme::nick_color(message.sender_id.unwrap_or(0));
+            let nick_color = theme::nick_color(message.sender_id.unwrap_or(Uuid::nil()));
 
             let mut spans = Vec::with_capacity(4);
             spans.push(
@@ -123,7 +124,7 @@ fn format_timestamp(ts: i64) -> String {
 fn format_tooltip(
     msg: &DisplayMessage,
     members: &[RoomMember],
-    group_id: Option<i64>,
+    group_id: Option<Uuid>,
     group_name: Option<&str>,
 ) -> String {
     use chrono::{Local, TimeZone};

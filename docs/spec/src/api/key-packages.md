@@ -76,7 +76,7 @@ GET /api/v1/key-packages/{user_id}
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `user_id` | int64 | The user whose key package to fetch. |
+| `user_id` | string | The user whose key package to fetch (UUID hex string in URL). |
 
 ### Request Body
 

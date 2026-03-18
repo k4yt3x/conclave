@@ -1,4 +1,5 @@
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::db::Database;
@@ -9,7 +10,7 @@ pub struct SseEvent {
     /// The protobuf-encoded ServerEvent bytes.
     pub data: Vec<u8>,
     /// Target user IDs that should receive this event.
-    pub target_user_ids: Vec<i64>,
+    pub target_user_ids: Vec<Uuid>,
 }
 
 /// Shared application state.

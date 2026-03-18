@@ -1,4 +1,5 @@
 use iced::Task;
+use uuid::Uuid;
 
 use conclave_client::command::Command;
 use conclave_client::mls::{format_fingerprint, normalize_fingerprint};
@@ -353,9 +354,12 @@ impl Conclave {
                 Task::perform(
                     async move {
                         let resp = params.into_client().me().await.map_err(|e| e.to_string())?;
+                        let self_user_id = Uuid::from_slice(&resp.user_id)
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|_| "?".into());
                         let mut msgs = vec![DisplayMessage::system(&format!(
-                            "User: {} (ID: {})",
-                            resp.username, resp.user_id
+                            "User: {} (ID: {self_user_id})",
+                            resp.username
                         ))];
                         if let Some(fp) = own_fingerprint {
                             msgs.push(DisplayMessage::system(&format!(
@@ -380,9 +384,11 @@ impl Conclave {
                             .get_user_by_username(&target)
                             .await
                             .map_err(|e| e.to_string())?;
+                        let user_id = Uuid::from_slice(&resp.user_id)
+                            .map_err(|e| format!("Invalid user ID: {e}"))?;
                         let mut msgs = vec![DisplayMessage::system(&format!(
                             "User: {} (ID: {})",
-                            resp.username, resp.user_id
+                            resp.username, user_id
                         ))];
                         if !resp.signing_key_fingerprint.is_empty() {
                             msgs.push(DisplayMessage::system(&format!(
@@ -391,7 +397,7 @@ impl Conclave {
                             )));
                             if let Ok(store) = MessageStore::open(&data_dir) {
                                 let status = store.get_verification_status(
-                                    resp.user_id,
+                                    user_id,
                                     &resp.signing_key_fingerprint,
                                 );
                                 let status_str = match status {
@@ -436,7 +442,8 @@ impl Conclave {
                             .get_user_by_username(&username)
                             .await
                             .map_err(|e| e.to_string())?;
-                        let user_id = resp.user_id;
+                        let user_id = Uuid::from_slice(&resp.user_id)
+                            .map_err(|e| format!("Invalid user ID: {e}"))?;
                         let store = MessageStore::open(&data_dir)
                             .map_err(|e| format!("Message store not available: {e}"))?;
                         let stored = store.get_stored_fingerprint(user_id);
@@ -496,7 +503,8 @@ impl Conclave {
                             .get_user_by_username(&username)
                             .await
                             .map_err(|e| e.to_string())?;
-                        let user_id = resp.user_id;
+                        let user_id = Uuid::from_slice(&resp.user_id)
+                            .map_err(|e| format!("Invalid user ID: {e}"))?;
                         let store = MessageStore::open(&data_dir)
                             .map_err(|e| format!("Message store not available: {e}"))?;
                         if store.unverify_user(user_id) {
@@ -525,7 +533,7 @@ impl Conclave {
             }
             Ok(Command::Trusted) => {
                 let data_dir = self.config.data_dir.clone();
-                let name_map: std::collections::HashMap<i64, String> = self
+                let name_map: std::collections::HashMap<Uuid, String> = self
                     .rooms
                     .values()
                     .flat_map(|r| r.members.iter())

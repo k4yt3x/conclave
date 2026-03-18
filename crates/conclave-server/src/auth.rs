@@ -9,6 +9,8 @@ use axum::http::request::Parts;
 
 use std::sync::LazyLock;
 
+use uuid::Uuid;
+
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
@@ -52,7 +54,7 @@ pub fn generate_token() -> String {
 
 /// Axum extractor that validates the Bearer token and provides the authenticated user ID.
 pub struct AuthUser {
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub token: String,
 }
 

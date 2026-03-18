@@ -7,6 +7,7 @@ use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_editor,
     text_input,
 };
+use uuid::Uuid;
 
 use conclave_client::state::{
     ConnectionStatus, DisplayMessage, Room, RoomTrustLevel, VerificationStatus, room_trust_level,
@@ -37,7 +38,7 @@ pub struct PasswordChangeDialog {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    RoomSelected(i64),
+    RoomSelected(Uuid),
     InputAction(text_editor::Action),
     InputSubmitted,
     ToggleUserPopover,
@@ -48,7 +49,7 @@ pub enum Message {
     DragStarted(DragTarget),
     DragUpdate(f32),
     DragEnded,
-    VerifyResult(Result<(Option<(i64, VerificationStatus)>, Vec<DisplayMessage>), String>),
+    VerifyResult(Result<(Option<(Uuid, VerificationStatus)>, Vec<DisplayMessage>), String>),
     PasswordDialogCurrentChanged(String),
     PasswordDialogNewChanged(String),
     PasswordDialogConfirmChanged(String),
@@ -87,18 +88,18 @@ impl Dashboard {
     #[allow(clippy::too_many_arguments)]
     pub fn view<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
-        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
+        room_messages: &'a HashMap<Uuid, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
         user_alias: &'a Option<String>,
-        user_id: &'a Option<i64>,
+        user_id: &'a Option<Uuid>,
         server_url: &'a Option<String>,
         accept_invalid_certs: bool,
         theme: &'a crate::theme::Theme,
-        verification_status: &'a HashMap<i64, VerificationStatus>,
+        verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let sidebar = self.view_sidebar(
@@ -157,8 +158,8 @@ impl Dashboard {
     #[allow(clippy::too_many_arguments)]
     fn view_sidebar<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
         connection_status: &'a ConnectionStatus,
         username: &'a Option<String>,
         user_alias: &'a Option<String>,
@@ -328,7 +329,7 @@ impl Dashboard {
         &'a self,
         username: &'a Option<String>,
         user_alias: &'a Option<String>,
-        user_id: &'a Option<i64>,
+        user_id: &'a Option<Uuid>,
         server_url: &'a Option<String>,
     ) -> Element<'a, Message> {
         let logout_btn = button(
@@ -500,12 +501,12 @@ impl Dashboard {
     #[allow(clippy::too_many_arguments)]
     fn view_main_area<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
-        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
+        room_messages: &'a HashMap<Uuid, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
-        verification_status: &'a HashMap<i64, VerificationStatus>,
+        verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let messages = self.view_messages(
@@ -534,9 +535,9 @@ impl Dashboard {
 
     fn view_title_bar<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
-        verification_status: &'a HashMap<i64, VerificationStatus>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
+        verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let toggle_label = if self.show_members_sidebar { ">" } else { "<" };
@@ -636,9 +637,9 @@ impl Dashboard {
 
     fn view_members_sidebar<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
-        verification_status: &'a HashMap<i64, VerificationStatus>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
+        verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let member_count = active_room
@@ -702,12 +703,12 @@ impl Dashboard {
     #[allow(clippy::too_many_arguments)]
     fn view_messages<'a>(
         &'a self,
-        rooms: &'a HashMap<i64, Room>,
-        active_room: &'a Option<i64>,
-        room_messages: &'a HashMap<i64, Vec<DisplayMessage>>,
+        rooms: &'a HashMap<Uuid, Room>,
+        active_room: &'a Option<Uuid>,
+        room_messages: &'a HashMap<Uuid, Vec<DisplayMessage>>,
         system_messages: &'a [DisplayMessage],
         theme: &'a crate::theme::Theme,
-        verification_status: &'a HashMap<i64, VerificationStatus>,
+        verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
     ) -> Element<'a, Message> {
         let messages: &[DisplayMessage] = match active_room {

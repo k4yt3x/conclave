@@ -1,6 +1,7 @@
 use prost::Message;
 use reqwest::Client;
 use reqwest_eventsource::EventSource;
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 
@@ -196,7 +197,7 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn update_group(&self, group_id: i64, alias: Option<&str>) -> Result<()> {
+    pub async fn update_group(&self, group_id: Uuid, alias: Option<&str>) -> Result<()> {
         let request = conclave_proto::UpdateGroupRequest {
             alias: alias.unwrap_or_default().to_string(),
             group_name: String::new(),
@@ -208,7 +209,7 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn set_group_expiry(&self, group_id: i64, seconds: i64) -> Result<()> {
+    pub async fn set_group_expiry(&self, group_id: Uuid, seconds: i64) -> Result<()> {
         let request = conclave_proto::UpdateGroupRequest {
             alias: String::new(),
             group_name: String::new(),
@@ -222,7 +223,7 @@ impl ApiClient {
 
     pub async fn get_retention_policy(
         &self,
-        group_id: i64,
+        group_id: Uuid,
     ) -> Result<conclave_proto::GetRetentionPolicyResponse> {
         let bytes = self
             .get(&format!("/api/v1/groups/{group_id}/retention"))
@@ -292,10 +293,12 @@ impl ApiClient {
 
     pub async fn invite_to_group(
         &self,
-        group_id: i64,
-        user_ids: Vec<i64>,
+        group_id: Uuid,
+        user_ids: Vec<Uuid>,
     ) -> Result<conclave_proto::InviteToGroupResponse> {
-        let request = conclave_proto::InviteToGroupRequest { user_ids };
+        let request = conclave_proto::InviteToGroupRequest {
+            user_ids: user_ids.iter().map(|id| id.as_bytes().to_vec()).collect(),
+        };
         let bytes = self
             .post(&format!("/api/v1/groups/{group_id}/invite"), &request)
             .await?;
@@ -306,7 +309,7 @@ impl ApiClient {
 
     pub async fn upload_commit(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
         mls_group_id: Option<&str>,
@@ -325,7 +328,7 @@ impl ApiClient {
 
     pub async fn send_message(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         mls_message: Vec<u8>,
     ) -> Result<conclave_proto::SendMessageResponse> {
         let request = conclave_proto::SendMessageRequest { mls_message };
@@ -339,7 +342,7 @@ impl ApiClient {
 
     pub async fn get_messages(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         after: i64,
     ) -> Result<conclave_proto::GetMessagesResponse> {
         let bytes = self
@@ -362,7 +365,7 @@ impl ApiClient {
     }
 
     /// Accept (delete) a pending welcome by its server-assigned ID.
-    pub async fn accept_welcome(&self, welcome_id: i64) -> Result<()> {
+    pub async fn accept_welcome(&self, welcome_id: Uuid) -> Result<()> {
         let url = format!("{}/api/v1/welcomes/{welcome_id}/accept", self.base_url);
         let mut request = self
             .client
@@ -394,14 +397,14 @@ impl ApiClient {
 
     pub async fn escrow_invite(
         &self,
-        group_id: i64,
-        invitee_id: i64,
+        group_id: Uuid,
+        invitee_id: Uuid,
         commit_message: Vec<u8>,
         welcome_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
         let request = conclave_proto::EscrowInviteRequest {
-            invitee_id,
+            invitee_id: invitee_id.as_bytes().to_vec(),
             commit_message,
             welcome_message,
             group_info,
@@ -421,14 +424,14 @@ impl ApiClient {
         )?)
     }
 
-    pub async fn accept_pending_invite(&self, invite_id: i64) -> Result<()> {
+    pub async fn accept_pending_invite(&self, invite_id: Uuid) -> Result<()> {
         let empty = conclave_proto::AcceptInviteResponse {};
         self.post(&format!("/api/v1/invites/{invite_id}/accept"), &empty)
             .await?;
         Ok(())
     }
 
-    pub async fn decline_pending_invite(&self, invite_id: i64) -> Result<()> {
+    pub async fn decline_pending_invite(&self, invite_id: Uuid) -> Result<()> {
         let empty = conclave_proto::DeclineInviteResponse {};
         self.post(&format!("/api/v1/invites/{invite_id}/decline"), &empty)
             .await?;
@@ -437,7 +440,7 @@ impl ApiClient {
 
     pub async fn list_group_pending_invites(
         &self,
-        group_id: i64,
+        group_id: Uuid,
     ) -> Result<conclave_proto::ListGroupPendingInvitesResponse> {
         let bytes = self
             .get(&format!("/api/v1/groups/{group_id}/invites"))
@@ -447,8 +450,10 @@ impl ApiClient {
         )?)
     }
 
-    pub async fn cancel_invite(&self, group_id: i64, invitee_id: i64) -> Result<()> {
-        let request = conclave_proto::CancelInviteRequest { invitee_id };
+    pub async fn cancel_invite(&self, group_id: Uuid, invitee_id: Uuid) -> Result<()> {
+        let request = conclave_proto::CancelInviteRequest {
+            invitee_id: invitee_id.as_bytes().to_vec(),
+        };
         self.post(
             &format!("/api/v1/groups/{group_id}/cancel-invite"),
             &request,
@@ -465,28 +470,32 @@ impl ApiClient {
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
     }
 
-    pub async fn get_user_by_id(&self, user_id: i64) -> Result<conclave_proto::UserInfoResponse> {
+    pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<conclave_proto::UserInfoResponse> {
         let bytes = self.get(&format!("/api/v1/users/by-id/{user_id}")).await?;
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
     }
 
     // ── Admin Management ──────────────────────────────────────────
 
-    pub async fn promote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let request = conclave_proto::PromoteMemberRequest { user_id };
+    pub async fn promote_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
+        let request = conclave_proto::PromoteMemberRequest {
+            user_id: user_id.as_bytes().to_vec(),
+        };
         self.post(&format!("/api/v1/groups/{group_id}/promote"), &request)
             .await?;
         Ok(())
     }
 
-    pub async fn demote_member(&self, group_id: i64, user_id: i64) -> Result<()> {
-        let request = conclave_proto::DemoteMemberRequest { user_id };
+    pub async fn demote_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
+        let request = conclave_proto::DemoteMemberRequest {
+            user_id: user_id.as_bytes().to_vec(),
+        };
         self.post(&format!("/api/v1/groups/{group_id}/demote"), &request)
             .await?;
         Ok(())
     }
 
-    pub async fn list_admins(&self, group_id: i64) -> Result<conclave_proto::ListAdminsResponse> {
+    pub async fn list_admins(&self, group_id: Uuid) -> Result<conclave_proto::ListAdminsResponse> {
         let bytes = self
             .get(&format!("/api/v1/groups/{group_id}/admins"))
             .await?;
@@ -499,13 +508,13 @@ impl ApiClient {
 
     pub async fn remove_member(
         &self,
-        group_id: i64,
-        user_id: i64,
+        group_id: Uuid,
+        user_id: Uuid,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
         let request = conclave_proto::RemoveMemberRequest {
-            user_id,
+            user_id: user_id.as_bytes().to_vec(),
             commit_message,
             group_info,
         };
@@ -516,7 +525,7 @@ impl ApiClient {
 
     pub async fn leave_group(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         commit_message: Vec<u8>,
         group_info: Vec<u8>,
     ) -> Result<()> {
@@ -531,7 +540,7 @@ impl ApiClient {
 
     pub async fn get_group_info(
         &self,
-        group_id: i64,
+        group_id: Uuid,
     ) -> Result<conclave_proto::GetGroupInfoResponse> {
         let bytes = self
             .get(&format!("/api/v1/groups/{group_id}/group-info"))
@@ -543,7 +552,7 @@ impl ApiClient {
 
     pub async fn external_join(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         commit_message: Vec<u8>,
         mls_group_id: &str,
     ) -> Result<()> {
@@ -567,7 +576,7 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn delete_group(&self, group_id: i64) -> Result<()> {
+    pub async fn delete_group(&self, group_id: Uuid) -> Result<()> {
         let empty = conclave_proto::DeleteGroupResponse {};
         self.post(&format!("/api/v1/groups/{group_id}/delete"), &empty)
             .await?;

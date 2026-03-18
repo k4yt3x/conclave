@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 /// Connection status for the SSE stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -43,7 +45,7 @@ pub enum RoomTrustLevel {
 /// all `Verified` → `Verified`.
 pub fn room_trust_level(
     members: &[RoomMember],
-    verification_status: &std::collections::HashMap<i64, VerificationStatus>,
+    verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
 ) -> RoomTrustLevel {
     let mut all_verified = true;
     for member in members {
@@ -63,7 +65,7 @@ pub fn room_trust_level(
 /// A member of a room.
 #[derive(Debug, Clone)]
 pub struct RoomMember {
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub username: String,
     pub alias: Option<String>,
     pub role: String,
@@ -83,7 +85,7 @@ impl RoomMember {
 /// A room the user has joined.
 #[derive(Debug, Clone)]
 pub struct Room {
-    pub server_group_id: i64,
+    pub server_group_id: Uuid,
     pub group_name: String,
     pub alias: Option<String>,
     pub members: Vec<RoomMember>,
@@ -111,7 +113,7 @@ impl Room {
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
     /// Sender's user ID. None for system messages.
-    pub sender_id: Option<i64>,
+    pub sender_id: Option<Uuid>,
     /// Fallback display name (used when sender can't be resolved from members).
     pub sender: String,
     pub content: String,
@@ -125,7 +127,7 @@ pub struct DisplayMessage {
 }
 
 impl DisplayMessage {
-    pub fn user(sender_id: i64, sender: &str, content: &str, timestamp: i64) -> Self {
+    pub fn user(sender_id: Uuid, sender: &str, content: &str, timestamp: i64) -> Self {
         Self {
             sender_id: Some(sender_id),
             sender: sender.to_string(),
@@ -153,8 +155,8 @@ impl DisplayMessage {
 /// Remove expired messages from in-memory `room_messages` based on each room's
 /// expiry policy. Returns `true` if any messages were removed.
 pub fn remove_expired_messages(
-    rooms: &std::collections::HashMap<i64, Room>,
-    room_messages: &mut std::collections::HashMap<i64, Vec<DisplayMessage>>,
+    rooms: &std::collections::HashMap<Uuid, Room>,
+    room_messages: &mut std::collections::HashMap<Uuid, Vec<DisplayMessage>>,
 ) -> bool {
     let now = chrono::Utc::now().timestamp();
     let mut any_removed = false;
@@ -177,7 +179,7 @@ pub fn remove_expired_messages(
 
 /// Check whether any room has a positive `message_expiry_seconds`, meaning
 /// periodic expiry cleanup is needed.
-pub fn has_expiring_rooms(rooms: &std::collections::HashMap<i64, Room>) -> bool {
+pub fn has_expiring_rooms(rooms: &std::collections::HashMap<Uuid, Room>) -> bool {
     rooms.values().any(|r| r.message_expiry_seconds > 0)
 }
 
@@ -199,10 +201,14 @@ pub fn resolve_sender_name(msg: &DisplayMessage, members: &[RoomMember]) -> Stri
 mod tests {
     use super::*;
 
+    fn test_uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
     #[test]
     fn test_room_member_display_name_with_alias() {
         let member = RoomMember {
-            user_id: 1,
+            user_id: test_uuid(1),
             username: "alice".into(),
             alias: Some("Alice W.".into()),
             role: "member".into(),
@@ -214,7 +220,7 @@ mod tests {
     #[test]
     fn test_room_member_display_name_empty_alias() {
         let member = RoomMember {
-            user_id: 1,
+            user_id: test_uuid(1),
             username: "alice".into(),
             alias: Some(String::new()),
             role: "member".into(),
@@ -226,7 +232,7 @@ mod tests {
     #[test]
     fn test_room_member_display_name_no_alias() {
         let member = RoomMember {
-            user_id: 1,
+            user_id: test_uuid(1),
             username: "alice".into(),
             alias: None,
             role: "member".into(),
@@ -238,7 +244,7 @@ mod tests {
     #[test]
     fn test_room_display_name_alias_priority() {
         let room = Room {
-            server_group_id: 42,
+            server_group_id: test_uuid(42),
             group_name: "devs".into(),
             alias: Some("Dev Team".into()),
             members: vec![],
@@ -252,7 +258,7 @@ mod tests {
     #[test]
     fn test_room_display_name_group_name_fallback() {
         let room = Room {
-            server_group_id: 42,
+            server_group_id: test_uuid(42),
             group_name: "devs".into(),
             alias: None,
             members: vec![],
@@ -266,7 +272,7 @@ mod tests {
     #[test]
     fn test_room_display_name_empty_alias_falls_through() {
         let room = Room {
-            server_group_id: 42,
+            server_group_id: test_uuid(42),
             group_name: "devs".into(),
             alias: Some(String::new()),
             members: vec![],
@@ -279,8 +285,8 @@ mod tests {
 
     #[test]
     fn test_display_message_user() {
-        let msg = DisplayMessage::user(42, "alice", "hello", 1000);
-        assert_eq!(msg.sender_id, Some(42));
+        let msg = DisplayMessage::user(test_uuid(42), "alice", "hello", 1000);
+        assert_eq!(msg.sender_id, Some(test_uuid(42)));
         assert_eq!(msg.sender, "alice");
         assert_eq!(msg.content, "hello");
         assert_eq!(msg.timestamp, 1000);
@@ -301,30 +307,30 @@ mod tests {
     fn test_resolve_sender_name_from_members() {
         let members = vec![
             RoomMember {
-                user_id: 1,
+                user_id: test_uuid(1),
                 username: "alice".into(),
                 alias: Some("Alice W.".into()),
                 role: "admin".into(),
                 signing_key_fingerprint: None,
             },
             RoomMember {
-                user_id: 2,
+                user_id: test_uuid(2),
                 username: "bob".into(),
                 alias: None,
                 role: "member".into(),
                 signing_key_fingerprint: None,
             },
         ];
-        let msg = DisplayMessage::user(1, "old_name", "hi", 100);
+        let msg = DisplayMessage::user(test_uuid(1), "old_name", "hi", 100);
         assert_eq!(resolve_sender_name(&msg, &members), "Alice W.");
 
-        let msg2 = DisplayMessage::user(2, "old_name", "hi", 100);
+        let msg2 = DisplayMessage::user(test_uuid(2), "old_name", "hi", 100);
         assert_eq!(resolve_sender_name(&msg2, &members), "bob");
     }
 
     #[test]
     fn test_resolve_sender_name_fallback() {
-        let msg = DisplayMessage::user(999, "fallback_name", "hi", 100);
+        let msg = DisplayMessage::user(test_uuid(999), "fallback_name", "hi", 100);
         assert_eq!(resolve_sender_name(&msg, &[]), "fallback_name");
     }
 
@@ -334,9 +340,9 @@ mod tests {
         assert_eq!(resolve_sender_name(&msg, &[]), "");
     }
 
-    fn make_room(group_id: i64, expiry: i64) -> Room {
+    fn make_room(group_id: u128, expiry: i64) -> Room {
         Room {
-            server_group_id: group_id,
+            server_group_id: test_uuid(group_id),
             group_name: format!("room{group_id}"),
             alias: None,
             members: vec![],
@@ -349,16 +355,16 @@ mod tests {
     #[test]
     fn test_has_expiring_rooms_none() {
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, -1));
-        rooms.insert(2, make_room(2, 0));
+        rooms.insert(test_uuid(1), make_room(1, -1));
+        rooms.insert(test_uuid(2), make_room(2, 0));
         assert!(!has_expiring_rooms(&rooms));
     }
 
     #[test]
     fn test_has_expiring_rooms_some() {
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, -1));
-        rooms.insert(2, make_room(2, 60));
+        rooms.insert(test_uuid(1), make_room(1, -1));
+        rooms.insert(test_uuid(2), make_room(2, 60));
         assert!(has_expiring_rooms(&rooms));
     }
 
@@ -366,100 +372,113 @@ mod tests {
     fn test_remove_expired_messages_removes_old() {
         let now = chrono::Utc::now().timestamp();
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, 10));
+        rooms.insert(test_uuid(1), make_room(1, 10));
 
         let mut room_messages = std::collections::HashMap::new();
         room_messages.insert(
-            1i64,
+            test_uuid(1),
             vec![
-                DisplayMessage::user(1, "alice", "old", now - 20),
+                DisplayMessage::user(test_uuid(1), "alice", "old", now - 20),
                 DisplayMessage::system("old system msg"),
-                DisplayMessage::user(1, "alice", "recent", now - 5),
-                DisplayMessage::user(1, "alice", "new", now),
+                DisplayMessage::user(test_uuid(1), "alice", "recent", now - 5),
+                DisplayMessage::user(test_uuid(1), "alice", "new", now),
             ],
         );
 
         // Backdate the system message so it would be expired if not protected.
-        room_messages.get_mut(&1).unwrap()[1].timestamp = now - 20;
+        room_messages.get_mut(&test_uuid(1)).unwrap()[1].timestamp = now - 20;
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(removed);
-        assert_eq!(room_messages[&1].len(), 3);
-        assert!(room_messages[&1][0].is_system);
-        assert_eq!(room_messages[&1][0].content, "old system msg");
-        assert_eq!(room_messages[&1][1].content, "recent");
-        assert_eq!(room_messages[&1][2].content, "new");
+        assert_eq!(room_messages[&test_uuid(1)].len(), 3);
+        assert!(room_messages[&test_uuid(1)][0].is_system);
+        assert_eq!(room_messages[&test_uuid(1)][0].content, "old system msg");
+        assert_eq!(room_messages[&test_uuid(1)][1].content, "recent");
+        assert_eq!(room_messages[&test_uuid(1)][2].content, "new");
     }
 
     #[test]
     fn test_remove_expired_messages_preserves_system() {
         let now = chrono::Utc::now().timestamp();
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, 10));
+        rooms.insert(test_uuid(1), make_room(1, 10));
 
         let mut room_messages = std::collections::HashMap::new();
         let mut sys_msg = DisplayMessage::system("help output");
         sys_msg.timestamp = now - 100;
-        room_messages.insert(1i64, vec![sys_msg]);
+        room_messages.insert(test_uuid(1), vec![sys_msg]);
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(!removed);
-        assert_eq!(room_messages[&1].len(), 1);
-        assert!(room_messages[&1][0].is_system);
+        assert_eq!(room_messages[&test_uuid(1)].len(), 1);
+        assert!(room_messages[&test_uuid(1)][0].is_system);
     }
 
     #[test]
     fn test_remove_expired_messages_skips_disabled() {
         let now = chrono::Utc::now().timestamp();
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, -1));
+        rooms.insert(test_uuid(1), make_room(1, -1));
 
         let mut room_messages = std::collections::HashMap::new();
         room_messages.insert(
-            1i64,
-            vec![DisplayMessage::user(1, "alice", "old", now - 9999)],
+            test_uuid(1),
+            vec![DisplayMessage::user(
+                test_uuid(1),
+                "alice",
+                "old",
+                now - 9999,
+            )],
         );
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(!removed);
-        assert_eq!(room_messages[&1].len(), 1);
+        assert_eq!(room_messages[&test_uuid(1)].len(), 1);
     }
 
     #[test]
     fn test_remove_expired_messages_skips_fetch_then_delete() {
         let now = chrono::Utc::now().timestamp();
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, 0));
+        rooms.insert(test_uuid(1), make_room(1, 0));
 
         let mut room_messages = std::collections::HashMap::new();
         room_messages.insert(
-            1i64,
-            vec![DisplayMessage::user(1, "alice", "old", now - 9999)],
+            test_uuid(1),
+            vec![DisplayMessage::user(
+                test_uuid(1),
+                "alice",
+                "old",
+                now - 9999,
+            )],
         );
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(!removed);
-        assert_eq!(room_messages[&1].len(), 1);
+        assert_eq!(room_messages[&test_uuid(1)].len(), 1);
     }
 
     #[test]
     fn test_remove_expired_messages_nothing_to_remove() {
         let now = chrono::Utc::now().timestamp();
         let mut rooms = std::collections::HashMap::new();
-        rooms.insert(1, make_room(1, 60));
+        rooms.insert(test_uuid(1), make_room(1, 60));
 
         let mut room_messages = std::collections::HashMap::new();
-        room_messages.insert(1i64, vec![DisplayMessage::user(1, "alice", "recent", now)]);
+        room_messages.insert(
+            test_uuid(1),
+            vec![DisplayMessage::user(test_uuid(1), "alice", "recent", now)],
+        );
 
         let removed = remove_expired_messages(&rooms, &mut room_messages);
         assert!(!removed);
-        assert_eq!(room_messages[&1].len(), 1);
+        assert_eq!(room_messages[&test_uuid(1)].len(), 1);
     }
 
-    fn make_member(user_id: i64) -> RoomMember {
+    fn make_member(id: u128) -> RoomMember {
         RoomMember {
-            user_id,
-            username: format!("user{user_id}"),
+            user_id: test_uuid(id),
+            username: format!("user{id}"),
             alias: None,
             role: "member".into(),
             signing_key_fingerprint: None,
@@ -470,9 +489,9 @@ mod tests {
     fn test_room_trust_level_all_verified() {
         let members = vec![make_member(1), make_member(2), make_member(3)];
         let mut status = std::collections::HashMap::new();
-        status.insert(1, VerificationStatus::Verified);
-        status.insert(2, VerificationStatus::Verified);
-        status.insert(3, VerificationStatus::Verified);
+        status.insert(test_uuid(1), VerificationStatus::Verified);
+        status.insert(test_uuid(2), VerificationStatus::Verified);
+        status.insert(test_uuid(3), VerificationStatus::Verified);
         assert_eq!(
             room_trust_level(&members, &status),
             RoomTrustLevel::Verified
@@ -483,8 +502,8 @@ mod tests {
     fn test_room_trust_level_one_unverified() {
         let members = vec![make_member(1), make_member(2)];
         let mut status = std::collections::HashMap::new();
-        status.insert(1, VerificationStatus::Verified);
-        status.insert(2, VerificationStatus::Unverified);
+        status.insert(test_uuid(1), VerificationStatus::Verified);
+        status.insert(test_uuid(2), VerificationStatus::Unverified);
         assert_eq!(
             room_trust_level(&members, &status),
             RoomTrustLevel::Unverified
@@ -495,8 +514,8 @@ mod tests {
     fn test_room_trust_level_one_unknown() {
         let members = vec![make_member(1), make_member(2)];
         let mut status = std::collections::HashMap::new();
-        status.insert(1, VerificationStatus::Verified);
-        status.insert(2, VerificationStatus::Unknown);
+        status.insert(test_uuid(1), VerificationStatus::Verified);
+        status.insert(test_uuid(2), VerificationStatus::Unknown);
         assert_eq!(
             room_trust_level(&members, &status),
             RoomTrustLevel::Unverified
@@ -507,9 +526,9 @@ mod tests {
     fn test_room_trust_level_one_changed() {
         let members = vec![make_member(1), make_member(2), make_member(3)];
         let mut status = std::collections::HashMap::new();
-        status.insert(1, VerificationStatus::Verified);
-        status.insert(2, VerificationStatus::Changed);
-        status.insert(3, VerificationStatus::Verified);
+        status.insert(test_uuid(1), VerificationStatus::Verified);
+        status.insert(test_uuid(2), VerificationStatus::Changed);
+        status.insert(test_uuid(3), VerificationStatus::Verified);
         assert_eq!(room_trust_level(&members, &status), RoomTrustLevel::Risky);
     }
 
@@ -517,7 +536,7 @@ mod tests {
     fn test_room_trust_level_missing_entry() {
         let members = vec![make_member(1), make_member(2)];
         let mut status = std::collections::HashMap::new();
-        status.insert(1, VerificationStatus::Verified);
+        status.insert(test_uuid(1), VerificationStatus::Verified);
         assert_eq!(
             room_trust_level(&members, &status),
             RoomTrustLevel::Unverified

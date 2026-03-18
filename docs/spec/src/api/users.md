@@ -24,7 +24,7 @@ None.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | int64 | The user's unique ID. |
+| `user_id` | bytes | The user's unique ID (UUID). |
 | `username` | string | The user's username. |
 | `alias` | string | The user's display name (may be empty). |
 | `signing_key_fingerprint` | string | SHA-256 hex of the user's MLS signing public key (may be empty). |
@@ -57,7 +57,7 @@ GET /api/v1/users/by-id/{user_id}
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `user_id` | int64 | The user ID to look up. |
+| `user_id` | string | The user ID to look up (UUID hex string in URL). |
 
 ### Request Body
 
@@ -67,7 +67,7 @@ None.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | int64 | The user's unique ID. |
+| `user_id` | bytes | The user's unique ID (UUID). |
 | `username` | string | The user's username. |
 | `alias` | string | The user's display name (may be empty). |
 | `signing_key_fingerprint` | string | SHA-256 hex of the user's MLS signing public key (may be empty). |

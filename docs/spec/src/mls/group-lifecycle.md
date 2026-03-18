@@ -12,7 +12,7 @@ After creation, the group has exactly one member (the creator). Additional membe
 
 ## Group ID Mapping
 
-The server uses auto-increment integer IDs (`group_id`), while MLS uses opaque byte identifiers (`mls_group_id`, hex-encoded as strings). The server stores the `mls_group_id` in the groups table after the first commit upload and returns it in `ListGroupsResponse`.
+The server uses UUID IDs (`group_id`), while MLS uses opaque byte identifiers (`mls_group_id`, hex-encoded as strings). The server stores the `mls_group_id` in the groups table after the first commit upload and returns it in `ListGroupsResponse`.
 
 Clients MUST maintain a mapping between server group IDs and MLS group IDs. This mapping is populated from the `ListGroupsResponse` on login or reconnection.
 

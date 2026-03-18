@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use conclave_client::api::ApiClient;
 use conclave_client::config::{
@@ -77,7 +78,7 @@ enum Commands {
     /// Invite a user to an existing group.
     Invite {
         #[arg(short, long)]
-        group: i64,
+        group: Uuid,
         /// Comma-separated list of usernames to invite.
         #[arg(short, long)]
         members: String,
@@ -89,14 +90,14 @@ enum Commands {
     /// Send an encrypted message to a group.
     Send {
         #[arg(short, long)]
-        group: i64,
+        group: Uuid,
         #[arg(short, long)]
         message: String,
     },
     /// Fetch and decrypt messages from a group.
     Messages {
         #[arg(short, long)]
-        group: i64,
+        group: Uuid,
     },
     /// Set your display name (alias).
     Nick {
@@ -106,7 +107,7 @@ enum Commands {
     /// Set a group's display alias.
     Topic {
         #[arg(short, long)]
-        group: i64,
+        group: Uuid,
         #[arg(short, long)]
         alias: String,
     },
@@ -182,13 +183,13 @@ fn api_from_session(
     Ok(api)
 }
 
-fn require_user_id(session: &SessionState) -> conclave_client::error::Result<i64> {
+fn require_user_id(session: &SessionState) -> conclave_client::error::Result<Uuid> {
     session
         .user_id
         .ok_or_else(|| Error::Other("not logged in -- run login first".into()))
 }
 
-fn resolve_mls_group_id(data_dir: &Path, group_id: i64) -> conclave_client::error::Result<String> {
+fn resolve_mls_group_id(data_dir: &Path, group_id: Uuid) -> conclave_client::error::Result<String> {
     let mapping = load_group_mapping(data_dir);
     mapping
         .get(&group_id)
@@ -278,7 +279,9 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             let mut member_ids = Vec::new();
             for username in &member_names {
                 let user_info = api.get_user_by_username(username).await?;
-                member_ids.push(user_info.user_id);
+                let uid = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
+                member_ids.push(uid);
             }
 
             let mls_group_id = resolve_mls_group_id(&config.data_dir, group)?;

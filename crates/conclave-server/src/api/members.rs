@@ -4,17 +4,18 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-use super::{broadcast_sse, decode_proto, notify_group_members, proto_response};
+use super::{broadcast_sse, decode_proto, notify_group_members, parse_uuid, proto_response};
 
 pub async fn invite_to_group(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::InviteToGroupRequest>(&body)?;
@@ -29,8 +30,9 @@ pub async fn invite_to_group(
         ));
     }
 
-    let mut member_key_packages = std::collections::HashMap::new();
-    for &member_id in &request.user_ids {
+    let mut member_key_packages = Vec::new();
+    for member_id_bytes in &request.user_ids {
+        let member_id = parse_uuid(member_id_bytes, "user_id")?;
         state
             .db
             .get_user_by_id(member_id)?
@@ -52,7 +54,10 @@ pub async fn invite_to_group(
             ))
         })?;
 
-        member_key_packages.insert(member_id, key_package_data);
+        member_key_packages.push(conclave_proto::MemberKeyPackage {
+            user_id: member_id.as_bytes().to_vec(),
+            key_package_data,
+        });
     }
 
     Ok(proto_response(
@@ -66,7 +71,7 @@ pub async fn invite_to_group(
 pub async fn remove_group_member(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
@@ -77,7 +82,7 @@ pub async fn remove_group_member(
         ));
     }
 
-    let target_user_id = request.user_id;
+    let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
@@ -103,15 +108,15 @@ pub async fn remove_group_member(
 
     // Notify all remaining members and the removed user.
     let members = state.db.get_group_members(group_id)?;
-    let mut all_targets: Vec<i64> = members.iter().map(|m| m.user_id).collect();
+    let mut all_targets: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
     all_targets.push(target_user_id);
     broadcast_sse(
         &state.sse_tx,
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::MemberRemoved(
                 conclave_proto::MemberRemovedEvent {
-                    group_id,
-                    removed_user_id: target_user_id,
+                    group_id: group_id.as_bytes().to_vec(),
+                    removed_user_id: target_user_id.as_bytes().to_vec(),
                 },
             )),
         },
@@ -127,7 +132,7 @@ pub async fn remove_group_member(
 pub async fn leave_group(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::LeaveGroupRequest>(&body)?;
@@ -150,15 +155,15 @@ pub async fn leave_group(
 
     // Notify remaining members.
     let members = state.db.get_group_members(group_id)?;
-    let member_ids: Vec<i64> = members.iter().map(|m| m.user_id).collect();
+    let member_ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
 
     broadcast_sse(
         &state.sse_tx,
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::MemberRemoved(
                 conclave_proto::MemberRemovedEvent {
-                    group_id,
-                    removed_user_id: auth.user_id,
+                    group_id: group_id.as_bytes().to_vec(),
+                    removed_user_id: auth.user_id.as_bytes().to_vec(),
                 },
             )),
         },
@@ -174,7 +179,7 @@ pub async fn leave_group(
 pub async fn promote_member(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::PromoteMemberRequest>(&body)?;
@@ -185,7 +190,7 @@ pub async fn promote_member(
         ));
     }
 
-    let target_user_id = request.user_id;
+    let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
@@ -210,7 +215,7 @@ pub async fn promote_member(
         group_id,
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-            group_id,
+            group_id: group_id.as_bytes().to_vec(),
             update_type: "role_change".into(),
         }),
     );
@@ -224,7 +229,7 @@ pub async fn promote_member(
 pub async fn demote_member(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::DemoteMemberRequest>(&body)?;
@@ -235,7 +240,7 @@ pub async fn demote_member(
         ));
     }
 
-    let target_user_id = request.user_id;
+    let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
@@ -259,7 +264,7 @@ pub async fn demote_member(
         group_id,
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-            group_id,
+            group_id: group_id.as_bytes().to_vec(),
             update_type: "role_change".into(),
         }),
     );
@@ -273,7 +278,7 @@ pub async fn demote_member(
 pub async fn list_admins(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
         return Err(Error::Unauthorized("not a member of this group".into()));
@@ -284,7 +289,7 @@ pub async fn list_admins(
         .into_iter()
         .map(
             |(uid, uname, ualias, ufingerprint)| conclave_proto::GroupMember {
-                user_id: uid,
+                user_id: uid.as_bytes().to_vec(),
                 username: uname,
                 alias: ualias.unwrap_or_default(),
                 role: "admin".into(),

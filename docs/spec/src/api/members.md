@@ -14,19 +14,26 @@ POST /api/v1/groups/{group_id}/invite
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to invite users to. |
+| `group_id` | string | The group to invite users to. |
 
 ### Request Body — `InviteToGroupRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_ids` | repeated int64 | Yes | User IDs to invite. Must contain at least one ID. |
+| `user_ids` | repeated bytes | Yes | User IDs to invite. Must contain at least one ID. |
 
 ### Response Body — `InviteToGroupResponse`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `member_key_packages` | map\<int64, bytes\> | Map of user_id to their consumed MLS key package bytes. |
+| `member_key_packages` | repeated `MemberKeyPackage` | List of user ID to key package pairs. |
+
+Each `MemberKeyPackage`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `user_id` | bytes | The user's ID (UUID). |
+| `key_package_data` | bytes | The consumed MLS key package bytes. |
 
 ### Notes
 
@@ -68,13 +75,13 @@ POST /api/v1/groups/{group_id}/remove
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to remove the member from. |
+| `group_id` | string | The group to remove the member from. |
 
 ### Request Body — `RemoveMemberRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | int64 | Yes | The user to remove. |
+| `user_id` | bytes | Yes | The user to remove. |
 | `commit_message` | bytes | No | MLS commit for the removal. Stored as a group message if provided. |
 | `group_info` | bytes | No | Updated MLS GroupInfo. Stored for external commits if provided. |
 
@@ -111,7 +118,7 @@ POST /api/v1/groups/{group_id}/leave
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to leave. |
+| `group_id` | string | The group to leave. |
 
 ### Request Body — `LeaveGroupRequest`
 
@@ -155,13 +162,13 @@ POST /api/v1/groups/{group_id}/promote
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group. |
+| `group_id` | string | The group. |
 
 ### Request Body — `PromoteMemberRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | int64 | Yes | The member to promote. |
+| `user_id` | bytes | Yes | The member to promote. |
 
 ### Response Body — `PromoteMemberResponse`
 
@@ -197,13 +204,13 @@ POST /api/v1/groups/{group_id}/demote
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group. |
+| `group_id` | string | The group. |
 
 ### Request Body — `DemoteMemberRequest`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | int64 | Yes | The admin to demote. |
+| `user_id` | bytes | Yes | The admin to demote. |
 
 ### Response Body — `DemoteMemberResponse`
 
@@ -242,7 +249,7 @@ GET /api/v1/groups/{group_id}/admins
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to query. |
+| `group_id` | string | The group to query. |
 
 ### Request Body
 
@@ -281,7 +288,7 @@ POST /api/v1/groups/{group_id}/external-join
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `group_id` | int64 | The group to rejoin. |
+| `group_id` | string | The group to rejoin. |
 
 ### Request Body — `ExternalJoinRequest`
 

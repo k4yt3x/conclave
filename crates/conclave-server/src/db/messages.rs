@@ -1,29 +1,36 @@
 use rusqlite::params;
+use uuid::Uuid;
 
 use crate::db::StoredMessageRow;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 use super::Database;
 
 impl Database {
-    pub fn store_message(&self, group_id: i64, sender_id: i64, mls_message: &[u8]) -> Result<i64> {
+    pub fn store_message(
+        &self,
+        group_id: Uuid,
+        sender_id: Uuid,
+        mls_message: &[u8],
+    ) -> Result<i64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let gid_str = group_id.to_string();
         let next_seq: i64 = conn.query_row(
             "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM messages WHERE group_id = ?1",
-            params![group_id],
+            params![gid_str],
             |row| row.get(0),
         )?;
         conn.execute(
             "INSERT INTO messages (group_id, sender_id, mls_message, sequence_num)
              VALUES (?1, ?2, ?3, ?4)",
-            params![group_id, sender_id, mls_message, next_seq],
+            params![gid_str, sender_id.to_string(), mls_message, next_seq],
         )?;
         Ok(next_seq)
     }
 
     pub fn get_messages(
         &self,
-        group_id: i64,
+        group_id: Uuid,
         after_seq: i64,
         limit: i64,
     ) -> Result<Vec<StoredMessageRow>> {
@@ -36,16 +43,23 @@ impl Database {
              LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![group_id, after_seq, limit], |row| {
-                Ok(StoredMessageRow {
-                    sequence_num: row.get(0)?,
-                    sender_id: row.get(1)?,
-                    mls_message: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+            .query_map(params![group_id.to_string(), after_seq, limit], |row| {
+                let sender_id_str: String = row.get(1)?;
+                Ok((row.get(0)?, sender_id_str, row.get(2)?, row.get(3)?))
             })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+            .collect::<std::result::Result<Vec<(i64, String, Vec<u8>, i64)>, _>>()?;
+        let mut result = Vec::with_capacity(rows.len());
+        for (sequence_num, sender_id_str, mls_message, created_at) in rows {
+            let sender_id = Uuid::parse_str(&sender_id_str)
+                .map_err(|e| Error::Internal(format!("invalid sender UUID: {e}")))?;
+            result.push(StoredMessageRow {
+                sequence_num,
+                sender_id,
+                mls_message,
+                created_at,
+            });
+        }
+        Ok(result)
     }
 
     /// Delete messages that exceed the server-wide retention or per-group expiry.
@@ -99,8 +113,8 @@ impl Database {
     /// Upsert the fetch watermark for a user in a group.
     pub fn update_fetch_watermark(
         &self,
-        group_id: i64,
-        user_id: i64,
+        group_id: Uuid,
+        user_id: Uuid,
         sequence_num: i64,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -109,7 +123,7 @@ impl Database {
              VALUES (?1, ?2, ?3)
              ON CONFLICT(group_id, user_id) DO UPDATE SET
                 last_fetched_seq = MAX(last_fetched_seq, excluded.last_fetched_seq)",
-            params![group_id, user_id, sequence_num],
+            params![group_id.to_string(), user_id.to_string(), sequence_num],
         )?;
         Ok(())
     }

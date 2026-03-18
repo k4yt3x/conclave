@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rusqlite::{Connection, params};
+use uuid::Uuid;
 
 use crate::state::DisplayMessage;
 
@@ -35,7 +36,7 @@ impl MessageStore {
 
              CREATE TABLE IF NOT EXISTS messages (
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 group_id   INTEGER NOT NULL,
+                 group_id   TEXT NOT NULL,
                  sender     TEXT    NOT NULL,
                  content    TEXT    NOT NULL,
                  timestamp  INTEGER NOT NULL,
@@ -45,7 +46,7 @@ impl MessageStore {
                  ON messages(group_id);
 
              CREATE TABLE IF NOT EXISTS room_state (
-                 group_id      INTEGER PRIMARY KEY,
+                 group_id      TEXT PRIMARY KEY,
                  last_seen_seq INTEGER NOT NULL DEFAULT 0,
                  last_read_seq INTEGER NOT NULL DEFAULT 0
              );",
@@ -66,7 +67,7 @@ impl MessageStore {
 
         // Migrate: add sender_id column if upgrading from older schema.
         if let Err(error) = conn
-            .execute_batch("ALTER TABLE messages ADD COLUMN sender_id INTEGER NOT NULL DEFAULT 0;")
+            .execute_batch("ALTER TABLE messages ADD COLUMN sender_id TEXT NOT NULL DEFAULT '';")
         {
             let msg = error.to_string();
             if !msg.contains("duplicate column") {
@@ -103,7 +104,7 @@ impl MessageStore {
         // Create the known_fingerprints table for TOFU verification.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS known_fingerprints (
-                 user_id        INTEGER PRIMARY KEY,
+                 user_id        TEXT PRIMARY KEY,
                  fingerprint    TEXT NOT NULL,
                  verified       INTEGER NOT NULL DEFAULT 0,
                  first_seen_at  INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -130,17 +131,17 @@ impl MessageStore {
     }
 
     /// Append a message to the history for a room.
-    pub fn push_message(&self, group_id: i64, msg: &DisplayMessage) {
+    pub fn push_message(&self, group_id: Uuid, msg: &DisplayMessage) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO messages (group_id, sender, content, timestamp, is_system, sender_id, sequence_num, epoch)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                group_id,
+                group_id.to_string(),
                 msg.sender,
                 msg.content,
                 msg.timestamp,
                 msg.is_system as i32,
-                msg.sender_id.unwrap_or(0),
+                msg.sender_id.map(|id| id.to_string()).unwrap_or_default(),
                 msg.sequence_num.unwrap_or(0),
                 msg.epoch.unwrap_or(0),
             ],
@@ -150,7 +151,7 @@ impl MessageStore {
     }
 
     /// Load recent messages for a room (last 1000), ordered chronologically.
-    pub fn load_messages(&self, group_id: i64) -> Vec<DisplayMessage> {
+    pub fn load_messages(&self, group_id: Uuid) -> Vec<DisplayMessage> {
         let mut stmt = match self.conn.prepare(
             "SELECT sender, content, timestamp, is_system, sender_id, sequence_num, epoch
              FROM (SELECT * FROM messages WHERE group_id = ?1 ORDER BY id DESC LIMIT 1000)
@@ -160,15 +161,15 @@ impl MessageStore {
             Err(_) => return Vec::new(),
         };
 
-        let rows = match stmt.query_map(params![group_id], |row| {
-            let sender_id_raw: i64 = row.get(4)?;
+        let rows = match stmt.query_map(params![group_id.to_string()], |row| {
+            let sender_id_raw: String = row.get(4)?;
             let seq_raw: u64 = row.get(5)?;
             let epoch_raw: u64 = row.get(6)?;
             Ok(DisplayMessage {
-                sender_id: if sender_id_raw == 0 {
+                sender_id: if sender_id_raw.is_empty() {
                     None
                 } else {
-                    Some(sender_id_raw)
+                    Uuid::parse_str(&sender_id_raw).ok()
                 },
                 sender: row.get(0)?,
                 content: row.get(1)?,
@@ -190,44 +191,44 @@ impl MessageStore {
     }
 
     /// Get the last seen sequence number for a room.
-    pub fn get_last_seen_seq(&self, group_id: i64) -> u64 {
+    pub fn get_last_seen_seq(&self, group_id: Uuid) -> u64 {
         self.conn
             .query_row(
                 "SELECT last_seen_seq FROM room_state WHERE group_id = ?1",
-                params![group_id],
+                params![group_id.to_string()],
                 |row| row.get(0),
             )
             .unwrap_or(0)
     }
 
     /// Update the last seen sequence number for a room.
-    pub fn set_last_seen_seq(&self, group_id: i64, sequence_number: u64) {
+    pub fn set_last_seen_seq(&self, group_id: Uuid, sequence_number: u64) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, ?2, 0)
              ON CONFLICT(group_id) DO UPDATE SET last_seen_seq = excluded.last_seen_seq",
-            params![group_id, sequence_number],
+            params![group_id.to_string(), sequence_number],
         ) {
             tracing::trace!(%error, "failed to update last_seen_seq");
         }
     }
 
     /// Get the last read sequence number for a room.
-    pub fn get_last_read_seq(&self, group_id: i64) -> u64 {
+    pub fn get_last_read_seq(&self, group_id: Uuid) -> u64 {
         self.conn
             .query_row(
                 "SELECT last_read_seq FROM room_state WHERE group_id = ?1",
-                params![group_id],
+                params![group_id.to_string()],
                 |row| row.get(0),
             )
             .unwrap_or(0)
     }
 
     /// Delete locally cached messages for a group based on its expiry policy.
-    pub fn cleanup_expired_messages(&self, group_id: i64, expiry_seconds: i64) {
+    pub fn cleanup_expired_messages(&self, group_id: Uuid, expiry_seconds: i64) {
         if expiry_seconds == 0 {
             if let Err(error) = self.conn.execute(
                 "DELETE FROM messages WHERE group_id = ?1 AND is_system = 0",
-                params![group_id],
+                params![group_id.to_string()],
             ) {
                 tracing::trace!(%error, "failed to cleanup expired messages from local store");
             }
@@ -235,7 +236,7 @@ impl MessageStore {
             let cutoff = chrono::Utc::now().timestamp() - expiry_seconds;
             if let Err(error) = self.conn.execute(
                 "DELETE FROM messages WHERE group_id = ?1 AND timestamp < ?2 AND is_system = 0",
-                params![group_id, cutoff],
+                params![group_id.to_string(), cutoff],
             ) {
                 tracing::trace!(%error, "failed to cleanup expired messages from local store");
             }
@@ -248,7 +249,7 @@ impl MessageStore {
     /// and stored TOFU state.
     pub fn get_verification_status(
         &self,
-        user_id: i64,
+        user_id: Uuid,
         current_fingerprint: &str,
     ) -> crate::state::VerificationStatus {
         use crate::state::VerificationStatus;
@@ -261,7 +262,7 @@ impl MessageStore {
             .conn
             .query_row(
                 "SELECT fingerprint, verified, key_changed FROM known_fingerprints WHERE user_id = ?1",
-                params![user_id],
+                params![user_id.to_string()],
                 |row| {
                     let fp: String = row.get(0)?;
                     let verified: bool = row.get::<_, i32>(1)? != 0;
@@ -275,7 +276,7 @@ impl MessageStore {
             None => {
                 if let Err(error) = self.conn.execute(
                     "INSERT INTO known_fingerprints (user_id, fingerprint) VALUES (?1, ?2)",
-                    params![user_id, current_fingerprint],
+                    params![user_id.to_string(), current_fingerprint],
                 ) {
                     tracing::warn!(%error, "failed to store TOFU fingerprint");
                 }
@@ -293,7 +294,7 @@ impl MessageStore {
                 } else {
                     if let Err(error) = self.conn.execute(
                         "UPDATE known_fingerprints SET fingerprint = ?2, verified = 0, verified_at = NULL, key_changed = 1 WHERE user_id = ?1",
-                        params![user_id, current_fingerprint],
+                        params![user_id.to_string(), current_fingerprint],
                     ) {
                         tracing::warn!(%error, "failed to update TOFU fingerprint");
                     }
@@ -306,10 +307,10 @@ impl MessageStore {
     /// Mark a user's fingerprint as manually verified.
     ///
     /// Returns false if no TOFU entry exists for this user.
-    pub fn verify_user(&self, user_id: i64) -> bool {
+    pub fn verify_user(&self, user_id: Uuid) -> bool {
         match self.conn.execute(
             "UPDATE known_fingerprints SET verified = 1, key_changed = 0, verified_at = unixepoch() WHERE user_id = ?1",
-            params![user_id],
+            params![user_id.to_string()],
         ) {
             Ok(count) => count > 0,
             Err(error) => {
@@ -322,10 +323,10 @@ impl MessageStore {
     /// Remove manual verification for a user's fingerprint.
     ///
     /// Returns false if no TOFU entry exists for this user.
-    pub fn unverify_user(&self, user_id: i64) -> bool {
+    pub fn unverify_user(&self, user_id: Uuid) -> bool {
         match self.conn.execute(
             "UPDATE known_fingerprints SET verified = 0, key_changed = 0, verified_at = NULL WHERE user_id = ?1",
-            params![user_id],
+            params![user_id.to_string()],
         ) {
             Ok(count) => count > 0,
             Err(error) => {
@@ -336,11 +337,11 @@ impl MessageStore {
     }
 
     /// Get the stored fingerprint and verification status for a user.
-    pub fn get_stored_fingerprint(&self, user_id: i64) -> Option<(String, bool)> {
+    pub fn get_stored_fingerprint(&self, user_id: Uuid) -> Option<(String, bool)> {
         self.conn
             .query_row(
                 "SELECT fingerprint, verified FROM known_fingerprints WHERE user_id = ?1",
-                params![user_id],
+                params![user_id.to_string()],
                 |row| {
                     let fp: String = row.get(0)?;
                     let verified: bool = row.get::<_, i32>(1)? != 0;
@@ -353,7 +354,7 @@ impl MessageStore {
     /// Get all known fingerprints from the TOFU store.
     ///
     /// Returns `(user_id, fingerprint, verified, key_changed)` tuples ordered by user ID.
-    pub fn get_all_known_fingerprints(&self) -> Vec<(i64, String, bool, bool)> {
+    pub fn get_all_known_fingerprints(&self) -> Vec<(Uuid, String, bool, bool)> {
         let mut stmt = match self.conn.prepare(
             "SELECT user_id, fingerprint, verified, key_changed FROM known_fingerprints ORDER BY user_id",
         ) {
@@ -364,23 +365,32 @@ impl MessageStore {
             }
         };
         stmt.query_map([], |row| {
+            let user_id_raw: String = row.get(0)?;
             Ok((
-                row.get::<_, i64>(0)?,
+                user_id_raw,
                 row.get::<_, String>(1)?,
                 row.get::<_, i32>(2)? != 0,
                 row.get::<_, i32>(3)? != 0,
             ))
         })
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter_map(|(uid_str, fp, verified, changed)| {
+                    Uuid::parse_str(&uid_str)
+                        .ok()
+                        .map(|uid| (uid, fp, verified, changed))
+                })
+                .collect()
+        })
         .unwrap_or_default()
     }
 
     /// Update the last read sequence number for a room.
-    pub fn set_last_read_seq(&self, group_id: i64, sequence_number: u64) {
+    pub fn set_last_read_seq(&self, group_id: Uuid, sequence_number: u64) {
         if let Err(error) = self.conn.execute(
             "INSERT INTO room_state (group_id, last_seen_seq, last_read_seq) VALUES (?1, 0, ?2)
              ON CONFLICT(group_id) DO UPDATE SET last_read_seq = excluded.last_read_seq",
-            params![group_id, sequence_number],
+            params![group_id.to_string(), sequence_number],
         ) {
             tracing::trace!(%error, "failed to update last_read_seq");
         }
@@ -391,6 +401,10 @@ impl MessageStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn test_uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
 
     #[test]
     fn test_open_creates_db() {
@@ -403,9 +417,15 @@ mod tests {
     fn test_push_and_load_messages() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user(1, "alice", "hello", 1));
-        store.push_message(1, &DisplayMessage::user(2, "bob", "world", 2));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "hello", 1),
+        );
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(2), "bob", "world", 2),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].sender, "alice");
         assert_eq!(msgs[0].content, "hello");
@@ -417,7 +437,7 @@ mod tests {
     fn test_load_messages_empty() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        let msgs = store.load_messages(999);
+        let msgs = store.load_messages(test_uuid(999));
         assert!(msgs.is_empty());
     }
 
@@ -427,11 +447,11 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         for i in 0..1001 {
             store.push_message(
-                1,
-                &DisplayMessage::user(1, "alice", &format!("msg{i}"), i as i64),
+                test_uuid(1),
+                &DisplayMessage::user(test_uuid(1), "alice", &format!("msg{i}"), i as i64),
             );
         }
-        let msgs = store.load_messages(1);
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1000);
     }
 
@@ -439,71 +459,77 @@ mod tests {
     fn test_last_seen_seq_default() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq(999), 0);
+        assert_eq!(store.get_last_seen_seq(test_uuid(999)), 0);
     }
 
     #[test]
     fn test_set_and_get_last_seen_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 42);
-        assert_eq!(store.get_last_seen_seq(1), 42);
+        store.set_last_seen_seq(test_uuid(1), 42);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 42);
     }
 
     #[test]
     fn test_last_read_seq_default() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_read_seq(999), 0);
+        assert_eq!(store.get_last_read_seq(test_uuid(999)), 0);
     }
 
     #[test]
     fn test_set_and_get_last_read_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq(1, 10);
-        assert_eq!(store.get_last_read_seq(1), 10);
+        store.set_last_read_seq(test_uuid(1), 10);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 10);
     }
 
     #[test]
     fn test_set_last_seen_seq_upsert() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 5);
-        store.set_last_seen_seq(1, 10);
-        assert_eq!(store.get_last_seen_seq(1), 10);
+        store.set_last_seen_seq(test_uuid(1), 5);
+        store.set_last_seen_seq(test_uuid(1), 10);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 10);
     }
 
     #[test]
     fn test_set_last_read_seq_does_not_clobber_last_seen_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 42);
-        store.set_last_read_seq(1, 10);
-        assert_eq!(store.get_last_seen_seq(1), 42);
-        assert_eq!(store.get_last_read_seq(1), 10);
+        store.set_last_seen_seq(test_uuid(1), 42);
+        store.set_last_read_seq(test_uuid(1), 10);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 42);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 10);
     }
 
     #[test]
     fn test_set_last_seen_seq_does_not_clobber_last_read_seq() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq(1, 10);
-        store.set_last_seen_seq(1, 42);
-        assert_eq!(store.get_last_read_seq(1), 10);
-        assert_eq!(store.get_last_seen_seq(1), 42);
+        store.set_last_read_seq(test_uuid(1), 10);
+        store.set_last_seen_seq(test_uuid(1), 42);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 10);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 42);
     }
 
     #[test]
     fn test_messages_isolated_by_group() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user(1, "alice", "for g1", 1));
-        store.push_message(2, &DisplayMessage::user(2, "bob", "for g2", 2));
-        let g1_msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "for g1", 1),
+        );
+        store.push_message(
+            test_uuid(2),
+            &DisplayMessage::user(test_uuid(2), "bob", "for g2", 2),
+        );
+        let g1_msgs = store.load_messages(test_uuid(1));
         assert_eq!(g1_msgs.len(), 1);
         assert_eq!(g1_msgs[0].content, "for g1");
-        let g2_msgs = store.load_messages(2);
+        let g2_msgs = store.load_messages(test_uuid(2));
         assert_eq!(g2_msgs.len(), 1);
         assert_eq!(g2_msgs[0].content, "for g2");
     }
@@ -512,8 +538,11 @@ mod tests {
     fn test_system_messages_stored_correctly() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::system("alice joined the group"));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::system("alice joined the group"),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].is_system);
         assert_eq!(msgs[0].content, "alice joined the group");
@@ -523,12 +552,18 @@ mod tests {
     fn test_mixed_user_and_system_messages() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::system("group created"));
-        store.push_message(1, &DisplayMessage::user(1, "alice", "hello!", 100));
-        store.push_message(1, &DisplayMessage::system("bob joined"));
-        store.push_message(1, &DisplayMessage::user(2, "bob", "hi!", 200));
+        store.push_message(test_uuid(1), &DisplayMessage::system("group created"));
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "hello!", 100),
+        );
+        store.push_message(test_uuid(1), &DisplayMessage::system("bob joined"));
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(2), "bob", "hi!", 200),
+        );
 
-        let msgs = store.load_messages(1);
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 4);
         assert!(msgs[0].is_system);
         assert!(!msgs[1].is_system);
@@ -541,16 +576,19 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.push_message(1, &DisplayMessage::user(1, "alice", "persisted", 1));
-            store.set_last_seen_seq(1, 99);
-            store.set_last_read_seq(1, 50);
+            store.push_message(
+                test_uuid(1),
+                &DisplayMessage::user(test_uuid(1), "alice", "persisted", 1),
+            );
+            store.set_last_seen_seq(test_uuid(1), 99);
+            store.set_last_read_seq(test_uuid(1), 50);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        let msgs = store.load_messages(1);
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "persisted");
-        assert_eq!(store.get_last_seen_seq(1), 99);
-        assert_eq!(store.get_last_read_seq(1), 50);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 99);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 50);
     }
 
     #[test]
@@ -558,34 +596,43 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.set_last_seen_seq(1, 100);
-            store.set_last_read_seq(1, 75);
+            store.set_last_seen_seq(test_uuid(1), 100);
+            store.set_last_read_seq(test_uuid(1), 75);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq(1), 100);
-        assert_eq!(store.get_last_read_seq(1), 75);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 100);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 75);
     }
 
     #[test]
     fn test_multiple_group_sequences() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 10);
-        store.set_last_seen_seq(2, 20);
-        store.set_last_seen_seq(3, 30);
-        assert_eq!(store.get_last_seen_seq(1), 10);
-        assert_eq!(store.get_last_seen_seq(2), 20);
-        assert_eq!(store.get_last_seen_seq(3), 30);
+        store.set_last_seen_seq(test_uuid(1), 10);
+        store.set_last_seen_seq(test_uuid(2), 20);
+        store.set_last_seen_seq(test_uuid(3), 30);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 10);
+        assert_eq!(store.get_last_seen_seq(test_uuid(2)), 20);
+        assert_eq!(store.get_last_seen_seq(test_uuid(3)), 30);
     }
 
     #[test]
     fn test_messages_ordered_chronologically() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user(1, "alice", "first", 300));
-        store.push_message(1, &DisplayMessage::user(2, "bob", "second", 100));
-        store.push_message(1, &DisplayMessage::user(3, "carol", "third", 200));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "first", 300),
+        );
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(2), "bob", "second", 100),
+        );
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(3), "carol", "third", 200),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].content, "first");
         assert_eq!(msgs[1].content, "second");
@@ -598,11 +645,11 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         for i in 0..1100 {
             store.push_message(
-                1,
-                &DisplayMessage::user(1, "alice", &format!("msg{i}"), i as i64),
+                test_uuid(1),
+                &DisplayMessage::user(test_uuid(1), "alice", &format!("msg{i}"), i as i64),
             );
         }
-        let msgs = store.load_messages(1);
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1000);
         assert_eq!(msgs[0].content, "msg100");
         assert_eq!(msgs[999].content, "msg1099");
@@ -612,16 +659,16 @@ mod tests {
     fn test_set_last_seen_seq_creates_room_state_entry() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 50);
-        assert_eq!(store.get_last_read_seq(1), 0);
+        store.set_last_seen_seq(test_uuid(1), 50);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 0);
     }
 
     #[test]
     fn test_set_last_read_seq_creates_room_state_entry() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_read_seq(1, 50);
-        assert_eq!(store.get_last_seen_seq(1), 0);
+        store.set_last_read_seq(test_uuid(1), 50);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 0);
     }
 
     #[test]
@@ -629,24 +676,27 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.set_last_seen_seq(1, 10);
-            store.set_last_read_seq(1, 5);
-            store.set_last_seen_seq(2, 200);
-            store.set_last_read_seq(2, 150);
+            store.set_last_seen_seq(test_uuid(1), 10);
+            store.set_last_read_seq(test_uuid(1), 5);
+            store.set_last_seen_seq(test_uuid(2), 200);
+            store.set_last_read_seq(test_uuid(2), 150);
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        assert_eq!(store.get_last_seen_seq(1), 10);
-        assert_eq!(store.get_last_read_seq(1), 5);
-        assert_eq!(store.get_last_seen_seq(2), 200);
-        assert_eq!(store.get_last_read_seq(2), 150);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 10);
+        assert_eq!(store.get_last_read_seq(test_uuid(1)), 5);
+        assert_eq!(store.get_last_seen_seq(test_uuid(2)), 200);
+        assert_eq!(store.get_last_read_seq(test_uuid(2)), 150);
     }
 
     #[test]
     fn test_empty_content_message() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::user(1, "alice", "", 1));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "", 1),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "");
     }
@@ -657,8 +707,11 @@ mod tests {
         let store = MessageStore::open(dir.path()).unwrap();
         let unicode_content =
             "\u{1F600}\u{1F389} \u{4F60}\u{597D}\u{4E16}\u{754C} \u{00E9}\u{00E8}\u{00EA}";
-        store.push_message(1, &DisplayMessage::user(1, "alice", unicode_content, 1));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", unicode_content, 1),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, unicode_content);
     }
@@ -668,8 +721,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
         let large_content = "A".repeat(100 * 1024);
-        store.push_message(1, &DisplayMessage::user(1, "alice", &large_content, 1));
-        let msgs = store.load_messages(1);
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", &large_content, 1),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, large_content);
     }
@@ -678,12 +734,18 @@ mod tests {
     fn test_system_and_user_message_counts() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.push_message(1, &DisplayMessage::system("system msg 1"));
-        store.push_message(1, &DisplayMessage::system("system msg 2"));
-        store.push_message(1, &DisplayMessage::system("system msg 3"));
-        store.push_message(1, &DisplayMessage::user(1, "alice", "user msg 1", 100));
-        store.push_message(1, &DisplayMessage::user(2, "bob", "user msg 2", 200));
-        let msgs = store.load_messages(1);
+        store.push_message(test_uuid(1), &DisplayMessage::system("system msg 1"));
+        store.push_message(test_uuid(1), &DisplayMessage::system("system msg 2"));
+        store.push_message(test_uuid(1), &DisplayMessage::system("system msg 3"));
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(1), "alice", "user msg 1", 100),
+        );
+        store.push_message(
+            test_uuid(1),
+            &DisplayMessage::user(test_uuid(2), "bob", "user msg 2", 200),
+        );
+        let msgs = store.load_messages(test_uuid(1));
         assert_eq!(msgs.len(), 5);
         assert!(msgs[0].is_system);
         assert!(msgs[1].is_system);
@@ -696,17 +758,17 @@ mod tests {
     fn test_sequence_numbers_isolated_between_groups() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.set_last_seen_seq(1, 100);
-        store.set_last_seen_seq(2, 200);
-        assert_eq!(store.get_last_seen_seq(1), 100);
-        assert_eq!(store.get_last_seen_seq(2), 200);
+        store.set_last_seen_seq(test_uuid(1), 100);
+        store.set_last_seen_seq(test_uuid(2), 200);
+        assert_eq!(store.get_last_seen_seq(test_uuid(1)), 100);
+        assert_eq!(store.get_last_seen_seq(test_uuid(2)), 200);
     }
 
     #[test]
     fn test_tofu_first_seen_returns_unverified() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        let status = store.get_verification_status(1, "aabbccdd");
+        let status = store.get_verification_status(test_uuid(1), "aabbccdd");
         assert_eq!(status, crate::state::VerificationStatus::Unverified);
     }
 
@@ -714,8 +776,8 @@ mod tests {
     fn test_tofu_same_fingerprint_returns_unverified() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        let status = store.get_verification_status(1, "aabbccdd");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        let status = store.get_verification_status(test_uuid(1), "aabbccdd");
         assert_eq!(status, crate::state::VerificationStatus::Unverified);
     }
 
@@ -723,9 +785,9 @@ mod tests {
     fn test_tofu_verified_returns_verified() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        store.verify_user(1);
-        let status = store.get_verification_status(1, "aabbccdd");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        store.verify_user(test_uuid(1));
+        let status = store.get_verification_status(test_uuid(1), "aabbccdd");
         assert_eq!(status, crate::state::VerificationStatus::Verified);
     }
 
@@ -733,8 +795,8 @@ mod tests {
     fn test_tofu_changed_fingerprint_returns_changed() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        let status = store.get_verification_status(1, "newfingerprint");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        let status = store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(status, crate::state::VerificationStatus::Changed);
     }
 
@@ -742,10 +804,10 @@ mod tests {
     fn test_tofu_changed_is_persistent() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        store.get_verification_status(1, "newfingerprint");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        store.get_verification_status(test_uuid(1), "newfingerprint");
         // Second call with same new fingerprint should still return Changed.
-        let status = store.get_verification_status(1, "newfingerprint");
+        let status = store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(status, crate::state::VerificationStatus::Changed);
     }
 
@@ -754,11 +816,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         {
             let store = MessageStore::open(dir.path()).unwrap();
-            store.get_verification_status(1, "aabbccdd");
-            store.get_verification_status(1, "newfingerprint");
+            store.get_verification_status(test_uuid(1), "aabbccdd");
+            store.get_verification_status(test_uuid(1), "newfingerprint");
         }
         let store = MessageStore::open(dir.path()).unwrap();
-        let status = store.get_verification_status(1, "newfingerprint");
+        let status = store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(status, crate::state::VerificationStatus::Changed);
     }
 
@@ -766,15 +828,15 @@ mod tests {
     fn test_tofu_verify_clears_changed() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        store.verify_user(1);
-        store.get_verification_status(1, "newfingerprint");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        store.verify_user(test_uuid(1));
+        store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(
-            store.get_verification_status(1, "newfingerprint"),
+            store.get_verification_status(test_uuid(1), "newfingerprint"),
             crate::state::VerificationStatus::Changed,
         );
-        store.verify_user(1);
-        let status = store.get_verification_status(1, "newfingerprint");
+        store.verify_user(test_uuid(1));
+        let status = store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(status, crate::state::VerificationStatus::Verified);
     }
 
@@ -782,10 +844,10 @@ mod tests {
     fn test_tofu_unverify_clears_changed() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "aabbccdd");
-        store.get_verification_status(1, "newfingerprint");
-        store.unverify_user(1);
-        let status = store.get_verification_status(1, "newfingerprint");
+        store.get_verification_status(test_uuid(1), "aabbccdd");
+        store.get_verification_status(test_uuid(1), "newfingerprint");
+        store.unverify_user(test_uuid(1));
+        let status = store.get_verification_status(test_uuid(1), "newfingerprint");
         assert_eq!(status, crate::state::VerificationStatus::Unverified);
     }
 
@@ -793,7 +855,7 @@ mod tests {
     fn test_tofu_empty_fingerprint_returns_unknown() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        let status = store.get_verification_status(1, "");
+        let status = store.get_verification_status(test_uuid(1), "");
         assert_eq!(status, crate::state::VerificationStatus::Unknown);
     }
 
@@ -801,26 +863,29 @@ mod tests {
     fn test_tofu_verify_nonexistent_returns_false() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert!(!store.verify_user(999));
+        assert!(!store.verify_user(test_uuid(999)));
     }
 
     #[test]
     fn test_tofu_unverify_nonexistent_returns_false() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        assert!(!store.unverify_user(999));
+        assert!(!store.unverify_user(test_uuid(999)));
     }
 
     #[test]
     fn test_tofu_get_all_includes_key_changed() {
         let dir = TempDir::new().unwrap();
         let store = MessageStore::open(dir.path()).unwrap();
-        store.get_verification_status(1, "fp1");
-        store.get_verification_status(2, "fp2");
-        store.get_verification_status(2, "fp2_new");
+        store.get_verification_status(test_uuid(1), "fp1");
+        store.get_verification_status(test_uuid(2), "fp2");
+        store.get_verification_status(test_uuid(2), "fp2_new");
         let entries = store.get_all_known_fingerprints();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], (1, "fp1".to_string(), false, false));
-        assert_eq!(entries[1], (2, "fp2_new".to_string(), false, true));
+        assert_eq!(entries[0], (test_uuid(1), "fp1".to_string(), false, false));
+        assert_eq!(
+            entries[1],
+            (test_uuid(2), "fp2_new".to_string(), false, true)
+        );
     }
 }

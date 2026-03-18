@@ -23,7 +23,7 @@ POST /api/v1/register
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | int64 | The server-assigned unique user ID. |
+| `user_id` | bytes | The server-assigned unique user ID (UUID). |
 
 ### Status Codes
 
@@ -62,7 +62,7 @@ POST /api/v1/login
 | Field | Type | Description |
 |-------|------|-------------|
 | `token` | string | Session token (256-bit random, hex-encoded, 64 characters). |
-| `user_id` | int64 | The user's unique ID. |
+| `user_id` | bytes | The user's unique ID (UUID). |
 | `username` | string | The user's username. |
 
 ### Status Codes
@@ -133,7 +133,7 @@ None.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `user_id` | int64 | The user's unique ID. |
+| `user_id` | bytes | The user's unique ID (UUID). |
 | `username` | string | The user's username. |
 | `alias` | string | The user's display name (may be empty). |
 | `signing_key_fingerprint` | string | SHA-256 hex of the user's MLS signing public key (may be empty). |

@@ -4,24 +4,27 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-use super::{broadcast_sse, decode_proto, notify_group_members, proto_response};
+use super::{broadcast_sse, decode_proto, notify_group_members, parse_uuid, proto_response};
 
 pub async fn escrow_invite(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::EscrowInviteRequest>(&body)?;
 
-    if request.invitee_id == 0 {
+    if request.invitee_id.is_empty() {
         return Err(Error::BadRequest("invitee_id is required".into()));
     }
+
+    let invitee_id = parse_uuid(&request.invitee_id, "invitee_id")?;
 
     if request.commit_message.is_empty()
         || request.welcome_message.is_empty()
@@ -38,7 +41,6 @@ pub async fn escrow_invite(
         ));
     }
 
-    let invitee_id = request.invitee_id;
     state
         .db
         .get_user_by_id(invitee_id)?
@@ -67,11 +69,11 @@ pub async fn escrow_invite(
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::InviteReceived(
                 conclave_proto::InviteReceivedEvent {
-                    invite_id,
-                    group_id,
+                    invite_id: invite_id.as_bytes().to_vec(),
+                    group_id: group_id.as_bytes().to_vec(),
                     group_name,
                     group_alias: group_alias.unwrap_or_default(),
-                    inviter_id: auth.user_id,
+                    inviter_id: auth.user_id.as_bytes().to_vec(),
                 },
             )),
         },
@@ -101,14 +103,14 @@ pub async fn list_pending_invites(
         let group_alias = state.db.get_group_alias(row.group_id)?.unwrap_or_default();
 
         invites.push(conclave_proto::PendingInvite {
-            invite_id: row.invite_id,
-            group_id: row.group_id,
+            invite_id: row.invite_id.as_bytes().to_vec(),
+            group_id: row.group_id.as_bytes().to_vec(),
             group_name,
             group_alias,
             inviter_username,
             created_at: row.created_at as u64,
-            invitee_id: row.invitee_id,
-            inviter_id: row.inviter_id,
+            invitee_id: row.invitee_id.as_bytes().to_vec(),
+            inviter_id: row.inviter_id.as_bytes().to_vec(),
         });
     }
 
@@ -121,7 +123,7 @@ pub async fn list_pending_invites(
 pub async fn accept_invite(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(invite_id): Path<i64>,
+    Path(invite_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let invite = state
         .db
@@ -142,7 +144,7 @@ pub async fn accept_invite(
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::Welcome(
                 conclave_proto::WelcomeEvent {
-                    group_id: result.group_id,
+                    group_id: result.group_id.as_bytes().to_vec(),
                     group_alias: result.group_alias.clone().unwrap_or_default(),
                 },
             )),
@@ -156,7 +158,7 @@ pub async fn accept_invite(
         result.group_id,
         Some(auth.user_id),
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
-            group_id: result.group_id,
+            group_id: result.group_id.as_bytes().to_vec(),
             update_type: "commit".into(),
         }),
     );
@@ -170,7 +172,7 @@ pub async fn accept_invite(
 pub async fn list_group_pending_invites(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_admin(group_id, auth.user_id)? {
         return Err(Error::Unauthorized(
@@ -191,14 +193,14 @@ pub async fn list_group_pending_invites(
         let group_alias = state.db.get_group_alias(row.group_id)?.unwrap_or_default();
 
         invites.push(conclave_proto::PendingInvite {
-            invite_id: row.invite_id,
-            group_id: row.group_id,
+            invite_id: row.invite_id.as_bytes().to_vec(),
+            group_id: row.group_id.as_bytes().to_vec(),
             group_name,
             group_alias,
             inviter_username,
             created_at: row.created_at as u64,
-            invitee_id: row.invitee_id,
-            inviter_id: row.inviter_id,
+            invitee_id: row.invitee_id.as_bytes().to_vec(),
+            inviter_id: row.inviter_id.as_bytes().to_vec(),
         });
     }
 
@@ -211,7 +213,7 @@ pub async fn list_group_pending_invites(
 pub async fn cancel_invite(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(group_id): Path<i64>,
+    Path(group_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::CancelInviteRequest>(&body)?;
@@ -222,9 +224,11 @@ pub async fn cancel_invite(
         ));
     }
 
+    let invitee_id = parse_uuid(&request.invitee_id, "invitee_id")?;
+
     let invite = state
         .db
-        .get_pending_invite_by_group_and_invitee(group_id, request.invitee_id)?
+        .get_pending_invite_by_group_and_invitee(group_id, invitee_id)?
         .ok_or_else(|| Error::NotFound("pending invite not found".into()))?;
 
     state.db.delete_pending_invite(invite.invite_id)?;
@@ -234,7 +238,9 @@ pub async fn cancel_invite(
         &state.sse_tx,
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::InviteCancelled(
-                conclave_proto::InviteCancelledEvent { group_id },
+                conclave_proto::InviteCancelledEvent {
+                    group_id: group_id.as_bytes().to_vec(),
+                },
             )),
         },
         vec![invite.invitee_id],
@@ -247,8 +253,8 @@ pub async fn cancel_invite(
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::InviteDeclined(
                 conclave_proto::InviteDeclinedEvent {
-                    group_id,
-                    declined_user_id: invite.invitee_id,
+                    group_id: group_id.as_bytes().to_vec(),
+                    declined_user_id: invite.invitee_id.as_bytes().to_vec(),
                 },
             )),
         },
@@ -264,7 +270,7 @@ pub async fn cancel_invite(
 pub async fn decline_invite(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
-    Path(invite_id): Path<i64>,
+    Path(invite_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     let invite = state
         .db
@@ -285,8 +291,8 @@ pub async fn decline_invite(
         conclave_proto::ServerEvent {
             event: Some(conclave_proto::server_event::Event::InviteDeclined(
                 conclave_proto::InviteDeclinedEvent {
-                    group_id: invite.group_id,
-                    declined_user_id: auth.user_id,
+                    group_id: invite.group_id.as_bytes().to_vec(),
+                    declined_user_id: auth.user_id.as_bytes().to_vec(),
                 },
             )),
         },

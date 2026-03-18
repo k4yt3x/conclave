@@ -13,7 +13,7 @@ message RegisterRequest {
 }
 
 message RegisterResponse {
-  int64 user_id = 1;
+  bytes user_id = 1;
 }
 
 message LoginRequest {
@@ -23,7 +23,7 @@ message LoginRequest {
 
 message LoginResponse {
   string token = 1;
-  int64 user_id = 2;
+  bytes user_id = 2;
   string username = 3;
 }
 ```
@@ -59,12 +59,12 @@ message CreateGroupRequest {
 }
 
 message CreateGroupResponse {
-  int64 group_id = 1;
+  bytes group_id = 1;
   // Field 2 reserved (was member_key_packages).
 }
 
 message GroupInfo {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string alias = 2;
   // Field 3 reserved (was creator_id).
   repeated GroupMember members = 4;
@@ -75,7 +75,7 @@ message GroupInfo {
 }
 
 message GroupMember {
-  int64 user_id = 1;
+  bytes user_id = 1;
   string username = 2;
   string alias = 3;
   string role = 4;                          // "admin" or "member"
@@ -118,10 +118,10 @@ message UploadCommitResponse {}
 
 ```protobuf
 message PendingWelcome {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string group_alias = 2;
   bytes welcome_message = 3;               // Raw MLS Welcome bytes
-  int64 welcome_id = 4;
+  bytes welcome_id = 4;
 }
 
 message ListPendingWelcomesResponse {
@@ -133,15 +133,20 @@ message ListPendingWelcomesResponse {
 
 ```protobuf
 message InviteToGroupRequest {
-  repeated int64 user_ids = 1;
+  repeated bytes user_ids = 1;
+}
+
+message MemberKeyPackage {
+  bytes user_id = 1;
+  bytes key_package_data = 2;
 }
 
 message InviteToGroupResponse {
-  map<int64, bytes> member_key_packages = 1; // user_id → MLS key package
+  repeated MemberKeyPackage member_key_packages = 1;
 }
 
 message EscrowInviteRequest {
-  int64 invitee_id = 1;
+  bytes invitee_id = 1;
   bytes commit_message = 2;
   bytes welcome_message = 3;
   bytes group_info = 4;
@@ -150,14 +155,14 @@ message EscrowInviteRequest {
 message EscrowInviteResponse {}
 
 message PendingInvite {
-  int64 invite_id = 1;
-  int64 group_id = 2;
+  bytes invite_id = 1;
+  bytes group_id = 2;
   string group_name = 3;
   string group_alias = 4;
   string inviter_username = 5;
   uint64 created_at = 6;                   // Unix timestamp (seconds)
-  int64 invitee_id = 7;
-  int64 inviter_id = 8;
+  bytes invitee_id = 7;
+  bytes inviter_id = 8;
 }
 
 message ListPendingInvitesResponse {
@@ -173,7 +178,7 @@ message ListGroupPendingInvitesResponse {
 }
 
 message CancelInviteRequest {
-  int64 invitee_id = 1;
+  bytes invitee_id = 1;
 }
 
 message CancelInviteResponse {}
@@ -183,13 +188,13 @@ message CancelInviteResponse {}
 
 ```protobuf
 message PromoteMemberRequest {
-  int64 user_id = 1;
+  bytes user_id = 1;
 }
 
 message PromoteMemberResponse {}
 
 message DemoteMemberRequest {
-  int64 user_id = 1;
+  bytes user_id = 1;
 }
 
 message DemoteMemberResponse {}
@@ -212,7 +217,7 @@ message SendMessageResponse {
 
 message StoredMessage {
   uint64 sequence_num = 1;
-  int64 sender_id = 2;
+  bytes sender_id = 2;
   // Field 3 reserved (was sender_username).
   bytes mls_message = 4;                   // Encrypted MLS message (opaque blob)
   uint64 created_at = 5;                   // Unix timestamp (seconds)
@@ -228,7 +233,7 @@ message GetMessagesResponse {
 
 ```protobuf
 message RemoveMemberRequest {
-  int64 user_id = 1;
+  bytes user_id = 1;
   bytes commit_message = 2;               // MLS removal commit
   bytes group_info = 3;                    // Updated MLS GroupInfo
 }
@@ -294,46 +299,46 @@ message ServerEvent {
 }
 
 message NewMessageEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   uint64 sequence_num = 2;
-  int64 sender_id = 3;
+  bytes sender_id = 3;
 }
 
 message GroupUpdateEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string update_type = 2;                 // "commit", "member_profile", "group_settings", "role_change"
 }
 
 message WelcomeEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
   string group_alias = 2;
 }
 
 message MemberRemovedEvent {
-  int64 group_id = 1;
-  int64 removed_user_id = 2;
+  bytes group_id = 1;
+  bytes removed_user_id = 2;
 }
 
 message IdentityResetEvent {
-  int64 group_id = 1;
-  int64 user_id = 2;
+  bytes group_id = 1;
+  bytes user_id = 2;
 }
 
 message InviteReceivedEvent {
-  int64 invite_id = 1;
-  int64 group_id = 2;
+  bytes invite_id = 1;
+  bytes group_id = 2;
   string group_name = 3;
   string group_alias = 4;
-  int64 inviter_id = 5;
+  bytes inviter_id = 5;
 }
 
 message InviteDeclinedEvent {
-  int64 group_id = 1;
-  int64 declined_user_id = 2;
+  bytes group_id = 1;
+  bytes declined_user_id = 2;
 }
 
 message InviteCancelledEvent {
-  int64 group_id = 1;
+  bytes group_id = 1;
 }
 ```
 
@@ -345,7 +350,7 @@ message ErrorResponse {
 }
 
 message UserInfoResponse {
-  int64 user_id = 1;
+  bytes user_id = 1;
   string username = 2;
   string alias = 3;
   string signing_key_fingerprint = 4;     // SHA-256 hex of signing public key
