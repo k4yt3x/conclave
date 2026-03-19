@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use iced::Subscription;
-use reqwest::header::HeaderMap;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 use uuid::Uuid;
 
@@ -51,8 +50,7 @@ pub enum SseUpdate {
 struct SseState {
     base_url: String,
     token: String,
-    accept_invalid_certs: bool,
-    custom_headers: HeaderMap,
+    client: reqwest::Client,
 }
 
 impl PartialEq for SseState {
@@ -69,25 +67,18 @@ impl Hash for SseState {
 }
 
 /// Create an SSE subscription that connects to the server's event stream.
-pub fn sse(
-    base_url: String,
-    token: String,
-    accept_invalid_certs: bool,
-    custom_headers: HeaderMap,
-) -> Subscription<SseUpdate> {
+pub fn sse(base_url: String, token: String, client: reqwest::Client) -> Subscription<SseUpdate> {
     Subscription::run_with(
         SseState {
             base_url,
             token,
-            accept_invalid_certs,
-            custom_headers,
+            client,
         },
         |state: &SseState| {
             sse_stream(
                 state.base_url.clone(),
                 state.token.clone(),
-                state.accept_invalid_certs,
-                state.custom_headers.clone(),
+                state.client.clone(),
             )
         },
     )
@@ -96,19 +87,10 @@ pub fn sse(
 fn sse_stream(
     base_url: String,
     token: String,
-    accept_invalid_certs: bool,
-    custom_headers: HeaderMap,
+    client: reqwest::Client,
 ) -> impl futures_util::Stream<Item = SseUpdate> {
     async_stream::stream! {
         let url = format!("{base_url}/api/v1/events");
-        let client = reqwest::Client::builder()
-            .default_headers(custom_headers)
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .build()
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "SSE HTTP client build failed, using default");
-                reqwest::Client::new()
-            });
 
         loop {
             yield SseUpdate::Connecting;

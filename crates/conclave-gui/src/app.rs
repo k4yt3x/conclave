@@ -24,18 +24,13 @@ use crate::widget::Element;
 /// of `&self` so the future can be `Send`.
 pub(crate) struct ApiParams {
     pub(crate) server_url: String,
-    pub(crate) accept_invalid_certs: bool,
     pub(crate) token: String,
-    pub(crate) custom_headers: reqwest::header::HeaderMap,
+    pub(crate) http_client: reqwest::Client,
 }
 
 impl ApiParams {
     pub(crate) fn into_client(self) -> ApiClient {
-        let mut api = ApiClient::new(
-            &self.server_url,
-            self.accept_invalid_certs,
-            self.custom_headers,
-        );
+        let mut api = ApiClient::new(&self.server_url, self.http_client);
         api.set_token(self.token);
         api
     }
@@ -171,13 +166,8 @@ impl Conclave {
             session.username,
             session.user_id,
         ) {
-            let custom_headers =
-                conclave_client::api::parse_custom_headers(&app.config.custom_headers);
-            let mut api = ApiClient::new(
-                &server_url,
-                app.config.accept_invalid_certs,
-                custom_headers.clone(),
-            );
+            let http_client = app.build_http_client();
+            let mut api = ApiClient::new(&server_url, http_client.clone());
             api.set_token(token.clone());
             app.api = Some(api);
             app.server_url = Some(normalize_server_url(&server_url));
@@ -201,12 +191,11 @@ impl Conclave {
             ))];
 
             let data_dir = app.config.data_dir.clone();
-            let accept_invalid_certs = app.config.accept_invalid_certs;
             let server_url = app.server_url.clone().unwrap_or_default();
             let token_clone = token.clone();
             let keygen_task = Task::perform(
                 async move {
-                    let mut api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers);
+                    let mut api = ApiClient::new(&server_url, http_client);
                     api.set_token(token_clone);
                     operations::initialize_mls_and_upload_key_packages(&api, &data_dir, user_id)
                         .await
@@ -240,10 +229,18 @@ impl Conclave {
     pub(crate) fn api_params(&self) -> ApiParams {
         ApiParams {
             server_url: self.server_url.clone().unwrap_or_default(),
-            accept_invalid_certs: self.config.accept_invalid_certs,
             token: self.token.clone().unwrap_or_default(),
-            custom_headers: conclave_client::api::parse_custom_headers(&self.config.custom_headers),
+            http_client: self.build_http_client(),
         }
+    }
+
+    /// Build a [`reqwest::Client`] from the current configuration.
+    pub(crate) fn build_http_client(&self) -> reqwest::Client {
+        conclave_client::api::build_reqwest_client(
+            self.config.accept_invalid_certs,
+            conclave_client::api::parse_custom_headers(&self.config.custom_headers),
+            self.config.proxy_url.as_deref(),
+        )
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -533,8 +530,7 @@ impl Conclave {
                 subscription::sse(
                     self.server_url.clone().unwrap_or_default(),
                     token.clone(),
-                    self.config.accept_invalid_certs,
-                    conclave_client::api::parse_custom_headers(&self.config.custom_headers),
+                    self.build_http_client(),
                 )
                 .map(Message::SseEvent),
             );

@@ -12,6 +12,7 @@ use super::{Conclave, LoginInfo, Message};
 
 impl Conclave {
     pub(crate) fn handle_login_message(&mut self, msg: screen::login::Message) -> Task<Message> {
+        let http_client = self.build_http_client();
         let screen::Screen::Login(login) = &mut self.screen else {
             return Task::none();
         };
@@ -52,7 +53,6 @@ impl Conclave {
             }
             screen::login::Message::Submit => {
                 let server_url = login.server_url.clone();
-                let accept_invalid_certs = self.config.accept_invalid_certs;
                 let username = login.username.clone();
                 let password = login.password.clone();
                 let mode = login.mode.clone();
@@ -71,9 +71,6 @@ impl Conclave {
 
                 login.status = screen::login::Status::Loading;
 
-                let custom_headers =
-                    conclave_client::api::parse_custom_headers(&self.config.custom_headers);
-
                 match mode {
                     screen::login::Mode::Login => Task::perform(
                         async move {
@@ -81,8 +78,7 @@ impl Conclave {
                                 &server_url,
                                 &username,
                                 &password,
-                                accept_invalid_certs,
-                                custom_headers,
+                                http_client,
                                 &data_dir,
                             )
                             .await
@@ -110,8 +106,7 @@ impl Conclave {
                                     &username,
                                     &password,
                                     registration_token.as_deref(),
-                                    accept_invalid_certs,
-                                    custom_headers,
+                                    http_client,
                                     &data_dir,
                                 )
                                 .await
@@ -139,13 +134,7 @@ impl Conclave {
             Ok(info) => {
                 self.server_url = Some(normalize_server_url(&info.server_url));
 
-                let custom_headers =
-                    conclave_client::api::parse_custom_headers(&self.config.custom_headers);
-                let mut api = ApiClient::new(
-                    &info.server_url,
-                    self.config.accept_invalid_certs,
-                    custom_headers,
-                );
+                let mut api = ApiClient::new(&info.server_url, self.build_http_client());
                 api.set_token(info.token.clone());
                 self.api = Some(api);
                 self.username = Some(info.username.clone());

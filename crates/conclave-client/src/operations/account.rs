@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use reqwest::Client;
 use uuid::Uuid;
-
-use reqwest::header::HeaderMap;
 
 use crate::api::{ApiClient, normalize_server_url};
 use crate::config::{SessionState, generate_initial_key_packages};
@@ -24,12 +23,8 @@ pub struct AuthResult {
 
 impl AuthResult {
     /// Build an authenticated `ApiClient` from this result.
-    pub fn into_api_client(
-        &self,
-        accept_invalid_certs: bool,
-        custom_headers: HeaderMap,
-    ) -> ApiClient {
-        let mut api = ApiClient::new(&self.server_url, accept_invalid_certs, custom_headers);
+    pub fn into_api_client(&self, client: Client) -> ApiClient {
+        let mut api = ApiClient::new(&self.server_url, client);
         api.set_token(self.token.clone());
         api
     }
@@ -52,12 +47,11 @@ pub async fn register_and_login(
     username: &str,
     password: &str,
     registration_token: Option<&str>,
-    accept_invalid_certs: bool,
-    custom_headers: HeaderMap,
+    client: Client,
     data_dir: &Path,
 ) -> Result<AuthResult> {
     let server_url = normalize_server_url(server_url);
-    let api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers.clone());
+    let api = ApiClient::new(&server_url, client.clone());
 
     let register_response = api
         .register(username, password, None, registration_token)
@@ -71,7 +65,7 @@ pub async fn register_and_login(
         login_response.username
     };
 
-    let mut auth_api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers);
+    let mut auth_api = ApiClient::new(&server_url, client);
     auth_api.set_token(login_response.token.clone());
 
     let count = initialize_mls_and_upload_key_packages(&auth_api, data_dir, user_id).await?;
@@ -90,12 +84,11 @@ pub async fn login(
     server_url: &str,
     username: &str,
     password: &str,
-    accept_invalid_certs: bool,
-    custom_headers: HeaderMap,
+    client: Client,
     data_dir: &Path,
 ) -> Result<AuthResult> {
     let server_url = normalize_server_url(server_url);
-    let api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers.clone());
+    let api = ApiClient::new(&server_url, client.clone());
 
     let login_response = api.login(username, password).await?;
     let canonical_username = if login_response.username.is_empty() {
@@ -104,7 +97,7 @@ pub async fn login(
         login_response.username
     };
 
-    let mut auth_api = ApiClient::new(&server_url, accept_invalid_certs, custom_headers);
+    let mut auth_api = ApiClient::new(&server_url, client);
     auth_api.set_token(login_response.token.clone());
 
     let user_id = Uuid::from_slice(&login_response.user_id)?;

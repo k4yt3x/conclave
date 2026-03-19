@@ -40,6 +40,12 @@ pub struct ClientConfig {
     /// to prevent active probing of the Conclave server.
     #[serde(default)]
     pub custom_headers: HashMap<String, String>,
+
+    /// Proxy URL for all HTTP requests. Supports http://, https://,
+    /// socks5://, and socks5h:// schemes. When unset, reqwest's default
+    /// behavior applies (respects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY env vars).
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -74,6 +80,7 @@ impl Default for ClientConfig {
             accept_invalid_certs: false,
             show_verified_indicator: false,
             custom_headers: HashMap::new(),
+            proxy_url: None,
         }
     }
 }

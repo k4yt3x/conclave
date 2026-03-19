@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Custom HTTP headers support (`[custom_headers]` in client config) for reverse proxy authentication and anti-active-probing.
+- Proxy support (`proxy_url` in client config) for HTTP, HTTPS, SOCKS5, and SOCKS5h proxies.
 
 ### Changed
 

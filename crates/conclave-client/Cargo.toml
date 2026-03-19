@@ -23,7 +23,7 @@ mls-rs-core = "0.25"
 mls-rs-crypto-openssl = "0.19"
 mls-rs-provider-sqlite = { version = "0.21", features = ["sqlite-bundled"] }
 prost = { workspace = true }
-reqwest = { version = "0.12", features = ["http2"] }
+reqwest = { version = "0.12", features = ["http2", "socks"] }
 reqwest-eventsource = "0.6"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { workspace = true }

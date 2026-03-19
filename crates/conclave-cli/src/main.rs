@@ -173,6 +173,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Build a [`reqwest::Client`] from the client configuration.
+fn build_client(config: &ClientConfig) -> reqwest::Client {
+    let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
+    conclave_client::api::build_reqwest_client(
+        config.accept_invalid_certs,
+        custom_headers,
+        config.proxy_url.as_deref(),
+    )
+}
+
 fn api_from_session(
     session: &SessionState,
     config: &ClientConfig,
@@ -181,8 +191,7 @@ fn api_from_session(
         .server_url
         .as_ref()
         .ok_or_else(|| Error::Other("not logged in -- run login first".into()))?;
-    let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
-    let mut api = ApiClient::new(server_url, config.accept_invalid_certs, custom_headers);
+    let mut api = ApiClient::new(server_url, build_client(config));
     if let Some(token) = &session.token {
         api.set_token(token.clone());
     }
@@ -225,14 +234,12 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
-            let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
             let result = operations::register_and_login(
                 &server,
                 &username,
                 &password,
                 token.as_deref(),
-                config.accept_invalid_certs,
-                custom_headers,
+                build_client(config),
                 &config.data_dir,
             )
             .await?;
@@ -245,13 +252,11 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
             username,
             password,
         } => {
-            let custom_headers = conclave_client::api::parse_custom_headers(&config.custom_headers);
             let result = operations::login(
                 &server,
                 &username,
                 &password,
-                config.accept_invalid_certs,
-                custom_headers,
+                build_client(config),
                 &config.data_dir,
             )
             .await?;

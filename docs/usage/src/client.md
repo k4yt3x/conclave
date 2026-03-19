@@ -24,6 +24,7 @@ Running `conclave-cli` with no subcommand launches the interactive TUI. Running 
 | `accept_invalid_certs` | boolean | `false` | Accept invalid TLS certificates (e.g., self-signed). Only enable for development or when using Caddy's internal CA. |
 | `show_verified_indicator` | boolean | `false` | Show verification indicators next to verified users and fully-verified rooms. When `false`, only unverified `[?]` and changed `[!]` indicators are shown. |
 | `notifications` | string | `"Native"` | TUI-only. Notification method for new messages: `"Native"`, `"Bell"`, `"Both"`, or `"None"`. |
+| `proxy_url` | string | _(unset)_ | Proxy URL for all HTTP traffic. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes. When unset, standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) are respected. |
 
 ## Custom Headers
 
@@ -73,6 +74,12 @@ Available presets: `conclave`, `ferra`, `greyscale`, `navy`.
 # TUI-only: notification method for new messages.
 # Possible values: "Native" (default), "Bell", "Both", "None".
 #notifications = "Native"
+
+# Proxy URL for all HTTP traffic.
+# Supports http://, https://, socks5://, and socks5h:// schemes.
+# When unset, standard proxy env vars (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY)
+# are respected.
+#proxy_url = "socks5://127.0.0.1:1080"
 
 # Arbitrary HTTP headers sent with every request. Useful for authenticating
 # with a reverse proxy to prevent active probing of the Conclave server.

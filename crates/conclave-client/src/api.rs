@@ -43,17 +43,34 @@ pub fn parse_custom_headers(headers: &HashMap<String, String>) -> HeaderMap {
     header_map
 }
 
-impl ApiClient {
-    pub fn new(base_url: &str, accept_invalid_certs: bool, custom_headers: HeaderMap) -> Self {
-        let client = Client::builder()
-            .default_headers(custom_headers)
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .build()
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "HTTP client build failed, using default");
-                Client::new()
-            });
+/// Build a [`reqwest::Client`] with the given settings.
+///
+/// Applies custom headers, TLS certificate validation, and proxy configuration.
+/// Used by both [`ApiClient`] and the GUI SSE subscription.
+pub fn build_reqwest_client(
+    accept_invalid_certs: bool,
+    custom_headers: HeaderMap,
+    proxy_url: Option<&str>,
+) -> Client {
+    let mut builder = Client::builder()
+        .default_headers(custom_headers)
+        .danger_accept_invalid_certs(accept_invalid_certs);
 
+    if let Some(url) = proxy_url {
+        match reqwest::Proxy::all(url) {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(error) => tracing::warn!(%error, proxy_url = url, "invalid proxy URL, ignoring"),
+        }
+    }
+
+    builder.build().unwrap_or_else(|error| {
+        tracing::warn!(%error, "HTTP client build failed, using default");
+        Client::new()
+    })
+}
+
+impl ApiClient {
+    pub fn new(base_url: &str, client: Client) -> Self {
         Self {
             client,
             base_url: normalize_server_url(base_url),
