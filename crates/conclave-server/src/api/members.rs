@@ -25,9 +25,7 @@ pub async fn invite_to_group(
     }
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can invite members".into(),
-        ));
+        return Err(Error::not_admin("only group admins can invite members"));
     }
 
     let mut member_key_packages = Vec::new();
@@ -36,23 +34,22 @@ pub async fn invite_to_group(
         state
             .db
             .get_user_by_id(member_id)?
-            .ok_or_else(|| Error::NotFound(format!("user with ID {member_id} not found")))?;
+            .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
         if member_id == auth.user_id {
             continue;
         }
 
         if state.db.is_group_member(group_id, member_id)? {
-            return Err(Error::Conflict(format!(
-                "user with ID {member_id} is already a member of this group"
-            )));
+            return Err(Error::Conflict(
+                "user is already a member of this group".into(),
+            ));
         }
 
-        let key_package_data = state.db.consume_key_package(member_id)?.ok_or_else(|| {
-            Error::NotFound(format!(
-                "no key package available for user with ID {member_id}"
-            ))
-        })?;
+        let key_package_data = state
+            .db
+            .consume_key_package(member_id)?
+            .ok_or_else(|| Error::NotFound("no key package available for this user".into()))?;
 
         member_key_packages.push(conclave_proto::MemberKeyPackage {
             user_id: member_id.as_bytes().to_vec(),
@@ -77,21 +74,19 @@ pub async fn remove_group_member(
     let request = decode_proto::<conclave_proto::RemoveMemberRequest>(&body)?;
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can remove members".into(),
-        ));
+        return Err(Error::not_admin("only group admins can remove members"));
     }
 
     let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
-        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if !state.db.is_group_member(group_id, target_user_id)? {
-        return Err(Error::BadRequest(format!(
-            "user with ID {target_user_id} is not a member of this group"
-        )));
+        return Err(Error::BadRequest(
+            "user is not a member of this group".into(),
+        ));
     }
 
     if !request.group_info.is_empty() {
@@ -138,7 +133,7 @@ pub async fn leave_group(
     let request = decode_proto::<conclave_proto::LeaveGroupRequest>(&body)?;
 
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     if !request.group_info.is_empty() {
@@ -185,27 +180,23 @@ pub async fn promote_member(
     let request = decode_proto::<conclave_proto::PromoteMemberRequest>(&body)?;
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can promote members".into(),
-        ));
+        return Err(Error::not_admin("only group admins can promote members"));
     }
 
     let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
-        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if !state.db.is_group_member(group_id, target_user_id)? {
-        return Err(Error::BadRequest(format!(
-            "user with ID {target_user_id} is not a member of this group"
-        )));
+        return Err(Error::BadRequest(
+            "user is not a member of this group".into(),
+        ));
     }
 
     if state.db.is_group_admin(group_id, target_user_id)? {
-        return Err(Error::Conflict(format!(
-            "user with ID {target_user_id} is already an admin"
-        )));
+        return Err(Error::Conflict("user is already an admin".into()));
     }
 
     state.db.promote_member(group_id, target_user_id)?;
@@ -235,21 +226,17 @@ pub async fn demote_member(
     let request = decode_proto::<conclave_proto::DemoteMemberRequest>(&body)?;
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can demote members".into(),
-        ));
+        return Err(Error::not_admin("only group admins can demote members"));
     }
 
     let target_user_id = parse_uuid(&request.user_id, "user_id")?;
     state
         .db
         .get_user_by_id(target_user_id)?
-        .ok_or_else(|| Error::NotFound(format!("user with ID {target_user_id} not found")))?;
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if !state.db.is_group_admin(group_id, target_user_id)? {
-        return Err(Error::BadRequest(format!(
-            "user with ID {target_user_id} is not an admin"
-        )));
+        return Err(Error::BadRequest("user is not an admin".into()));
     }
 
     let admin_count = state.db.count_group_admins(group_id)?;
@@ -281,7 +268,7 @@ pub async fn list_admins(
     Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     let admins = state.db.get_group_admins(group_id)?;

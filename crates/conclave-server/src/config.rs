@@ -16,11 +16,11 @@ pub struct ServerConfig {
     #[serde(default = "default_db_path")]
     pub database_path: PathBuf,
 
-    /// Session token lifetime in seconds (default: 604800 = 7 days).
+    /// Session token lifetime in seconds (default: 2592000 = 30 days).
     #[serde(default = "default_token_ttl")]
     pub token_ttl_seconds: i64,
 
-    /// Pending invite expiration in seconds (default: 604800 = 7 days).
+    /// Pending invite expiration in seconds (default: 2592000 = 30 days).
     #[serde(default = "default_invite_ttl")]
     pub invite_ttl_seconds: i64,
 

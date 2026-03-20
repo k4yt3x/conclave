@@ -153,14 +153,16 @@ impl ApiClient {
         let body = response.bytes().await?;
 
         if !status.is_success() {
-            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
-                err.message
-            } else {
-                String::from_utf8_lossy(&body).to_string()
-            };
+            let (error_msg, error_code) =
+                if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                    (err.message, err.error_code)
+                } else {
+                    (String::from_utf8_lossy(&body).to_string(), 0)
+                };
             return Err(Error::Server {
                 status: status.as_u16(),
                 message: error_msg,
+                error_code,
             });
         }
 
@@ -210,14 +212,16 @@ impl ApiClient {
         let response = request.send().await?;
         if !response.status().is_success() {
             let body = response.bytes().await?;
-            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
-                err.message
-            } else {
-                String::from_utf8_lossy(&body).to_string()
-            };
+            let (error_msg, error_code) =
+                if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                    (err.message, err.error_code)
+                } else {
+                    (String::from_utf8_lossy(&body).to_string(), 0)
+                };
             return Err(Error::Server {
                 status: 500,
                 message: error_msg,
+                error_code,
             });
         }
         Ok(())
@@ -425,14 +429,16 @@ impl ApiClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.bytes().await?;
-            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
-                err.message
-            } else {
-                String::from_utf8_lossy(&body).to_string()
-            };
+            let (error_msg, error_code) =
+                if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                    (err.message, err.error_code)
+                } else {
+                    (String::from_utf8_lossy(&body).to_string(), 0)
+                };
             return Err(Error::Server {
                 status: status.as_u16(),
                 message: error_msg,
+                error_code,
             });
         }
         Ok(())
@@ -639,14 +645,16 @@ impl ApiClient {
         let response = request.send().await?;
         if !response.status().is_success() {
             let body = response.bytes().await?;
-            let error_msg = if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
-                err.message
-            } else {
-                String::from_utf8_lossy(&body).to_string()
-            };
+            let (error_msg, error_code) =
+                if let Ok(err) = conclave_proto::ErrorResponse::decode(body.as_ref()) {
+                    (err.message, err.error_code)
+                } else {
+                    (String::from_utf8_lossy(&body).to_string(), 0)
+                };
             return Err(Error::Server {
                 status: 500,
                 message: error_msg,
+                error_code,
             });
         }
         Ok(())

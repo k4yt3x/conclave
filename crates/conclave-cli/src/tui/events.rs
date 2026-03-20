@@ -269,7 +269,10 @@ async fn handle_welcome(
         for result in &results {
             let max_seq = match api.lock().await.get_messages(result.group_id, 0).await {
                 Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                Err(_) => 0,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to fetch message sequence");
+                    0
+                }
             };
             if let Some(room) = state.rooms.get_mut(&result.group_id) {
                 room.last_seen_seq = room.last_seen_seq.max(max_seq);

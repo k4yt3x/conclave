@@ -18,8 +18,12 @@ pub enum Error {
     #[error("protobuf decode error: {0}")]
     ProtobufDecode(#[from] prost::DecodeError),
 
-    #[error("server error ({status}): {message}")]
-    Server { status: u16, message: String },
+    #[error("server error ({status}/{error_code}): {message}")]
+    Server {
+        status: u16,
+        message: String,
+        error_code: i32,
+    },
 
     #[error("MLS error: {0}")]
     Mls(String),
@@ -44,6 +48,17 @@ impl Error {
     /// Check if this error represents an HTTP 401 Unauthorized response.
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Error::Server { status: 401, .. })
+    }
+
+    /// Check if this error indicates the session token is invalid or expired.
+    /// Returns false for auth configuration errors (wrong header name, missing
+    /// Bearer prefix) which are also 401 but not session issues.
+    pub fn is_session_expired(&self) -> bool {
+        matches!(
+            self,
+            Error::Server { error_code, .. }
+                if *error_code == conclave_proto::ErrorCode::ErrAuthTokenExpired as i32
+        )
     }
 }
 

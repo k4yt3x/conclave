@@ -12,8 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable `auth_header` setting for server and client config.
 - Custom HTTP headers support (`[custom_headers]`) in client config.
 - Proxy support (`proxy_url`) for HTTP, HTTPS, SOCKS5, and SOCKS5h.
+- Machine-readable `ErrorCode` enum in `ErrorResponse` protobuf messages.
 
 ### Fixed
+
+- Session reconnect validates the token before showing "Welcome back".
+- Auth header misconfiguration no longer triggers auto-logout.
+- TUI auto-logout now deletes the stale session file.
 
 - Atomic file permissions on Unix for session and group mapping files.
 - Proper error propagation for system clock errors in session expiry.

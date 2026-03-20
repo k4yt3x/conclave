@@ -83,12 +83,12 @@ pub async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<im
             if let Err(error) = auth::verify_password("dummy", auth::dummy_hash()) {
                 tracing::warn!(%error, "timing equalization hash verification failed");
             }
-            return Err(Error::Unauthorized("invalid username or password".into()));
+            return Err(Error::token_expired("invalid username or password"));
         }
     };
 
     if !auth::verify_password(&request.password, &user_record.password_hash)? {
-        return Err(Error::Unauthorized("invalid username or password".into()));
+        return Err(Error::token_expired("invalid username or password"));
     }
 
     let token = auth::generate_token();
@@ -224,7 +224,7 @@ pub async fn change_password(
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if !auth::verify_password(&request.current_password, &password_hash)? {
-        return Err(Error::Unauthorized("invalid password".into()));
+        return Err(Error::token_expired("invalid password"));
     }
 
     validate_password(&request.new_password)?;
@@ -254,7 +254,7 @@ pub async fn delete_account(
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if !auth::verify_password(&request.password, &password_hash)? {
-        return Err(Error::Unauthorized("invalid password".into()));
+        return Err(Error::token_expired("invalid password"));
     }
 
     // Collect group memberships and their members for SSE before deletion.

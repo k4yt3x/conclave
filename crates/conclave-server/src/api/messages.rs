@@ -21,7 +21,7 @@ pub async fn upload_commit(
     let request = decode_proto::<conclave_proto::UploadCommitRequest>(&body)?;
 
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     state.db.process_commit(
@@ -62,7 +62,7 @@ pub async fn send_message(
     let request = decode_proto::<conclave_proto::SendMessageRequest>(&body)?;
 
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     let sequence_num = state
@@ -115,7 +115,7 @@ pub async fn get_messages(
     Query(query): Query<GetMessagesQuery>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     let limit = query.limit.min(500);

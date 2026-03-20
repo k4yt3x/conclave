@@ -28,6 +28,9 @@ impl Conclave {
                 self.load_rooms_task()
             }
             Err(e) => {
+                if let Some(task) = self.check_session_expired(&e) {
+                    return task;
+                }
                 self.push_system_message(&format!("Failed to create group: {e}"));
                 Task::none()
             }
@@ -147,7 +150,7 @@ impl Conclave {
                 }
             }
             Err(e) => {
-                if let Some(task) = self.check_unauthorized(&e) {
+                if let Some(task) = self.check_session_expired(&e) {
                     return task;
                 }
                 self.push_system_message(&format!("Failed to load rooms: {e}"));
@@ -155,11 +158,26 @@ impl Conclave {
             }
         }
 
-        // On the very first load (startup catch-up), fetch missed messages
-        // for all rooms. Subsequent calls (from /rooms, invite, kick, etc.)
-        // skip this since SSE is already connected and last_seen_seq is
-        // up to date.
+        // On the very first load during a reconnect, replace the
+        // "Reconnecting..." placeholder with the welcome message.
+        // Fresh logins already have their own "Logged in as..." message
+        // and won't have a "Reconnecting..." placeholder to replace.
         let was_loaded = self.rooms_loaded;
+        if !was_loaded {
+            let is_reconnect = self
+                .system_messages
+                .iter()
+                .any(|m| m.content == "Reconnecting...");
+            self.system_messages
+                .retain(|m| m.content != "Reconnecting...");
+            if is_reconnect {
+                if let Some(username) = &self.username {
+                    self.push_system_message(&format!(
+                        "Welcome back, {username}. Type /help for commands."
+                    ));
+                }
+            }
+        }
         self.rooms_loaded = true;
 
         // On first load, detect groups with no local MLS state (stale after data loss).
@@ -270,7 +288,7 @@ impl Conclave {
             }
             Err((group_id, error)) => {
                 self.fetching_groups.remove(&group_id);
-                if let Some(task) = self.check_unauthorized(&error) {
+                if let Some(task) = self.check_session_expired(&error) {
                     return task;
                 }
                 self.push_system_message(&format!("Failed to fetch messages: {error}"));
@@ -312,7 +330,7 @@ impl Conclave {
                 }
             }
             Err(e) => {
-                if let Some(task) = self.check_unauthorized(&e) {
+                if let Some(task) = self.check_session_expired(&e) {
                     return task;
                 }
                 self.push_system_message(&format!("Failed to send message: {e}"));
@@ -351,6 +369,9 @@ impl Conclave {
                 self.load_rooms_task()
             }
             Err(e) => {
+                if let Some(task) = self.check_session_expired(&e) {
+                    return task;
+                }
                 self.push_system_message(&format!("Failed to process welcomes: {e}"));
 
                 // Even on error, the initial fetch should proceed so
@@ -393,6 +414,9 @@ impl Conclave {
                 self.load_rooms_task()
             }
             Err(error) => {
+                if let Some(task) = self.check_session_expired(&error) {
+                    return task;
+                }
                 self.push_system_message(&format!("Reset failed: {error}"));
                 Task::none()
             }

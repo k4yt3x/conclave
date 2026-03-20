@@ -60,11 +60,42 @@ All error responses use the `ErrorResponse` protobuf message:
 
 ```protobuf
 message ErrorResponse {
-  string message = 1;  // Human-readable error description
+  string message = 1;     // Human-readable error description
+  ErrorCode error_code = 2; // Machine-readable error code
 }
 ```
 
 The `message` field contains a description suitable for displaying to the user or logging. The server MUST NOT include internal implementation details (stack traces, database errors, file paths) in error messages.
+
+The `error_code` field contains a machine-readable `ErrorCode` enum value that clients use to distinguish error causes programmatically. Clients MUST NOT rely on the `message` text for control flow — use `error_code` instead.
+
+### Error Codes
+
+Error codes use range-based numbering grouped by category. Within each category, codes are ordered by when a user would encounter them (earliest/most common first).
+
+| Range | Category | Prefix |
+|-------|----------|--------|
+| 0 | Unspecified / internal | `ERR_UNSPECIFIED` |
+| 100–199 | Input / validation | `ERR_INPUT_` |
+| 200–299 | Authentication | `ERR_AUTH_` |
+| 300–399 | Resource | `ERR_RESOURCE_` |
+| 400–499 | Group operations | `ERR_GROUP_` |
+
+| Code | Name | HTTP Status | Description |
+|------|------|-------------|-------------|
+| 0 | `ERR_UNSPECIFIED` | 500 | Internal server error (details hidden) |
+| 100 | `ERR_INPUT_BAD_REQUEST` | 400 | Malformed request or invalid parameters |
+| 101 | `ERR_INPUT_VALIDATION` | 400 | Input validation failure (e.g., password too short) |
+| 200 | `ERR_AUTH_HEADER_MISSING` | 401 | Required auth header not present in request |
+| 201 | `ERR_AUTH_HEADER_INVALID` | 401 | Auth header present but format is wrong (e.g., missing Bearer prefix) |
+| 202 | `ERR_AUTH_TOKEN_EXPIRED` | 401 | Token not recognized or expired |
+| 300 | `ERR_RESOURCE_NOT_FOUND` | 404 | Requested resource does not exist |
+| 301 | `ERR_RESOURCE_CONFLICT` | 409 | Resource already exists or state conflict |
+| 302 | `ERR_RESOURCE_FORBIDDEN` | 403 | Access denied (e.g., registration disabled) |
+| 400 | `ERR_GROUP_NOT_MEMBER` | 401 | User is not a member of the group |
+| 401 | `ERR_GROUP_NOT_ADMIN` | 401 | Operation requires group admin role |
+
+Clients SHOULD auto-logout only on `ERR_AUTH_TOKEN_EXPIRED` (code 202). Auth header errors (200, 201) indicate a configuration mismatch that won't be resolved by re-logging in.
 
 ## Empty Response Bodies
 

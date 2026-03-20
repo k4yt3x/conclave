@@ -6241,6 +6241,8 @@ async fn test_delete_group_not_found() {
     register_user(&app, "alice", "password123").await;
     let token = login_user(&app, "alice", "password123").await;
 
+    // Non-existent groups return 401 (same as non-admin) to avoid
+    // leaking group existence information.
     let request = Request::builder()
         .method("POST")
         .uri("/api/v1/groups/00000000-0000-0000-0000-000000099999/delete")
@@ -6250,5 +6252,5 @@ async fn test_delete_group_not_found() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

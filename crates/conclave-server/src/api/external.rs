@@ -20,14 +20,10 @@ pub async fn external_join(
 ) -> Result<impl IntoResponse> {
     let request = decode_proto::<conclave_proto::ExternalJoinRequest>(&body)?;
 
-    if !state.db.group_exists(group_id)? {
-        return Err(Error::NotFound("group not found".into()));
-    }
-
     // Only existing members (e.g., after an account reset that preserves
     // server-side memberships) may rejoin via external commit.
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     if state.db.get_group_info(group_id)?.is_none() {

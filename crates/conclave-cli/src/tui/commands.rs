@@ -258,7 +258,10 @@ async fn execute_room(
                 {
                     let max_seq = match api.lock().await.get_messages(*group_id, 0).await {
                         Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                        Err(_) => 0,
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to fetch message sequence");
+                            0
+                        }
                     };
                     room.last_seen_seq = max_seq;
                 }
@@ -932,7 +935,10 @@ async fn execute_invite(
                 {
                     let max_seq = match api.lock().await.get_messages(*group_id, 0).await {
                         Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
-                        Err(_) => 0,
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to fetch message sequence");
+                            0
+                        }
                     };
                     room.last_seen_seq = max_seq;
                 }

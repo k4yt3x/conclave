@@ -69,9 +69,33 @@ pub async fn run(
         api.lock().await.set_token(token.clone());
         state.username = session.username.clone();
         state.user_id = session.user_id;
-        state.logged_in = true;
 
-        if let Some(user_id) = session.user_id {
+        // Validate the session before proceeding with post-login operations.
+        let session_valid = match api.lock().await.me().await {
+            Ok(_) => true,
+            Err(ref e) if e.is_session_expired() => {
+                remove_session_file(&config.data_dir);
+                false
+            }
+            Err(e) => {
+                state
+                    .system_messages
+                    .push(DisplayMessage::system(&format!("Failed to reconnect: {e}")));
+                false
+            }
+        };
+
+        if !session_valid {
+            api.lock().await.set_token(String::new());
+            state.username = None;
+            state.user_id = None;
+        }
+
+        if session_valid {
+            state.logged_in = true;
+        }
+
+        if let Some(user_id) = session.user_id.filter(|_| session_valid) {
             mls =
                 Some(MlsManager::new(&config.data_dir, user_id).map_err(crate::error::Error::Lib)?);
 
@@ -171,7 +195,7 @@ pub async fn run(
         state.push_system_message(DisplayMessage::system(&format!(
             "Welcome back, {username}. Type /help for commands."
         )));
-    } else {
+    } else if state.system_messages.is_empty() {
         state.push_system_message(DisplayMessage::system(
             "Welcome to Conclave. Use /register and /login to get started. Type /help for commands.",
         ));
@@ -358,7 +382,7 @@ async fn main_loop(
                     Err(error) => {
                         if is_sse_unauthorized(&error) {
                             auto_logout(
-                                stdout, state, input, api, sse_source, msg_store, notifications,
+                                stdout, state, input, api, sse_source, msg_store, notifications, &config.data_dir,
                             ).await;
                         } else {
                             state.connection_status = ConnectionStatus::Disconnected;
@@ -682,7 +706,7 @@ async fn handle_enter(
                     }
                 }
                 Err(e) => {
-                    if e.is_unauthorized() {
+                    if e.is_session_expired() {
                         auto_logout(
                             stdout,
                             state,
@@ -691,6 +715,7 @@ async fn handle_enter(
                             sse_source,
                             msg_store,
                             notifications,
+                            &config.data_dir,
                         )
                         .await;
                     } else {
@@ -1003,8 +1028,8 @@ async fn handle_password_enter(
     Ok(LoopAction::Continue)
 }
 
-/// Perform auto-logout: clear auth state and stop SSE reconnection.
-/// Used when the server returns 401 (expired/invalidated token).
+/// Perform auto-logout: clear auth state, stop SSE, and delete the session file.
+/// Used when the server returns 401 with an expired/invalidated token.
 async fn auto_logout(
     stdout: &mut impl Write,
     state: &mut AppState,
@@ -1013,6 +1038,7 @@ async fn auto_logout(
     sse_source: &mut Option<EventSource>,
     msg_store: &Option<MessageStore>,
     notifications: &NotificationMethod,
+    data_dir: &std::path::Path,
 ) {
     api.lock().await.set_token(String::new());
     state.logged_in = false;
@@ -1020,10 +1046,20 @@ async fn auto_logout(
     state.user_id = None;
     state.connection_status = ConnectionStatus::Disconnected;
     *sse_source = None;
+    remove_session_file(data_dir);
 
     let msg = DisplayMessage::system("Session expired. Please log in again.");
     add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
     let _ = render::render_full(stdout, state, input);
+}
+
+fn remove_session_file(data_dir: &std::path::Path) {
+    let session_path = data_dir.join("session.toml");
+    if let Err(error) = std::fs::remove_file(&session_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, "failed to remove session file");
+        }
+    }
 }
 
 /// Check if an SSE error represents an HTTP 401 Unauthorized response.

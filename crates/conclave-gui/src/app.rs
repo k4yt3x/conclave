@@ -76,12 +76,12 @@ pub enum Message {
     // Authentication results
     LoginResult(Result<LoginInfo, String>),
     RegisterResult(Result<LoginInfo, String>),
+    SessionValidated(Result<(), String>),
 
     // Room / message async results
     RoomsLoaded(Result<Vec<operations::RoomInfo>, String>),
     MessageSent(Result<(operations::MessageSentResult, String), String>),
     MessagesFetched(Result<operations::FetchedMessages, (Uuid, String)>),
-    KeyPackageUploaded(Result<(), String>),
     WelcomesProcessed(Result<Vec<operations::WelcomeJoinResult>, String>),
 
     // SSE
@@ -189,36 +189,29 @@ impl Conclave {
                 app.msg_store = Some(store);
             }
 
-            // Transition to dashboard
+            // Transition to dashboard with a validation-first reconnect flow.
+            // Validate the session before launching post-login operations.
             app.screen = screen::Screen::Dashboard(screen::Dashboard::new());
-            app.system_messages = vec![DisplayMessage::system(&format!(
-                "Welcome back, {username}. Type /help for commands."
-            ))];
+            app.system_messages = vec![DisplayMessage::system("Reconnecting...")];
 
             let data_dir = app.config.data_dir.clone();
             let server_url = app.server_url.clone().unwrap_or_default();
             let token_clone = token.clone();
             let auth_header_clone = app.config.auth_header.clone();
-            let keygen_task = Task::perform(
+            let validation_task = Task::perform(
                 async move {
                     let mut api = ApiClient::new(&server_url, http_client, auth_header_clone);
                     api.set_token(token_clone);
+                    api.me().await.map_err(|e| e.to_string())?;
                     operations::initialize_mls_and_upload_key_packages(&api, &data_dir, user_id)
                         .await
-                        .map_err(|e| e.to_string())
-                        .map(|_| ())
+                        .map_err(|e| e.to_string())?;
+                    Ok(())
                 },
-                Message::KeyPackageUploaded,
+                Message::SessionValidated,
             );
 
-            let rooms_task = app.load_rooms_task();
-            let welcome_task = app.accept_welcomes();
-            let alias_task = app.fetch_user_alias();
-
-            return (
-                app,
-                Task::batch([keygen_task, rooms_task, welcome_task, alias_task]),
-            );
+            return (app, validation_task);
         }
 
         (app, Task::none())
@@ -261,20 +254,28 @@ impl Conclave {
             // Authentication results
             Message::LoginResult(result) => self.handle_login_result(result),
             Message::RegisterResult(result) => self.handle_register_result(result),
+            Message::SessionValidated(result) => match result {
+                Ok(()) => {
+                    let rooms_task = self.load_rooms_task();
+                    let welcome_task = self.accept_welcomes();
+                    let alias_task = self.fetch_user_alias();
+                    return Task::batch([rooms_task, welcome_task, alias_task]);
+                }
+                Err(e) => {
+                    if let Some(task) = self.check_session_expired(&e) {
+                        return task;
+                    }
+                    self.system_messages
+                        .retain(|m| m.content != "Reconnecting...");
+                    self.push_system_message(&format!("Failed to reconnect: {e}"));
+                    return Task::none();
+                }
+            },
 
             // Room / message async results
             Message::RoomsLoaded(result) => self.handle_rooms_loaded(result),
             Message::MessageSent(result) => self.handle_message_sent(result),
             Message::MessagesFetched(result) => self.handle_messages_fetched(result),
-            Message::KeyPackageUploaded(result) => {
-                if let Err(e) = result {
-                    if let Some(task) = self.check_unauthorized(&e) {
-                        return task;
-                    }
-                    self.push_system_message(&format!("Key package upload failed: {e}"));
-                }
-                Task::none()
-            }
             Message::WelcomesProcessed(result) => self.handle_welcomes_processed(result),
 
             // SSE
@@ -289,7 +290,7 @@ impl Conclave {
                         }
                     }
                     Err(e) => {
-                        if let Some(task) = self.check_unauthorized(&e) {
+                        if let Some(task) = self.check_session_expired(&e) {
                             return task;
                         }
                         self.push_system_message(&format!("Error: {e}"));
@@ -306,7 +307,7 @@ impl Conclave {
                         }
                     }
                     Err(e) => {
-                        if let Some(task) = self.check_unauthorized(&e) {
+                        if let Some(task) = self.check_session_expired(&e) {
                             return task;
                         }
                         self.push_system_message(&format!("Error: {e}"));
@@ -315,12 +316,19 @@ impl Conclave {
                 self.load_rooms_task()
             }
             Message::ResetComplete(result) => self.handle_reset_complete(result),
-            Message::UserAliasLoaded(result) => {
-                if let Ok(alias) = result {
+            Message::UserAliasLoaded(result) => match result {
+                Ok(alias) => {
                     self.user_alias = alias;
+                    Task::none()
                 }
-                Task::none()
-            }
+                Err(e) => {
+                    if let Some(task) = self.check_session_expired(&e) {
+                        return task;
+                    }
+                    tracing::warn!(error = %e, "failed to load user alias");
+                    Task::none()
+                }
+            },
             Message::NickResult(result) => match result {
                 Ok(alias) => {
                     self.user_alias = Some(alias.clone());
@@ -328,6 +336,9 @@ impl Conclave {
                     Task::none()
                 }
                 Err(e) => {
+                    if let Some(task) = self.check_session_expired(&e) {
+                        return task;
+                    }
                     self.push_system_message(&format!("Failed to set alias: {e}"));
                     Task::none()
                 }
@@ -341,6 +352,9 @@ impl Conclave {
                     logout_task
                 }
                 Err(e) => {
+                    if let Some(task) = self.check_session_expired(&e) {
+                        return task;
+                    }
                     self.push_system_message(&format!("Failed to delete account: {e}"));
                     Task::none()
                 }
@@ -553,12 +567,16 @@ impl Conclave {
         Subscription::batch(subs)
     }
 
-    /// Check if an error string indicates a 401 Unauthorized response.
-    /// If so, perform auto-logout and return the logout task.
-    fn check_unauthorized(&mut self, error: &str) -> Option<Task<Message>> {
-        if error.contains("server error (401)") {
+    /// Check if an error string indicates a session expiry (token expired/invalid).
+    /// If so, perform auto-logout and return the logout task. Only triggers on
+    /// actual token expiry, not on auth configuration errors (wrong header, etc.).
+    fn check_session_expired(&mut self, error: &str) -> Option<Task<Message>> {
+        if error.contains("server error (401/202):") {
             let task = self.perform_logout();
-            self.push_system_message("Session expired. Please log in again.");
+            if let screen::Screen::Login(login) = &mut self.screen {
+                login.status =
+                    screen::login::Status::Error("Session expired. Please log in again.".into());
+            }
             Some(task)
         } else {
             None

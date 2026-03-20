@@ -76,13 +76,19 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             .get(&header_name)
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| {
-                Error::Unauthorized(format!("missing {} header", state.config.auth_header))
+                Error::auth_misconfigured(
+                    format!("missing {} header", state.config.auth_header),
+                    conclave_proto::ErrorCode::ErrAuthHeaderMissing,
+                )
             })?;
 
         let token = if state.config.uses_standard_auth_header() {
-            header_value
-                .strip_prefix("Bearer ")
-                .ok_or_else(|| Error::Unauthorized("invalid Authorization header format".into()))?
+            header_value.strip_prefix("Bearer ").ok_or_else(|| {
+                Error::auth_misconfigured(
+                    "invalid Authorization header format",
+                    conclave_proto::ErrorCode::ErrAuthHeaderInvalid,
+                )
+            })?
         } else {
             header_value
         };
@@ -90,7 +96,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         let user_id = state
             .db
             .validate_session(token)?
-            .ok_or_else(|| Error::Unauthorized("invalid or expired token".into()))?;
+            .ok_or_else(|| Error::token_expired("invalid or expired token"))?;
 
         let new_expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)

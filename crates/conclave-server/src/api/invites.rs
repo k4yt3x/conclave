@@ -36,20 +36,18 @@ pub async fn escrow_invite(
     }
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can invite members".into(),
-        ));
+        return Err(Error::not_admin("only group admins can invite members"));
     }
 
     state
         .db
         .get_user_by_id(invitee_id)?
-        .ok_or_else(|| Error::NotFound(format!("user with ID {invitee_id} not found")))?;
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
 
     if state.db.is_group_member(group_id, invitee_id)? {
-        return Err(Error::Conflict(format!(
-            "user with ID {invitee_id} is already a member of this group"
-        )));
+        return Err(Error::Conflict(
+            "user is already a member of this group".into(),
+        ));
     }
 
     let invite_id = state.db.create_pending_invite(
@@ -131,9 +129,7 @@ pub async fn accept_invite(
         .ok_or_else(|| Error::NotFound("invite not found".into()))?;
 
     if invite.invitee_id != auth.user_id {
-        return Err(Error::Unauthorized(
-            "this invite does not belong to you".into(),
-        ));
+        return Err(Error::not_member("this invite does not belong to you"));
     }
 
     let result = state.db.accept_pending_invite(invite_id)?;
@@ -175,8 +171,8 @@ pub async fn list_group_pending_invites(
     Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can list pending invites".into(),
+        return Err(Error::not_admin(
+            "only group admins can list pending invites",
         ));
     }
 
@@ -219,9 +215,7 @@ pub async fn cancel_invite(
     let request = decode_proto::<conclave_proto::CancelInviteRequest>(&body)?;
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can cancel invites".into(),
-        ));
+        return Err(Error::not_admin("only group admins can cancel invites"));
     }
 
     let invitee_id = parse_uuid(&request.invitee_id, "invitee_id")?;
@@ -278,9 +272,7 @@ pub async fn decline_invite(
         .ok_or_else(|| Error::NotFound("invite not found".into()))?;
 
     if invite.invitee_id != auth.user_id {
-        return Err(Error::Unauthorized(
-            "this invite does not belong to you".into(),
-        ));
+        return Err(Error::not_member("this invite does not belong to you"));
     }
 
     state.db.delete_pending_invite(invite_id)?;

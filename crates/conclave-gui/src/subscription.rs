@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use iced::Subscription;
+use prost::Message;
 use reqwest_eventsource::{Event as EsEvent, EventSource};
 use uuid::Uuid;
 
@@ -133,14 +134,28 @@ fn sse_stream(
                             yield update;
                         }
                     }
-                    Err(ref error) => {
-                        if matches!(
-                            error,
-                            reqwest_eventsource::Error::InvalidStatusCode(status, _)
-                                if *status == reqwest::StatusCode::UNAUTHORIZED
-                        ) {
-                            yield SseUpdate::Unauthorized;
-                            return;
+                    Err(error) => {
+                        if let reqwest_eventsource::Error::InvalidStatusCode(
+                            status, response,
+                        ) = error
+                        {
+                            if status == reqwest::StatusCode::UNAUTHORIZED {
+                                let is_token_expired = response
+                                    .bytes()
+                                    .await
+                                    .ok()
+                                    .and_then(|body| {
+                                        conclave_proto::ErrorResponse::decode(body.as_ref()).ok()
+                                    })
+                                    .is_some_and(|err| {
+                                        err.error_code
+                                            == conclave_proto::ErrorCode::ErrAuthTokenExpired as i32
+                                    });
+                                if is_token_expired {
+                                    yield SseUpdate::Unauthorized;
+                                    return;
+                                }
+                            }
                         }
                         yield SseUpdate::Disconnected;
                         break;

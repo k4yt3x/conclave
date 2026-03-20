@@ -173,8 +173,8 @@ impl Conclave {
 
                 self.screen = screen::Screen::Dashboard(screen::Dashboard::new());
                 self.system_messages = vec![DisplayMessage::system(&format!(
-                    "Logged in as {} (ID {}). Type /help for commands.",
-                    info.username, info.user_id
+                    "Logged in as {}. Type /help for commands.",
+                    info.username,
                 ))];
 
                 let rooms_task = self.load_rooms_task();

@@ -28,7 +28,11 @@ impl Conclave {
             }
             SseUpdate::Unauthorized => {
                 let task = self.perform_logout();
-                self.push_system_message("Session expired. Please log in again.");
+                if let crate::screen::Screen::Login(login) = &mut self.screen {
+                    login.status = crate::screen::login::Status::Error(
+                        "Session expired. Please log in again.".into(),
+                    );
+                }
                 task
             }
             SseUpdate::NewMessage { group_id } => {

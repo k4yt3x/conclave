@@ -90,8 +90,8 @@ pub async fn update_group(
     let request = decode_proto::<conclave_proto::UpdateGroupRequest>(&body)?;
 
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can update group settings".into(),
+        return Err(Error::not_admin(
+            "only group admins can update group settings",
         ));
     }
 
@@ -116,9 +116,9 @@ pub async fn update_group(
 
         let server_retention = state.config.message_retention_seconds();
         if server_retention > 0 && seconds > 0 && seconds > server_retention {
-            return Err(Error::BadRequest(format!(
-                "group expiry ({seconds}s) cannot exceed server retention ({server_retention}s)"
-            )));
+            return Err(Error::BadRequest(
+                "group expiry cannot exceed server retention policy".into(),
+            ));
         }
 
         state.db.set_group_expiry(group_id, seconds)?;
@@ -145,14 +145,8 @@ pub async fn delete_group(
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    if !state.db.group_exists(group_id)? {
-        return Err(Error::NotFound("group not found".into()));
-    }
-
     if !state.db.is_group_admin(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized(
-            "only group admins can delete a group".into(),
-        ));
+        return Err(Error::not_admin("only group admins can delete a group"));
     }
 
     // Collect all group members for SSE before deletion.
@@ -189,7 +183,7 @@ pub async fn get_retention_policy(
     Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     let group_expiry = state.db.get_group_expiry(group_id)?;
@@ -210,7 +204,7 @@ pub async fn get_group_info(
     Path(group_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if !state.db.is_group_member(group_id, auth.user_id)? {
-        return Err(Error::Unauthorized("not a member of this group".into()));
+        return Err(Error::not_member("not a member of this group"));
     }
 
     let group_info_data = state
