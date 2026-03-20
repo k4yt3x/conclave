@@ -27,6 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 unicode-segmentation = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = "1"
 
 [build-dependencies]
 winres = "0.1"

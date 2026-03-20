@@ -51,6 +51,7 @@ pub async fn run(
         config.accept_invalid_certs,
         conclave_client::api::parse_custom_headers(&config.custom_headers),
         config.proxy_url.as_deref(),
+        config.ca_cert_path.as_deref(),
     );
     let api = Arc::new(Mutex::new(ApiClient::new(
         initial_url,
@@ -777,7 +778,7 @@ async fn handle_password_enter(
             state.input_mode = InputMode::PasswordPrompt {
                 purpose,
                 stage: PasswordPromptStage::New,
-                current_password: text,
+                current_password: zeroize::Zeroizing::new(text),
                 new_password,
             };
         }
@@ -786,11 +787,11 @@ async fn handle_password_enter(
                 purpose,
                 stage: PasswordPromptStage::Confirm,
                 current_password,
-                new_password: text,
+                new_password: zeroize::Zeroizing::new(text),
             };
         }
         (PasswordPromptPurpose::ChangePassword, PasswordPromptStage::Confirm) => {
-            if text != new_password {
+            if text != *new_password {
                 let msg =
                     DisplayMessage::system("Passwords do not match. Password change cancelled.");
                 add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
@@ -837,11 +838,11 @@ async fn handle_password_enter(
                 purpose,
                 stage: PasswordPromptStage::Confirm,
                 current_password,
-                new_password: text,
+                new_password: zeroize::Zeroizing::new(text),
             };
         }
         (PasswordPromptPurpose::Register { .. }, PasswordPromptStage::Confirm) => {
-            if text != new_password {
+            if text != *new_password {
                 let msg = DisplayMessage::system("Passwords do not match. Registration cancelled.");
                 add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
             } else {
@@ -858,6 +859,7 @@ async fn handle_password_enter(
                     config.accept_invalid_certs,
                     conclave_client::api::parse_custom_headers(&config.custom_headers),
                     config.proxy_url.as_deref(),
+                    config.ca_cert_path.as_deref(),
                 );
                 match operations::register_and_login(
                     &server,
@@ -935,6 +937,7 @@ async fn handle_password_enter(
                 config.accept_invalid_certs,
                 conclave_client::api::parse_custom_headers(&config.custom_headers),
                 config.proxy_url.as_deref(),
+                config.ca_cert_path.as_deref(),
             );
             match operations::login(
                 &server,

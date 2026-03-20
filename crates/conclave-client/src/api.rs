@@ -46,16 +46,28 @@ pub fn parse_custom_headers(headers: &HashMap<String, String>) -> HeaderMap {
 
 /// Build a [`reqwest::Client`] with the given settings.
 ///
-/// Applies custom headers, TLS certificate validation, and proxy configuration.
+/// Applies custom headers, TLS certificate validation, CA certificates,
+/// and proxy configuration.
 /// Used by both [`ApiClient`] and the GUI SSE subscription.
 pub fn build_reqwest_client(
     accept_invalid_certs: bool,
     custom_headers: HeaderMap,
     proxy_url: Option<&str>,
+    ca_cert_path: Option<&std::path::Path>,
 ) -> Client {
     let mut builder = Client::builder()
         .default_headers(custom_headers)
         .danger_accept_invalid_certs(accept_invalid_certs);
+
+    if let Some(path) = ca_cert_path {
+        match std::fs::read(path) {
+            Ok(pem_bytes) => match reqwest::Certificate::from_pem(&pem_bytes) {
+                Ok(cert) => builder = builder.add_root_certificate(cert),
+                Err(error) => tracing::warn!(%error, ?path, "failed to parse CA certificate"),
+            },
+            Err(error) => tracing::warn!(%error, ?path, "failed to read CA certificate file"),
+        }
+    }
 
     if let Some(url) = proxy_url {
         match reqwest::Proxy::all(url) {
@@ -81,6 +93,9 @@ impl ApiClient {
     }
 
     pub fn set_token(&mut self, token: String) {
+        if let Some(old) = &mut self.token {
+            zeroize::Zeroize::zeroize(old);
+        }
         self.token = Some(token);
     }
 

@@ -25,6 +25,7 @@ Running `conclave-cli` with no subcommand launches the interactive TUI. Running 
 | `show_verified_indicator` | boolean | `false` | Show verification indicators next to verified users and fully-verified rooms. When `false`, only unverified `[?]` and changed `[!]` indicators are shown. |
 | `notifications` | string | `"Native"` | TUI-only. Notification method for new messages: `"Native"`, `"Bell"`, `"Both"`, or `"None"`. |
 | `proxy_url` | string | _(unset)_ | Proxy URL for all HTTP traffic. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes. When unset, standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) are respected. |
+| `ca_cert_path` | string | _(unset)_ | Path to a PEM file containing custom CA certificates to trust in addition to the system root certificates. The file may contain multiple concatenated PEM certificates. Useful for self-hosted servers with self-signed or private CA certificates. |
 | `auth_header` | string | `"Authorization"` | HTTP header name for session authentication. When set to a custom value (e.g., `"X-Conclave-Token"`), the client sends the raw token without the `Bearer` prefix, freeing the `Authorization` header for reverse proxy auth via `[custom_headers]`. Must match the server's `auth_header`. |
 
 ## Custom Headers
@@ -81,6 +82,10 @@ Available presets: `conclave`, `ferra`, `greyscale`, `navy`.
 # When unset, standard proxy env vars (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY)
 # are respected.
 #proxy_url = "socks5://127.0.0.1:1080"
+
+# Path to a PEM file containing custom CA certificates to trust in addition
+# to the system root certificates. May contain multiple PEM certificates.
+#ca_cert_path = "/path/to/custom-ca.pem"
 
 # HTTP header name for session authentication. Default: "Authorization".
 # When set to a custom value (e.g., "X-Conclave-Token"), the client sends

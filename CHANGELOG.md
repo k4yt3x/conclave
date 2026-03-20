@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom HTTP headers support (`[custom_headers]`) in client config.
 - Proxy support (`proxy_url`) for HTTP, HTTPS, SOCKS5, and SOCKS5h.
 - Machine-readable `ErrorCode` enum in `ErrorResponse` protobuf messages.
+- Custom CA certificate support (`ca_cert_path`) for private/self-signed CAs.
+- Zeroization of passwords, MLS signing keys, and session tokens in memory.
 
 ### Fixed
 

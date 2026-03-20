@@ -83,7 +83,7 @@ pub struct GroupDetails {
 /// Persistent MLS state manager for the client.
 pub struct MlsManager {
     identity_bytes: Vec<u8>,
-    signing_key_bytes: Vec<u8>,
+    signing_key_bytes: zeroize::Zeroizing<Vec<u8>>,
     data_dir: std::path::PathBuf,
 }
 
@@ -102,7 +102,7 @@ impl MlsManager {
 
         if identity_path.exists() && signing_key_path.exists() {
             let identity_bytes = std::fs::read(&identity_path)?;
-            let signing_key_bytes = std::fs::read(&signing_key_path)?;
+            let signing_key_bytes = zeroize::Zeroizing::new(std::fs::read(&signing_key_path)?);
             Ok(Self {
                 identity_bytes,
                 signing_key_bytes,
@@ -125,10 +125,10 @@ impl MlsManager {
 
             // Serialize and persist.
             let identity_bytes = mls_rs_codec_to_vec(&signing_identity)?;
-            let signing_key_bytes = secret_key.as_ref().to_vec();
+            let signing_key_bytes = zeroize::Zeroizing::new(secret_key.as_ref().to_vec());
 
             std::fs::write(&identity_path, &identity_bytes)?;
-            std::fs::write(&signing_key_path, &signing_key_bytes)?;
+            std::fs::write(&signing_key_path, &*signing_key_bytes)?;
             #[cfg(unix)]
             {
                 std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600))?;
@@ -170,7 +170,7 @@ impl MlsManager {
 
         let signing_identity: SigningIdentity = mls_rs_codec_from_slice(&self.identity_bytes)?;
         let secret_key =
-            mls_rs_core::crypto::SignatureSecretKey::from(self.signing_key_bytes.clone());
+            mls_rs_core::crypto::SignatureSecretKey::from((*self.signing_key_bytes).clone());
 
         let group_state = storage
             .group_state_storage()
@@ -1334,7 +1334,7 @@ mod tests {
 
         let mgr1 = MlsManager::new(dir.path(), test_uuid(1)).unwrap();
         let id1 = mgr1.identity_bytes.clone();
-        let sk1 = mgr1.signing_key_bytes.clone();
+        let sk1 = (*mgr1.signing_key_bytes).clone();
 
         let mgr2 = MlsManager::new(dir.path(), test_uuid(1)).unwrap();
         assert_eq!(
@@ -1342,7 +1342,7 @@ mod tests {
             "identity must be the same on reload"
         );
         assert_eq!(
-            mgr2.signing_key_bytes, sk1,
+            *mgr2.signing_key_bytes, sk1,
             "signing key must be the same on reload"
         );
     }

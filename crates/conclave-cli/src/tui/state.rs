@@ -40,8 +40,8 @@ pub enum InputMode {
     PasswordPrompt {
         purpose: PasswordPromptPurpose,
         stage: PasswordPromptStage,
-        current_password: String,
-        new_password: String,
+        current_password: zeroize::Zeroizing<String>,
+        new_password: zeroize::Zeroizing<String>,
     },
 }
 

@@ -47,6 +47,12 @@ pub struct ClientConfig {
     #[serde(default)]
     pub proxy_url: Option<String>,
 
+    /// Path to a PEM file containing one or more custom CA certificates to trust
+    /// in addition to the system root certificates. Useful for self-hosted servers
+    /// with self-signed or private CA certificates.
+    #[serde(default)]
+    pub ca_cert_path: Option<PathBuf>,
+
     /// HTTP header name used for session authentication. Default: "Authorization".
     /// When set to "Authorization", the client sends "Bearer {token}".
     /// When set to a custom header (e.g., "X-Conclave-Token"), the client sends
@@ -93,6 +99,7 @@ impl Default for ClientConfig {
             show_verified_indicator: false,
             custom_headers: HashMap::new(),
             proxy_url: None,
+            ca_cert_path: None,
             auth_header: default_auth_header(),
         }
     }
@@ -147,9 +154,10 @@ impl SessionState {
         #[cfg(unix)]
         std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
         let path = data_dir.join("session.toml");
-        let contents =
+        let mut contents =
             toml::to_string_pretty(self).map_err(|e| crate::error::Error::Config(e.to_string()))?;
         write_restricted_file(&path, contents.as_bytes())?;
+        zeroize::Zeroize::zeroize(&mut contents);
         Ok(())
     }
 }

@@ -12,6 +12,13 @@ use crate::screen::dashboard::PasswordChangeDialog;
 
 use super::{Conclave, Message};
 
+fn zeroize_password_dialog(dialog: &mut PasswordChangeDialog) {
+    zeroize::Zeroize::zeroize(&mut dialog.current_password);
+    zeroize::Zeroize::zeroize(&mut dialog.new_password);
+    zeroize::Zeroize::zeroize(&mut dialog.confirm_password);
+    *dialog = PasswordChangeDialog::default();
+}
+
 impl Conclave {
     pub(crate) fn handle_dashboard_message(
         &mut self,
@@ -212,7 +219,7 @@ impl Conclave {
             screen::dashboard::Message::PasswordDialogCancel => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.show_password_dialog = false;
-                    dashboard.password_dialog = PasswordChangeDialog::default();
+                    zeroize_password_dialog(&mut dashboard.password_dialog);
                 }
                 Task::none()
             }
@@ -222,7 +229,7 @@ impl Conclave {
                     match result {
                         Ok(()) => {
                             dashboard.show_password_dialog = false;
-                            dashboard.password_dialog = PasswordChangeDialog::default();
+                            zeroize_password_dialog(&mut dashboard.password_dialog);
                             self.push_system_message(
                                 "Password changed successfully. Please log in again.",
                             );

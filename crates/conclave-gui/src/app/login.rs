@@ -171,6 +171,11 @@ impl Conclave {
                     self.msg_store = Some(store);
                 }
 
+                if let screen::Screen::Login(login) = &mut self.screen {
+                    zeroize::Zeroize::zeroize(&mut login.password);
+                    zeroize::Zeroize::zeroize(&mut login.confirm_password);
+                    zeroize::Zeroize::zeroize(&mut login.registration_token);
+                }
                 self.screen = screen::Screen::Dashboard(screen::Dashboard::new());
                 self.system_messages = vec![DisplayMessage::system(&format!(
                     "Logged in as {}. Type /help for commands.",

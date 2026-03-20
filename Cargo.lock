@@ -932,6 +932,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -960,6 +961,7 @@ dependencies = [
  "toml 1.0.1+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -985,6 +987,7 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "winres",
+ "zeroize",
 ]
 
 [[package]]

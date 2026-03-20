@@ -180,6 +180,7 @@ fn build_client(config: &ClientConfig) -> reqwest::Client {
         config.accept_invalid_certs,
         custom_headers,
         config.proxy_url.as_deref(),
+        config.ca_cert_path.as_deref(),
     )
 }
 

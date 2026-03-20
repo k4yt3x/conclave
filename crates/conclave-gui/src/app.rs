@@ -240,6 +240,7 @@ impl Conclave {
             self.config.accept_invalid_certs,
             conclave_client::api::parse_custom_headers(&self.config.custom_headers),
             self.config.proxy_url.as_deref(),
+            self.config.ca_cert_path.as_deref(),
         )
     }
 

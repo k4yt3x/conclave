@@ -100,8 +100,8 @@ async fn execute_account(
                         token,
                     },
                     stage: PasswordPromptStage::New,
-                    current_password: String::new(),
-                    new_password: String::new(),
+                    current_password: zeroize::Zeroizing::new(String::new()),
+                    new_password: zeroize::Zeroizing::new(String::new()),
                 };
             }
         }
@@ -115,8 +115,8 @@ async fn execute_account(
                 state.input_mode = InputMode::PasswordPrompt {
                     purpose: PasswordPromptPurpose::Login { server, username },
                     stage: PasswordPromptStage::New,
-                    current_password: String::new(),
-                    new_password: String::new(),
+                    current_password: zeroize::Zeroizing::new(String::new()),
+                    new_password: zeroize::Zeroizing::new(String::new()),
                 };
             }
         }
@@ -1187,8 +1187,8 @@ async fn execute_profile(
                 state.input_mode = InputMode::PasswordPrompt {
                     purpose: PasswordPromptPurpose::ChangePassword,
                     stage: PasswordPromptStage::Current,
-                    current_password: String::new(),
-                    new_password: String::new(),
+                    current_password: zeroize::Zeroizing::new(String::new()),
+                    new_password: zeroize::Zeroizing::new(String::new()),
                 };
             }
         }
