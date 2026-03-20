@@ -43,6 +43,12 @@ All fields have sensible defaults and can be omitted.
 | `message_retention` | string | `"-1"` | Global message retention policy. `"-1"` disables retention (keep forever). `"0"` enables delete-after-fetch. Duration format (e.g., `"30d"`) sets maximum message age. See [Duration Format](../appendices/duration-format.md). |
 | `cleanup_interval` | string | `"1h"` | Interval between background cleanup runs. Same duration format. |
 
+### Authentication
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth_header` | string | `"Authorization"` | HTTP header name for session authentication. When set to `"Authorization"` (default), clients send `"Bearer {token}"`. When set to a custom value (e.g., `"X-Conclave-Token"`), clients send the raw token without the `Bearer` prefix. Must match the client's `auth_header`. Useful when a reverse proxy uses the `Authorization` header for its own authentication. |
+
 ### Registration Control
 
 | Field | Type | Default | Description |
@@ -111,6 +117,9 @@ invite_ttl_seconds = 2592000
 # Message retention
 message_retention = "-1"
 cleanup_interval = "1h"
+
+# Authentication
+# auth_header = "Authorization"
 
 # Registration
 registration_enabled = true

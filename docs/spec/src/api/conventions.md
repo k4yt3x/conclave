@@ -16,11 +16,13 @@ Servers MUST reject requests with incorrect or missing content types for endpoin
 
 ## Authentication
 
-All endpoints except `POST /api/v1/register` and `POST /api/v1/login` require authentication. Clients MUST include the session token in the `Authorization` header:
+All endpoints except `POST /api/v1/register` and `POST /api/v1/login` require authentication. By default, clients MUST include the session token in the `Authorization` header:
 
 ```
 Authorization: Bearer <token>
 ```
+
+When the server and client are configured with a custom `auth_header` (e.g., `"X-Conclave-Token"`), the token is sent as a raw value without the `"Bearer "` prefix. See [Authentication](../architecture/authentication.md#configurable-auth-header) for details.
 
 If the header is missing, the token is invalid, or the token has expired, the server MUST return **401 Unauthorized**.
 

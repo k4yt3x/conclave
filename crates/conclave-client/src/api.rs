@@ -13,6 +13,7 @@ pub struct ApiClient {
     client: Client,
     base_url: String,
     token: Option<String>,
+    auth_header: String,
 }
 
 /// Normalize a server URL by prepending `https://` if no scheme is present
@@ -70,11 +71,12 @@ pub fn build_reqwest_client(
 }
 
 impl ApiClient {
-    pub fn new(base_url: &str, client: Client) -> Self {
+    pub fn new(base_url: &str, client: Client, auth_header: String) -> Self {
         Self {
             client,
             base_url: normalize_server_url(base_url),
             token: None,
+            auth_header,
         }
     }
 
@@ -82,17 +84,34 @@ impl ApiClient {
         self.token = Some(token);
     }
 
+    /// Returns `true` when `auth_header` is the standard `Authorization` header
+    /// (case-insensitive comparison).
+    fn uses_standard_auth_header(&self) -> bool {
+        self.auth_header
+            .eq_ignore_ascii_case(reqwest::header::AUTHORIZATION.as_str())
+    }
+
+    /// Attach the session auth header to a request builder.
+    fn set_auth(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.token {
+            let value = if self.uses_standard_auth_header() {
+                format!("Bearer {token}")
+            } else {
+                token.clone()
+            };
+            request = request.header(&self.auth_header, value);
+        }
+        request
+    }
+
     /// Send a POST request with a protobuf body, returning raw response bytes.
     async fn post(&self, path: &str, body: &impl Message) -> Result<Vec<u8>> {
         let url = format!("{}{path}", self.base_url);
-        let mut request = self
+        let request = self
             .client
             .post(&url)
             .header("Content-Type", "application/x-protobuf");
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.set_auth(request);
 
         let mut buf = Vec::new();
         body.encode(&mut buf)
@@ -105,14 +124,11 @@ impl ApiClient {
     /// Send a PATCH request with a protobuf body, returning raw response bytes.
     async fn patch(&self, path: &str, body: &impl Message) -> Result<Vec<u8>> {
         let url = format!("{}{path}", self.base_url);
-        let mut request = self
+        let request = self
             .client
             .patch(&url)
             .header("Content-Type", "application/x-protobuf");
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.set_auth(request);
 
         let mut buf = Vec::new();
         body.encode(&mut buf)
@@ -125,11 +141,8 @@ impl ApiClient {
     /// Send a GET request, returning raw response bytes.
     async fn get(&self, path: &str) -> Result<Vec<u8>> {
         let url = format!("{}{path}", self.base_url);
-        let mut request = self.client.get(&url);
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.client.get(&url);
+        let request = self.set_auth(request);
 
         let response = request.send().await?;
         Self::handle_response(response).await
@@ -188,14 +201,11 @@ impl ApiClient {
 
     pub async fn logout(&self) -> Result<()> {
         let url = format!("{}/api/v1/logout", self.base_url);
-        let mut request = self
+        let request = self
             .client
             .post(&url)
             .header("Content-Type", "application/x-protobuf");
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.set_auth(request);
 
         let response = request.send().await?;
         if !response.status().is_success() {
@@ -405,14 +415,11 @@ impl ApiClient {
     /// Accept (delete) a pending welcome by its server-assigned ID.
     pub async fn accept_welcome(&self, welcome_id: Uuid) -> Result<()> {
         let url = format!("{}/api/v1/welcomes/{welcome_id}/accept", self.base_url);
-        let mut request = self
+        let request = self
             .client
             .post(&url)
             .header("Content-Type", "application/x-protobuf");
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.set_auth(request);
 
         let response = request.send().await?;
         let status = response.status();
@@ -623,14 +630,11 @@ impl ApiClient {
 
     pub async fn reset_account(&self) -> Result<()> {
         let url = format!("{}/api/v1/reset-account", self.base_url);
-        let mut request = self
+        let request = self
             .client
             .post(&url)
             .header("Content-Type", "application/x-protobuf");
-
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
+        let request = self.set_auth(request);
 
         let response = request.send().await?;
         if !response.status().is_success() {
@@ -657,11 +661,18 @@ impl ApiClient {
             .as_ref()
             .ok_or_else(|| Error::Other("not logged in".into()))?;
         let url = format!("{}/api/v1/events", self.base_url);
-        let builder = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"));
+        let value = if self.uses_standard_auth_header() {
+            format!("Bearer {token}")
+        } else {
+            token.clone()
+        };
+        let builder = self.client.get(&url).header(&self.auth_header, value);
         EventSource::new(builder).map_err(|e| Error::Other(format!("SSE connection failed: {e}")))
+    }
+
+    /// Returns the configured auth header name.
+    pub fn auth_header(&self) -> &str {
+        &self.auth_header
     }
 }
 

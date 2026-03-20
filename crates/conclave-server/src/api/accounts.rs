@@ -80,7 +80,9 @@ pub async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<im
             // Timing equalization: perform dummy password verification to
             // prevent distinguishing "user not found" from "wrong password"
             // via timing. The result is intentionally unused.
-            let _ = auth::verify_password("dummy", auth::dummy_hash());
+            if let Err(error) = auth::verify_password("dummy", auth::dummy_hash()) {
+                tracing::warn!(%error, "timing equalization hash verification failed");
+            }
             return Err(Error::Unauthorized("invalid username or password".into()));
         }
     };
@@ -90,7 +92,7 @@ pub async fn login(State(state): State<Arc<AppState>>, body: Bytes) -> Result<im
     }
 
     let token = auth::generate_token();
-    let expires_at = unix_now() + state.config.token_ttl_seconds;
+    let expires_at = unix_now()? + state.config.token_ttl_seconds;
     state
         .db
         .create_session(&token, user_record.user_id, expires_at)?;

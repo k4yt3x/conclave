@@ -26,11 +26,12 @@ pub(crate) struct ApiParams {
     pub(crate) server_url: String,
     pub(crate) token: String,
     pub(crate) http_client: reqwest::Client,
+    pub(crate) auth_header: String,
 }
 
 impl ApiParams {
     pub(crate) fn into_client(self) -> ApiClient {
-        let mut api = ApiClient::new(&self.server_url, self.http_client);
+        let mut api = ApiClient::new(&self.server_url, self.http_client, self.auth_header);
         api.set_token(self.token);
         api
     }
@@ -167,7 +168,11 @@ impl Conclave {
             session.user_id,
         ) {
             let http_client = app.build_http_client();
-            let mut api = ApiClient::new(&server_url, http_client.clone());
+            let mut api = ApiClient::new(
+                &server_url,
+                http_client.clone(),
+                app.config.auth_header.clone(),
+            );
             api.set_token(token.clone());
             app.api = Some(api);
             app.server_url = Some(normalize_server_url(&server_url));
@@ -193,9 +198,10 @@ impl Conclave {
             let data_dir = app.config.data_dir.clone();
             let server_url = app.server_url.clone().unwrap_or_default();
             let token_clone = token.clone();
+            let auth_header_clone = app.config.auth_header.clone();
             let keygen_task = Task::perform(
                 async move {
-                    let mut api = ApiClient::new(&server_url, http_client);
+                    let mut api = ApiClient::new(&server_url, http_client, auth_header_clone);
                     api.set_token(token_clone);
                     operations::initialize_mls_and_upload_key_packages(&api, &data_dir, user_id)
                         .await
@@ -231,6 +237,7 @@ impl Conclave {
             server_url: self.server_url.clone().unwrap_or_default(),
             token: self.token.clone().unwrap_or_default(),
             http_client: self.build_http_client(),
+            auth_header: self.config.auth_header.clone(),
         }
     }
 
@@ -531,6 +538,7 @@ impl Conclave {
                     self.server_url.clone().unwrap_or_default(),
                     token.clone(),
                     self.build_http_client(),
+                    self.config.auth_header.clone(),
                 )
                 .map(Message::SseEvent),
             );

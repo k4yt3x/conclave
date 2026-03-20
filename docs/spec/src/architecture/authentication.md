@@ -42,11 +42,21 @@ To prevent username enumeration via timing analysis, the server MUST perform pas
 
 All endpoints except `POST /api/v1/register` and `POST /api/v1/login` require authentication.
 
-Clients MUST include the session token in the `Authorization` header using the Bearer scheme:
+By default, clients MUST include the session token in the `Authorization` header using the Bearer scheme:
 
 ```
 Authorization: Bearer <token>
 ```
+
+### Configurable Auth Header
+
+Both the server and client support a configurable `auth_header` setting (default: `"Authorization"`). When set to a custom header name (e.g., `"X-Conclave-Token"`), the token is sent as a raw value without the `"Bearer "` prefix:
+
+```
+X-Conclave-Token: <token>
+```
+
+The server and client `auth_header` values MUST match. The comparison against the standard `Authorization` header name is case-insensitive. This feature allows the standard `Authorization` header to be used by a reverse proxy for its own authentication (e.g., HTTP Basic Auth) without conflicting with Conclave's session auth.
 
 The server MUST validate the token against its session store and check the token's expiry. If the token is missing, invalid, or expired, the server MUST return HTTP 401.
 

@@ -200,11 +200,11 @@ fn parse_uuid(value: &[u8], field_name: &str) -> Result<Uuid> {
     Uuid::from_slice(value).map_err(|_| Error::Validation(format!("invalid {field_name}")))
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
+fn unix_now() -> Result<i64> {
+    Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+        .map_err(|e| Error::Internal(format!("system clock error: {e}")))?
+        .as_secs() as i64)
 }
 
 /// Encode a protobuf `ServerEvent` and broadcast it to the given user IDs via

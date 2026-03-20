@@ -48,12 +48,16 @@ example.com {
 }
 ```
 
-Client config:
+Client config (using custom `auth_header` so `Authorization` is free for the proxy):
 
 ```toml
+auth_header = "X-Conclave-Token"
+
 [custom_headers]
 Authorization = "Basic dXNlcjpwYXNz"
 ```
+
+The server must also set `auth_header = "X-Conclave-Token"` to match. Alternatively, if only the client authenticates with the proxy, the default `auth_header` can be kept — Conclave's per-request `Authorization: Bearer` token takes precedence over `[custom_headers]`.
 
 ### Nginx with Basic Auth
 

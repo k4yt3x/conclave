@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use axum::http::HeaderName;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +48,14 @@ pub struct ServerConfig {
     /// underscores, and hyphens ([a-zA-Z0-9_-]).
     pub registration_token: Option<String>,
 
+    /// HTTP header name used for session authentication. Default: "Authorization".
+    /// When set to "Authorization", clients must send "Bearer {token}".
+    /// When set to a custom header (e.g., "X-Conclave-Token"), clients send the
+    /// raw token value without the "Bearer " prefix. Must match the client's
+    /// `auth_header` setting.
+    #[serde(default = "default_auth_header")]
+    pub auth_header: String,
+
     /// Path to the TLS certificate file (PEM format).
     /// If both are set, the server listens with TLS (HTTPS) on port 8443 by default.
     /// If omitted, the server listens on plain HTTP on port 8080 by default.
@@ -85,6 +94,10 @@ fn default_registration_enabled() -> bool {
     true
 }
 
+fn default_auth_header() -> String {
+    "Authorization".to_string()
+}
+
 impl ServerConfig {
     /// Parse the `message_retention` config string into seconds.
     pub fn message_retention_seconds(&self) -> i64 {
@@ -100,6 +113,13 @@ impl ServerConfig {
 
     /// Validate configuration values. Returns an error message if invalid.
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.auth_header.parse::<HeaderName>().is_err() {
+            return Err(format!(
+                "auth_header '{}' is not a valid HTTP header name",
+                self.auth_header
+            ));
+        }
+
         if let Some(ref token) = self.registration_token {
             if token.is_empty() {
                 return Err("registration_token must not be empty when set".into());
@@ -114,6 +134,13 @@ impl ServerConfig {
             }
         }
         Ok(())
+    }
+
+    /// Returns `true` when `auth_header` is the standard `Authorization` header
+    /// (case-insensitive comparison).
+    pub fn uses_standard_auth_header(&self) -> bool {
+        self.auth_header
+            .eq_ignore_ascii_case(axum::http::header::AUTHORIZATION.as_str())
     }
 
     /// Returns the socket address string (e.g., "0.0.0.0:8443") by combining listen_address
@@ -143,8 +170,75 @@ impl Default for ServerConfig {
             cleanup_interval: default_cleanup_interval(),
             registration_enabled: default_registration_enabled(),
             registration_token: None,
+            auth_header: default_auth_header(),
             tls_cert_path: None,
             tls_key_path: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_default_config() {
+        let config = ServerConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_valid_custom_auth_header() {
+        let mut config = ServerConfig::default();
+        config.auth_header = "X-Conclave-Token".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_auth_header() {
+        let mut config = ServerConfig::default();
+        config.auth_header = "invalid header name".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_registration_token() {
+        let mut config = ServerConfig::default();
+        config.registration_token = Some(String::new());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_registration_token_chars() {
+        let mut config = ServerConfig::default();
+        config.registration_token = Some("invalid!@#$".to_string());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_valid_registration_token() {
+        let mut config = ServerConfig::default();
+        config.registration_token = Some("valid-token_123".to_string());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_uses_standard_auth_header_default() {
+        let config = ServerConfig::default();
+        assert!(config.uses_standard_auth_header());
+    }
+
+    #[test]
+    fn test_uses_standard_auth_header_lowercase() {
+        let mut config = ServerConfig::default();
+        config.auth_header = "authorization".to_string();
+        assert!(config.uses_standard_auth_header());
+    }
+
+    #[test]
+    fn test_uses_standard_auth_header_custom() {
+        let mut config = ServerConfig::default();
+        config.auth_header = "X-Conclave-Token".to_string();
+        assert!(!config.uses_standard_auth_header());
     }
 }

@@ -9,16 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Custom HTTP headers support (`[custom_headers]` in client config) for reverse proxy authentication and anti-active-probing.
-- Proxy support (`proxy_url` in client config) for HTTP, HTTPS, SOCKS5, and SOCKS5h proxies.
+- Configurable `auth_header` setting for server and client config.
+- Custom HTTP headers support (`[custom_headers]`) in client config.
+- Proxy support (`proxy_url`) for HTTP, HTTPS, SOCKS5, and SOCKS5h.
+
+### Fixed
+
+- Atomic file permissions on Unix for session and group mapping files.
+- Proper error propagation for system clock errors in session expiry.
 
 ### Changed
 
-- **BREAKING**: User and group IDs changed from integers to UUID v4 to prevent information disclosure.
-- **BREAKING**: MLS BasicCredential identity format changed from 8-byte big-endian i64 to 16-byte UUID.
-- **BREAKING**: Protobuf wire format changed: all ID fields switched from `int64` to `bytes`
-- Default log level changed to `warn` in release builds, `info` in debug builds.
-- Document AS/DS service roles in spec per RFC 9420 Section 3
+- **BREAKING**: User and group IDs changed from integers to UUID v4.
+- **BREAKING**: MLS credential identity changed from 8-byte i64 to 16-byte UUID.
+- **BREAKING**: Protobuf wire format: all ID fields switched from `int64` to `bytes`.
+- Default log level changed to `warn` in release, `info` in debug builds.
+- Document AS/DS service roles in spec per RFC 9420 Section 3.
 
 ## [0.1.1] - 2026-03-02
 

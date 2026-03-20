@@ -46,6 +46,14 @@ pub struct ClientConfig {
     /// behavior applies (respects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY env vars).
     #[serde(default)]
     pub proxy_url: Option<String>,
+
+    /// HTTP header name used for session authentication. Default: "Authorization".
+    /// When set to "Authorization", the client sends "Bearer {token}".
+    /// When set to a custom header (e.g., "X-Conclave-Token"), the client sends
+    /// the raw token value without the "Bearer " prefix. Must match the server's
+    /// `auth_header` setting.
+    #[serde(default = "default_auth_header")]
+    pub auth_header: String,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -72,6 +80,10 @@ fn default_config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".conclave"))
 }
 
+fn default_auth_header() -> String {
+    "Authorization".to_string()
+}
+
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
@@ -81,6 +93,7 @@ impl Default for ClientConfig {
             show_verified_indicator: false,
             custom_headers: HashMap::new(),
             proxy_url: None,
+            auth_header: default_auth_header(),
         }
     }
 }
@@ -136,9 +149,7 @@ impl SessionState {
         let path = data_dir.join("session.toml");
         let contents =
             toml::to_string_pretty(self).map_err(|e| crate::error::Error::Config(e.to_string()))?;
-        std::fs::write(&path, contents)?;
-        #[cfg(unix)]
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        write_restricted_file(&path, contents.as_bytes())?;
         Ok(())
     }
 }
@@ -156,17 +167,33 @@ pub fn load_group_mapping(data_dir: &Path) -> HashMap<Uuid, String> {
 pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<Uuid, String>) {
     let path = data_dir.join("group_mapping.toml");
     if let Ok(contents) = toml::to_string_pretty(mapping) {
-        if let Err(error) = std::fs::write(&path, &contents) {
+        if let Err(error) = write_restricted_file(&path, contents.as_bytes()) {
             tracing::warn!(%error, path = %path.display(), "failed to write group mapping");
         }
-        #[cfg(unix)]
-        {
-            if let Err(error) =
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::warn!(%error, path = %path.display(), "failed to set group mapping permissions");
-            }
-        }
+    }
+}
+
+/// Write `data` to `path` with restricted file permissions (0o600 on Unix).
+///
+/// On Unix, the file is created with mode 0o600 atomically via `OpenOptionsExt`,
+/// avoiding a TOCTOU window where the file would briefly have permissive defaults.
+fn write_restricted_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(data)?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)
     }
 }
 

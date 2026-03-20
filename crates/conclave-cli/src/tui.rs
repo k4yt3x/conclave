@@ -52,7 +52,11 @@ pub async fn run(
         conclave_client::api::parse_custom_headers(&config.custom_headers),
         config.proxy_url.as_deref(),
     );
-    let api = Arc::new(Mutex::new(ApiClient::new(initial_url, http_client.clone())));
+    let api = Arc::new(Mutex::new(ApiClient::new(
+        initial_url,
+        http_client.clone(),
+        config.auth_header.clone(),
+    )));
 
     let mut state = AppState::new();
     state.show_verified_indicator = config.show_verified_indicator;
@@ -837,11 +841,13 @@ async fn handle_password_enter(
                     token.as_deref(),
                     client.clone(),
                     &config.data_dir,
+                    config.auth_header.clone(),
                 )
                 .await
                 {
                     Ok(result) => {
-                        *api.lock().await = result.into_api_client(client);
+                        *api.lock().await =
+                            result.into_api_client(client, config.auth_header.clone());
                         state.username = Some(result.username.clone());
                         state.user_id = Some(result.user_id);
                         state.logged_in = true;
@@ -905,11 +911,18 @@ async fn handle_password_enter(
                 conclave_client::api::parse_custom_headers(&config.custom_headers),
                 config.proxy_url.as_deref(),
             );
-            match operations::login(&server, &username, &text, client.clone(), &config.data_dir)
-                .await
+            match operations::login(
+                &server,
+                &username,
+                &text,
+                client.clone(),
+                &config.data_dir,
+                config.auth_header.clone(),
+            )
+            .await
             {
                 Ok(result) => {
-                    *api.lock().await = result.into_api_client(client);
+                    *api.lock().await = result.into_api_client(client, config.auth_header.clone());
                     state.username = Some(result.username.clone());
                     state.user_id = Some(result.user_id);
                     state.logged_in = true;

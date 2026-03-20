@@ -57,6 +57,7 @@ impl Conclave {
                 let password = login.password.clone();
                 let mode = login.mode.clone();
                 let data_dir = self.config.data_dir.clone();
+                let auth_header = self.config.auth_header.clone();
 
                 if username.is_empty() || password.is_empty() {
                     login.status =
@@ -80,6 +81,7 @@ impl Conclave {
                                 &password,
                                 http_client,
                                 &data_dir,
+                                auth_header,
                             )
                             .await
                             .map_err(|e| e.to_string())?;
@@ -108,6 +110,7 @@ impl Conclave {
                                     registration_token.as_deref(),
                                     http_client,
                                     &data_dir,
+                                    auth_header,
                                 )
                                 .await
                                 .map_err(|e| e.to_string())?;
@@ -134,7 +137,11 @@ impl Conclave {
             Ok(info) => {
                 self.server_url = Some(normalize_server_url(&info.server_url));
 
-                let mut api = ApiClient::new(&info.server_url, self.build_http_client());
+                let mut api = ApiClient::new(
+                    &info.server_url,
+                    self.build_http_client(),
+                    self.config.auth_header.clone(),
+                );
                 api.set_token(info.token.clone());
                 self.api = Some(api);
                 self.username = Some(info.username.clone());

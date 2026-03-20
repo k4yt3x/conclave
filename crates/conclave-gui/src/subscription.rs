@@ -51,6 +51,7 @@ struct SseState {
     base_url: String,
     token: String,
     client: reqwest::Client,
+    auth_header: String,
 }
 
 impl PartialEq for SseState {
@@ -67,18 +68,25 @@ impl Hash for SseState {
 }
 
 /// Create an SSE subscription that connects to the server's event stream.
-pub fn sse(base_url: String, token: String, client: reqwest::Client) -> Subscription<SseUpdate> {
+pub fn sse(
+    base_url: String,
+    token: String,
+    client: reqwest::Client,
+    auth_header: String,
+) -> Subscription<SseUpdate> {
     Subscription::run_with(
         SseState {
             base_url,
             token,
             client,
+            auth_header,
         },
         |state: &SseState| {
             sse_stream(
                 state.base_url.clone(),
                 state.token.clone(),
                 state.client.clone(),
+                state.auth_header.clone(),
             )
         },
     )
@@ -88,16 +96,23 @@ fn sse_stream(
     base_url: String,
     token: String,
     client: reqwest::Client,
+    auth_header: String,
 ) -> impl futures_util::Stream<Item = SseUpdate> {
     async_stream::stream! {
         let url = format!("{base_url}/api/v1/events");
+        let uses_standard = auth_header.eq_ignore_ascii_case(
+            reqwest::header::AUTHORIZATION.as_str(),
+        );
 
         loop {
             yield SseUpdate::Connecting;
 
-            let builder = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"));
+            let value = if uses_standard {
+                format!("Bearer {token}")
+            } else {
+                token.clone()
+            };
+            let builder = client.get(&url).header(&auth_header, value);
 
             let mut es = match EventSource::new(builder) {
                 Ok(es) => es,

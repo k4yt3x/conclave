@@ -65,15 +65,27 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         parts: &mut Parts,
         state: &Arc<AppState>,
     ) -> std::result::Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| Error::Unauthorized("missing Authorization header".into()))?;
+        let header_name: axum::http::HeaderName = state
+            .config
+            .auth_header
+            .parse()
+            .map_err(|_| Error::Internal("invalid auth_header in server config".into()))?;
 
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| Error::Unauthorized("invalid Authorization header format".into()))?;
+        let header_value = parts
+            .headers
+            .get(&header_name)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                Error::Unauthorized(format!("missing {} header", state.config.auth_header))
+            })?;
+
+        let token = if state.config.uses_standard_auth_header() {
+            header_value
+                .strip_prefix("Bearer ")
+                .ok_or_else(|| Error::Unauthorized("invalid Authorization header format".into()))?
+        } else {
+            header_value
+        };
 
         let user_id = state
             .db
@@ -82,7 +94,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
 
         let new_expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|e| Error::Internal(format!("system clock error: {e}")))?
             .as_secs() as i64
             + state.config.token_ttl_seconds;
         state.db.extend_session(token, new_expires_at)?;

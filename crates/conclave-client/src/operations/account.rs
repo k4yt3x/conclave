@@ -23,8 +23,8 @@ pub struct AuthResult {
 
 impl AuthResult {
     /// Build an authenticated `ApiClient` from this result.
-    pub fn into_api_client(&self, client: Client) -> ApiClient {
-        let mut api = ApiClient::new(&self.server_url, client);
+    pub fn into_api_client(&self, client: Client, auth_header: String) -> ApiClient {
+        let mut api = ApiClient::new(&self.server_url, client, auth_header);
         api.set_token(self.token.clone());
         api
     }
@@ -49,9 +49,10 @@ pub async fn register_and_login(
     registration_token: Option<&str>,
     client: Client,
     data_dir: &Path,
+    auth_header: String,
 ) -> Result<AuthResult> {
     let server_url = normalize_server_url(server_url);
-    let api = ApiClient::new(&server_url, client.clone());
+    let api = ApiClient::new(&server_url, client.clone(), auth_header.clone());
 
     let register_response = api
         .register(username, password, None, registration_token)
@@ -65,7 +66,7 @@ pub async fn register_and_login(
         login_response.username
     };
 
-    let mut auth_api = ApiClient::new(&server_url, client);
+    let mut auth_api = ApiClient::new(&server_url, client, auth_header);
     auth_api.set_token(login_response.token.clone());
 
     let count = initialize_mls_and_upload_key_packages(&auth_api, data_dir, user_id).await?;
@@ -86,9 +87,10 @@ pub async fn login(
     password: &str,
     client: Client,
     data_dir: &Path,
+    auth_header: String,
 ) -> Result<AuthResult> {
     let server_url = normalize_server_url(server_url);
-    let api = ApiClient::new(&server_url, client.clone());
+    let api = ApiClient::new(&server_url, client.clone(), auth_header.clone());
 
     let login_response = api.login(username, password).await?;
     let canonical_username = if login_response.username.is_empty() {
@@ -97,7 +99,7 @@ pub async fn login(
         login_response.username
     };
 
-    let mut auth_api = ApiClient::new(&server_url, client);
+    let mut auth_api = ApiClient::new(&server_url, client, auth_header);
     auth_api.set_token(login_response.token.clone());
 
     let user_id = Uuid::from_slice(&login_response.user_id)?;

@@ -191,7 +191,7 @@ fn api_from_session(
         .server_url
         .as_ref()
         .ok_or_else(|| Error::Other("not logged in -- run login first".into()))?;
-    let mut api = ApiClient::new(server_url, build_client(config));
+    let mut api = ApiClient::new(server_url, build_client(config), config.auth_header.clone());
     if let Some(token) = &session.token {
         api.set_token(token.clone());
     }
@@ -241,6 +241,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
                 token.as_deref(),
                 build_client(config),
                 &config.data_dir,
+                config.auth_header.clone(),
             )
             .await?;
             result.save_session(&config.data_dir)?;
@@ -258,6 +259,7 @@ async fn run_command(cmd: Commands, config: &ClientConfig) -> conclave_client::e
                 &password,
                 build_client(config),
                 &config.data_dir,
+                config.auth_header.clone(),
             )
             .await?;
             result.save_session(&config.data_dir)?;

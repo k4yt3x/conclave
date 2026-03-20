@@ -3098,6 +3098,165 @@ async fn test_auth_header_empty_bearer() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+// ── Bearer Prefix Edge Cases ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_auth_header_lowercase_bearer_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_auth_header_bearer_no_space_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer{token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_auth_header_bearer_extra_space_rejected() {
+    let app = setup();
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer  {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Custom Auth Header ───────────────────────────────────────────
+
+#[tokio::test]
+async fn test_custom_auth_header_end_to_end() {
+    let mut server_config = config::ServerConfig::default();
+    server_config.auth_header = "X-Conclave-Token".to_string();
+    let app = setup_with_config(server_config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("X-Conclave-Token", &token)
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_custom_auth_header_rejects_bearer_prefix() {
+    let mut server_config = config::ServerConfig::default();
+    server_config.auth_header = "X-Conclave-Token".to_string();
+    let app = setup_with_config(server_config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("X-Conclave-Token", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_custom_auth_header_rejects_standard_header() {
+    let mut server_config = config::ServerConfig::default();
+    server_config.auth_header = "X-Conclave-Token".to_string();
+    let app = setup_with_config(server_config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_auth_header_lowercase_authorization_is_standard() {
+    let mut server_config = config::ServerConfig::default();
+    server_config.auth_header = "authorization".to_string();
+    let app = setup_with_config(server_config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ── Expired Session ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_expired_session_returns_401() {
+    let mut server_config = config::ServerConfig::default();
+    server_config.token_ttl_seconds = 1;
+    let app = setup_with_config(server_config);
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 // ── Process Commit Atomicity ──────────────────────────────────────
 
 #[tokio::test]
