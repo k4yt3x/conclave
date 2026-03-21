@@ -312,8 +312,7 @@ Empty message.
 |------|-----------|
 | 200 OK | External join successful. |
 | 400 Bad Request | No GroupInfo available for the group. |
-| 401 Unauthorized | Invalid token or not a group member. |
-| 404 Not Found | Group does not exist. |
+| 401 Unauthorized | Invalid token or not a group member. Non-existent groups also return 401 to prevent group existence probing. |
 
 ### SSE Events
 

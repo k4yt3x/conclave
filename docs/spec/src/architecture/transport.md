@@ -38,11 +38,12 @@ All error responses use the `ErrorResponse` protobuf message:
 
 ```protobuf
 message ErrorResponse {
-  string message = 1;
+  string message = 1;     // Human-readable error description
+  ErrorCode error_code = 2; // Machine-readable error code
 }
 ```
 
-The `message` field contains a human-readable description of the error. Error responses use the same `Content-Type: application/x-protobuf` encoding.
+The `message` field contains a human-readable description for display or logging. The `error_code` field contains a machine-readable `ErrorCode` enum value for programmatic error handling. Error responses use the same `Content-Type: application/x-protobuf` encoding. See [Error Codes](../api/conventions.md#error-codes) for the full enum definition and code table.
 
 The server MUST NOT expose internal implementation details (stack traces, database errors, file paths) in error messages returned to clients.
 

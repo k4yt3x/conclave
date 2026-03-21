@@ -260,8 +260,7 @@ Empty message.
 | Code | Condition |
 |------|-----------|
 | 200 OK | Group deleted. |
-| 401 Unauthorized | Invalid token, not a group member, or not an admin. |
-| 404 Not Found | Group does not exist. |
+| 401 Unauthorized | Invalid token, not a group member, or not an admin. Non-existent groups also return 401 to prevent group existence probing. |
 
 ### Notes
 

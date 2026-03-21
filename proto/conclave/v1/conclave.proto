@@ -55,24 +55,21 @@ message GetKeyPackageResponse {
 
 message CreateGroupRequest {
   string alias = 1;
-  // Field 2 removed (was member_usernames).
-  string group_name = 3;
+  string group_name = 2;
 }
 
 message CreateGroupResponse {
   bytes group_id = 1;
-  // Field 2 removed (was member_key_packages).
 }
 
 message GroupInfo {
   bytes group_id = 1;
   string alias = 2;
-  // Field 3 removed (was creator_id).
-  repeated GroupMember members = 4;
-  uint64 created_at = 5;
-  string group_name = 6;
-  string mls_group_id = 7;
-  int64 message_expiry_seconds = 8;  // -1=disabled, 0=fetch-then-delete, >0=seconds
+  repeated GroupMember members = 3;
+  uint64 created_at = 4;
+  string group_name = 5;
+  string mls_group_id = 6;
+  int64 message_expiry_seconds = 7;  // -1=disabled, 0=fetch-then-delete, >0=seconds
 }
 
 message GroupMember {
@@ -93,11 +90,8 @@ message ListGroupsResponse {
 
 message UploadCommitRequest {
   bytes commit_message = 1;
-  // Field 2 removed (was welcome_messages).
-  // Group info for server-side ExternalClient observation
-  bytes group_info = 3;
-  // Hex-encoded MLS group ID (set on group creation commit)
-  string mls_group_id = 4;
+  bytes group_info = 2;
+  string mls_group_id = 3;
 }
 
 message UploadCommitResponse {}
@@ -204,10 +198,8 @@ message SendMessageResponse {
 message StoredMessage {
   uint64 sequence_num = 1;
   bytes sender_id = 2;
-  // Field 3 removed (was sender_username).
-  bytes mls_message = 4;
-  uint64 created_at = 5;
-  // Field 6 removed (was sender_alias).
+  bytes mls_message = 3;
+  uint64 created_at = 4;
 }
 
 message GetMessagesResponse {

@@ -124,6 +124,11 @@ All logging uses the `tracing` crate. Follow these conventions for consistency:
     - `warn` — recoverable failures (notification errors, SSE lag, config issues)
     - `error` — internal failures, encoding errors, database errors
 
+## Protobuf Conventions
+
+- Field IDs in `.proto` messages MUST be continuous (no gaps). If removing a field would create a gap, notify the user and renumber subsequent fields to close it. The `ErrorCode` enum is exempt — its gaps are intentional range-based numbering.
+- When updating `proto/conclave/v1/conclave.proto`, also update `docs/spec/src/appendices/protobuf-schema.md` to match.
+
 ## Conventions
 
 - Run `cargo build` after completing a task to verify the release build succeeds.

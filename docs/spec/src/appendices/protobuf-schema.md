@@ -54,24 +54,21 @@ message GetKeyPackageResponse {
 ```protobuf
 message CreateGroupRequest {
   string alias = 1;
-  // Field 2 reserved (was member_usernames).
-  string group_name = 3;
+  string group_name = 2;
 }
 
 message CreateGroupResponse {
   bytes group_id = 1;
-  // Field 2 reserved (was member_key_packages).
 }
 
 message GroupInfo {
   bytes group_id = 1;
   string alias = 2;
-  // Field 3 reserved (was creator_id).
-  repeated GroupMember members = 4;
-  uint64 created_at = 5;                    // Unix timestamp (seconds)
-  string group_name = 6;
-  string mls_group_id = 7;                  // Hex-encoded MLS group ID
-  int64 message_expiry_seconds = 8;         // -1=disabled, 0=fetch-then-delete, >0=seconds
+  repeated GroupMember members = 3;
+  uint64 created_at = 4;                    // Unix timestamp (seconds)
+  string group_name = 5;
+  string mls_group_id = 6;                  // Hex-encoded MLS group ID
+  int64 message_expiry_seconds = 7;         // -1=disabled, 0=fetch-then-delete, >0=seconds
 }
 
 message GroupMember {
@@ -106,9 +103,8 @@ message GetRetentionPolicyResponse {
 ```protobuf
 message UploadCommitRequest {
   bytes commit_message = 1;
-  // Field 2 reserved (was welcome_messages).
-  bytes group_info = 3;                     // MLS GroupInfo for external commits
-  string mls_group_id = 4;                  // Hex-encoded MLS group ID (set on creation)
+  bytes group_info = 2;                     // MLS GroupInfo for external commits
+  string mls_group_id = 3;                  // Hex-encoded MLS group ID (set on creation)
 }
 
 message UploadCommitResponse {}
@@ -218,10 +214,8 @@ message SendMessageResponse {
 message StoredMessage {
   uint64 sequence_num = 1;
   bytes sender_id = 2;
-  // Field 3 reserved (was sender_username).
-  bytes mls_message = 4;                   // Encrypted MLS message (opaque blob)
-  uint64 created_at = 5;                   // Unix timestamp (seconds)
-  // Field 6 reserved (was sender_alias).
+  bytes mls_message = 3;                   // Encrypted MLS message (opaque blob)
+  uint64 created_at = 4;                   // Unix timestamp (seconds)
 }
 
 message GetMessagesResponse {
@@ -345,8 +339,31 @@ message InviteCancelledEvent {
 ## Common
 
 ```protobuf
+enum ErrorCode {
+  ERR_UNSPECIFIED = 0;
+
+  // Input errors (100-199)
+  ERR_INPUT_BAD_REQUEST = 100;
+  ERR_INPUT_VALIDATION = 101;
+
+  // Authentication errors (200-299)
+  ERR_AUTH_HEADER_MISSING = 200;
+  ERR_AUTH_HEADER_INVALID = 201;
+  ERR_AUTH_TOKEN_EXPIRED = 202;
+
+  // Resource errors (300-399)
+  ERR_RESOURCE_NOT_FOUND = 300;
+  ERR_RESOURCE_CONFLICT = 301;
+  ERR_RESOURCE_FORBIDDEN = 302;
+
+  // Group operation errors (400-499)
+  ERR_GROUP_NOT_MEMBER = 400;
+  ERR_GROUP_NOT_ADMIN = 401;
+}
+
 message ErrorResponse {
   string message = 1;                     // Human-readable error description
+  ErrorCode error_code = 2;              // Machine-readable error code
 }
 
 message UserInfoResponse {
@@ -357,16 +374,3 @@ message UserInfoResponse {
 }
 ```
 
-## Reserved Fields
-
-Several messages have gaps in field numbers due to removed fields. These field numbers are reserved and MUST NOT be reused with different semantics in future versions:
-
-| Message | Field | Was |
-|---------|-------|-----|
-| `CreateGroupRequest` | 2 | `member_usernames` |
-| `CreateGroupResponse` | 2 | `member_key_packages` |
-| `GroupInfo` | 3 | `creator_id` |
-| `UploadCommitRequest` | 2 | `welcome_messages` |
-| `StoredMessage` | 3 | `sender_username` |
-| `StoredMessage` | 6 | `sender_alias` |
-| `ChangePasswordRequest` | 1 | (removed) |
