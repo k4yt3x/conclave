@@ -78,7 +78,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             .ok_or_else(|| {
                 Error::auth_misconfigured(
                     format!("missing {} header", state.config.auth_header),
-                    conclave_proto::ErrorCode::ErrAuthHeaderMissing,
+                    conclave_proto::ErrorCode::AuthHeaderMissing,
                 )
             })?;
 
@@ -86,7 +86,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             header_value.strip_prefix("Bearer ").ok_or_else(|| {
                 Error::auth_misconfigured(
                     "invalid Authorization header format",
-                    conclave_proto::ErrorCode::ErrAuthHeaderInvalid,
+                    conclave_proto::ErrorCode::AuthHeaderInvalid,
                 )
             })?
         } else {

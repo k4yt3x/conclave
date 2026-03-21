@@ -1121,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_find_member_index_found() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
 
         let result = alice.find_member_index(&group_id, test_uuid(2)).unwrap();
@@ -1130,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_find_member_index_not_found() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
 
         let result = alice.find_member_index(&group_id, test_uuid(3)).unwrap();
@@ -1175,7 +1175,7 @@ mod tests {
 
     #[test]
     fn test_group_info_details() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
 
         let details = alice.group_info_details(&group_id).unwrap();
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn test_delete_group_state() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
 
         let result = alice.delete_group_state(&group_id);
@@ -1765,7 +1765,7 @@ mod tests {
 
     #[test]
     fn test_cipher_suite_matches_configured() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         let details = alice.group_info_details(&group_id).unwrap();
         // CIPHERSUITE constant resolves to CipherSuite(6), which is
@@ -1813,7 +1813,7 @@ mod tests {
 
     #[test]
     fn test_find_member_index_for_self() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         let alice_index = alice.find_member_index(&group_id, test_uuid(1)).unwrap();
         assert!(alice_index.is_some());
@@ -1821,7 +1821,7 @@ mod tests {
 
     #[test]
     fn test_find_member_index_nonexistent_user() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         let result = alice.find_member_index(&group_id, test_uuid(999)).unwrap();
         assert!(result.is_none());
@@ -1831,7 +1831,7 @@ mod tests {
 
     #[test]
     fn test_epoch_advances_on_add() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         let epoch_after_create = alice.group_info_details(&group_id).unwrap().epoch;
 
@@ -1869,7 +1869,7 @@ mod tests {
 
     #[test]
     fn test_epoch_advances_on_key_rotation() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         let epoch_before = alice.group_info_details(&group_id).unwrap().epoch;
         alice.rotate_keys(&group_id).unwrap();
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[test]
     fn test_delete_group_then_load_fails() {
-        let (_dir_a, alice, _alice_id, _dir_b, _bob, bob_id, group_id, _commit, _welcome, _gi) =
+        let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
             setup_alice_bob();
         alice.delete_group_state(&group_id).unwrap();
         let result = alice.group_info_details(&group_id);

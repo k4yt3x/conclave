@@ -75,27 +75,27 @@ Error codes use range-based numbering grouped by category. Within each category,
 
 | Range | Category | Prefix |
 |-------|----------|--------|
-| 0 | Unspecified / internal | `ERR_UNSPECIFIED` |
-| 100–199 | Input / validation | `ERR_INPUT_` |
-| 200–299 | Authentication | `ERR_AUTH_` |
-| 300–399 | Resource | `ERR_RESOURCE_` |
-| 400–499 | Group operations | `ERR_GROUP_` |
+| 0 | Unspecified / internal | `ERROR_CODE_UNSPECIFIED` |
+| 100–199 | Input / validation | `ERROR_CODE_INPUT_` |
+| 200–299 | Authentication | `ERROR_CODE_AUTH_` |
+| 300–399 | Resource | `ERROR_CODE_RESOURCE_` |
+| 400–499 | Group operations | `ERROR_CODE_GROUP_` |
 
 | Code | Name | HTTP Status | Description |
 |------|------|-------------|-------------|
-| 0 | `ERR_UNSPECIFIED` | 500 | Internal server error (details hidden) |
-| 100 | `ERR_INPUT_BAD_REQUEST` | 400 | Malformed request or invalid parameters |
-| 101 | `ERR_INPUT_VALIDATION` | 400 | Input validation failure (e.g., password too short) |
-| 200 | `ERR_AUTH_HEADER_MISSING` | 401 | Required auth header not present in request |
-| 201 | `ERR_AUTH_HEADER_INVALID` | 401 | Auth header present but format is wrong (e.g., missing Bearer prefix) |
-| 202 | `ERR_AUTH_TOKEN_EXPIRED` | 401 | Token not recognized or expired |
-| 300 | `ERR_RESOURCE_NOT_FOUND` | 404 | Requested resource does not exist |
-| 301 | `ERR_RESOURCE_CONFLICT` | 409 | Resource already exists or state conflict |
-| 302 | `ERR_RESOURCE_FORBIDDEN` | 403 | Access denied (e.g., registration disabled) |
-| 400 | `ERR_GROUP_NOT_MEMBER` | 401 | User is not a member of the group |
-| 401 | `ERR_GROUP_NOT_ADMIN` | 401 | Operation requires group admin role |
+| 0 | `ERROR_CODE_UNSPECIFIED` | 500 | Internal server error (details hidden) |
+| 100 | `ERROR_CODE_INPUT_BAD_REQUEST` | 400 | Malformed request or invalid parameters |
+| 101 | `ERROR_CODE_INPUT_VALIDATION` | 400 | Input validation failure (e.g., password too short) |
+| 200 | `ERROR_CODE_AUTH_HEADER_MISSING` | 401 | Required auth header not present in request |
+| 201 | `ERROR_CODE_AUTH_HEADER_INVALID` | 401 | Auth header present but format is wrong (e.g., missing Bearer prefix) |
+| 202 | `ERROR_CODE_AUTH_TOKEN_EXPIRED` | 401 | Token not recognized or expired |
+| 300 | `ERROR_CODE_RESOURCE_NOT_FOUND` | 404 | Requested resource does not exist |
+| 301 | `ERROR_CODE_RESOURCE_CONFLICT` | 409 | Resource already exists or state conflict |
+| 302 | `ERROR_CODE_RESOURCE_FORBIDDEN` | 403 | Access denied (e.g., registration disabled) |
+| 400 | `ERROR_CODE_GROUP_NOT_MEMBER` | 401 | User is not a member of the group |
+| 401 | `ERROR_CODE_GROUP_NOT_ADMIN` | 401 | Operation requires group admin role |
 
-Clients SHOULD auto-logout only on `ERR_AUTH_TOKEN_EXPIRED` (code 202). Auth header errors (200, 201) indicate a configuration mismatch that won't be resolved by re-logging in.
+Clients SHOULD auto-logout only on `ERROR_CODE_AUTH_TOKEN_EXPIRED` (code 202). Auth header errors (200, 201) indicate a configuration mismatch that won't be resolved by re-logging in.
 
 ## Empty Response Bodies
 

@@ -38,7 +38,7 @@ impl Error {
     pub fn token_expired(message: impl Into<String>) -> Self {
         Error::Unauthorized {
             message: message.into(),
-            code: ErrorCode::ErrAuthTokenExpired.into(),
+            code: ErrorCode::AuthTokenExpired.into(),
         }
     }
 
@@ -52,14 +52,14 @@ impl Error {
     pub fn not_member(message: impl Into<String>) -> Self {
         Error::Unauthorized {
             message: message.into(),
-            code: ErrorCode::ErrGroupNotMember.into(),
+            code: ErrorCode::GroupNotMember.into(),
         }
     }
 
     pub fn not_admin(message: impl Into<String>) -> Self {
         Error::Unauthorized {
             message: message.into(),
-            code: ErrorCode::ErrGroupNotAdmin.into(),
+            code: ErrorCode::GroupNotAdmin.into(),
         }
     }
 }
@@ -72,7 +72,7 @@ impl IntoResponse for Error {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),
-                    ErrorCode::ErrUnspecified,
+                    ErrorCode::Unspecified,
                 )
             }
             Error::Internal(e) => {
@@ -80,43 +80,43 @@ impl IntoResponse for Error {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),
-                    ErrorCode::ErrUnspecified,
+                    ErrorCode::Unspecified,
                 )
             }
             Error::NotFound(msg) => (
                 StatusCode::NOT_FOUND,
                 msg.clone(),
-                ErrorCode::ErrResourceNotFound,
+                ErrorCode::ResourceNotFound,
             ),
             Error::Conflict(msg) => (
                 StatusCode::CONFLICT,
                 msg.clone(),
-                ErrorCode::ErrResourceConflict,
+                ErrorCode::ResourceConflict,
             ),
             Error::Unauthorized { message, code } => (
                 StatusCode::UNAUTHORIZED,
                 message.clone(),
-                ErrorCode::try_from(*code).unwrap_or(ErrorCode::ErrUnspecified),
+                ErrorCode::try_from(*code).unwrap_or(ErrorCode::Unspecified),
             ),
             Error::Forbidden(msg) => (
                 StatusCode::FORBIDDEN,
                 msg.clone(),
-                ErrorCode::ErrResourceForbidden,
+                ErrorCode::ResourceForbidden,
             ),
             Error::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 msg.clone(),
-                ErrorCode::ErrInputBadRequest,
+                ErrorCode::InputBadRequest,
             ),
             Error::Validation(msg) => (
                 StatusCode::BAD_REQUEST,
                 msg.clone(),
-                ErrorCode::ErrInputValidation,
+                ErrorCode::InputValidation,
             ),
             Error::ProtobufDecode(_) => (
                 StatusCode::BAD_REQUEST,
                 "invalid request body".to_string(),
-                ErrorCode::ErrInputBadRequest,
+                ErrorCode::InputBadRequest,
             ),
         };
 

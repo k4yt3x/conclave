@@ -149,7 +149,7 @@ fn sse_stream(
                                     })
                                     .is_some_and(|err| {
                                         err.error_code
-                                            == conclave_proto::ErrorCode::ErrAuthTokenExpired as i32
+                                            == conclave_proto::ErrorCode::AuthTokenExpired as i32
                                     });
                                 if is_token_expired {
                                     yield SseUpdate::Unauthorized;

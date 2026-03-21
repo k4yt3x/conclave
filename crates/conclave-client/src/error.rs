@@ -57,7 +57,7 @@ impl Error {
         matches!(
             self,
             Error::Server { error_code, .. }
-                if *error_code == conclave_proto::ErrorCode::ErrAuthTokenExpired as i32
+                if *error_code == conclave_proto::ErrorCode::AuthTokenExpired as i32
         )
     }
 }
