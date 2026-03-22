@@ -241,6 +241,94 @@ impl Conclave {
                 }
                 Task::none()
             }
+            screen::dashboard::Message::LinkClicked(url) => {
+                if let Err(error) = open::that(&url) {
+                    tracing::warn!(%error, %url, "failed to open URL");
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::MessageContextMenu(index, point, link_url) => {
+                let (content, details) = self.context_menu_message_data(index);
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.context_menu = Some(screen::dashboard::ContextMenuState {
+                        position: point,
+                        message_content: content,
+                        link_url,
+                        details_text: details,
+                    });
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::CloseContextMenu => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.context_menu = None;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::CopyToClipboard(text) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.context_menu = None;
+                }
+                iced::clipboard::write(text)
+            }
+            screen::dashboard::Message::OpenLink(url) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.context_menu = None;
+                }
+                if let Err(error) = open::that(&url) {
+                    tracing::warn!(%error, %url, "failed to open URL");
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::ShowProperties => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    let details = dashboard
+                        .context_menu
+                        .as_ref()
+                        .map(|ctx| ctx.details_text.clone())
+                        .unwrap_or_default();
+                    dashboard.context_menu = None;
+                    dashboard.properties_text = Some(details);
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::CloseProperties => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.properties_text = None;
+                }
+                Task::none()
+            }
+        }
+    }
+
+    fn context_menu_message_data(&self, message_index: usize) -> (String, String) {
+        let messages: &[DisplayMessage] = match &self.active_room {
+            Some(id) => self
+                .room_messages
+                .get(id)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
+            None => &self.system_messages,
+        };
+
+        let active_room_data = self.active_room.and_then(|id| self.rooms.get(&id));
+        let members: &[conclave_client::state::RoomMember] = active_room_data
+            .map(|r| r.members.as_slice())
+            .unwrap_or(&[]);
+        let group_name = active_room_data.map(|r| r.group_name.as_str());
+
+        match messages.get(message_index) {
+            Some(msg) => {
+                let content = msg.content.clone();
+                let details = crate::widget::message_view::format_message_details(
+                    msg,
+                    members,
+                    self.active_room,
+                    group_name,
+                );
+                (content, details)
+            }
+            None => (String::new(), String::new()),
         }
     }
 

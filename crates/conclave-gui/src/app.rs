@@ -64,6 +64,7 @@ pub struct Conclave {
     pub(crate) fetch_messages_on_rooms_load: bool,
     pub(crate) verification_status: HashMap<Uuid, VerificationStatus>,
     pub(crate) window_focused: bool,
+    pub(crate) window_size: iced::Size,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +107,7 @@ pub enum Message {
     GoToRoom(u8),
     WindowFocused,
     WindowUnfocused,
+    WindowResized(iced::Size),
 
     // Periodic expiry cleanup
     ExpiryTick,
@@ -159,6 +161,7 @@ impl Conclave {
             fetch_messages_on_rooms_load: false,
             verification_status: HashMap::new(),
             window_focused: true,
+            window_size: iced::Size::new(1024.0, 768.0),
         };
 
         if let (Some(server_url), Some(token), Some(username), Some(user_id)) = (
@@ -436,6 +439,10 @@ impl Conclave {
                 self.window_focused = true;
                 Task::none()
             }
+            Message::WindowResized(size) => {
+                self.window_size = size;
+                Task::none()
+            }
             Message::WindowUnfocused => {
                 self.window_focused = false;
                 Task::none()
@@ -485,6 +492,7 @@ impl Conclave {
                     &self.theme,
                     &self.verification_status,
                     self.config.show_verified_indicator,
+                    self.window_size,
                 )
                 .map(Message::Dashboard),
         }
@@ -542,6 +550,9 @@ impl Conclave {
             }
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowUnfocused),
+            iced::Event::Window(iced::window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size))
+            }
             _ => None,
         });
 

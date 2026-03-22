@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use iced::Length;
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard;
 use iced::widget::{
     button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_editor,
     text_input,
 };
+use iced::{Length, Point};
 use uuid::Uuid;
 
 use conclave_client::state::{
@@ -56,6 +56,13 @@ pub enum Message {
     PasswordDialogSubmit,
     PasswordDialogCancel,
     PasswordDialogResult(Result<(), String>),
+    LinkClicked(String),
+    MessageContextMenu(usize, Point, Option<String>),
+    CloseContextMenu,
+    CopyToClipboard(String),
+    OpenLink(String),
+    ShowProperties,
+    CloseProperties,
 }
 
 pub struct Dashboard {
@@ -68,6 +75,15 @@ pub struct Dashboard {
     pub last_drag_x: f32,
     pub show_password_dialog: bool,
     pub password_dialog: PasswordChangeDialog,
+    pub context_menu: Option<ContextMenuState>,
+    pub properties_text: Option<String>,
+}
+
+pub struct ContextMenuState {
+    pub position: Point,
+    pub message_content: String,
+    pub link_url: Option<String>,
+    pub details_text: String,
 }
 
 impl Dashboard {
@@ -81,6 +97,8 @@ impl Dashboard {
             dragging: None,
             last_drag_x: 0.0,
             show_password_dialog: false,
+            context_menu: None,
+            properties_text: None,
             password_dialog: PasswordChangeDialog::default(),
         }
     }
@@ -101,6 +119,7 @@ impl Dashboard {
         theme: &'a crate::theme::Theme,
         verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
+        window_size: iced::Size,
     ) -> Element<'a, Message> {
         let sidebar = self.view_sidebar(
             rooms,
@@ -150,6 +169,12 @@ impl Dashboard {
         } else if self.show_user_popover {
             let popover = self.view_user_popover(username, user_alias, user_id, server_url);
             stack![base, popover].into()
+        } else if let Some(details) = &self.properties_text {
+            let dialog = self.view_properties_dialog(details);
+            stack![base, dialog].into()
+        } else if let Some(ctx) = &self.context_menu {
+            let menu = self.view_context_menu(ctx, window_size.width, window_size.height);
+            stack![base, menu].into()
         } else {
             base.into()
         }
@@ -498,6 +523,128 @@ impl Dashboard {
         opaque(mouse_area(centered).on_press(Message::PasswordDialogCancel))
     }
 
+    fn view_context_menu<'a>(
+        &'a self,
+        ctx: &ContextMenuState,
+        window_width: f32,
+        window_height: f32,
+    ) -> crate::widget::Element<'a, Message> {
+        let menu_item = |label: &str, msg: Message| {
+            button(
+                text(label.to_string())
+                    .size(13)
+                    .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+            )
+            .on_press(msg)
+            .padding([4, 12])
+            .width(Length::Fill)
+            .class(Box::new(theme::button::context_menu_item) as Box<dyn Fn(&theme::Theme, _) -> _>)
+        };
+
+        let menu_width: f32 = 200.0;
+        let mut items = column![].spacing(0).width(menu_width);
+
+        if let Some(url) = &ctx.link_url {
+            items = items.push(menu_item("Open Link", Message::OpenLink(url.clone())));
+            items = items.push(menu_item(
+                "Copy Link",
+                Message::CopyToClipboard(url.clone()),
+            ));
+        }
+
+        items = items.push(menu_item(
+            "Copy Message",
+            Message::CopyToClipboard(ctx.message_content.clone()),
+        ));
+
+        items = items.push(menu_item("Properties", Message::ShowProperties));
+
+        let card = container(items)
+            .padding(4)
+            .class(Box::new(theme::container::context_menu) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        // Estimate menu height for adaptive positioning.
+        let item_count = if ctx.link_url.is_some() { 4 } else { 2 };
+        let menu_height = item_count as f32 * 28.0 + 8.0;
+
+        // Flip menu direction when near screen edges.
+        let open_left = ctx.position.x + menu_width > window_width;
+        let open_up = ctx.position.y + menu_height > window_height;
+
+        let x = if open_left {
+            (ctx.position.x - menu_width).max(0.0)
+        } else {
+            ctx.position.x
+        };
+        let y = if open_up {
+            (ctx.position.y - menu_height).max(0.0)
+        } else {
+            ctx.position.y
+        };
+
+        let positioned = container(opaque(card))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(iced::Padding {
+                top: y,
+                right: 0.0,
+                bottom: 0.0,
+                left: x,
+            });
+
+        mouse_area(positioned)
+            .on_press(Message::CloseContextMenu)
+            .on_right_press(Message::CloseContextMenu)
+            .into()
+    }
+
+    fn view_properties_dialog<'a>(&'a self, details: &str) -> crate::widget::Element<'a, Message> {
+        let content = column![
+            text(details.to_string())
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            iced::widget::Space::new().height(8),
+            row![
+                button(
+                    text("Copy")
+                        .size(11)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .on_press(Message::CopyToClipboard(details.to_string()))
+                .padding([4, 12])
+                .class(
+                    Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,
+                ),
+                button(
+                    text("Close")
+                        .size(11)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .on_press(Message::CloseProperties)
+                .padding([4, 12])
+                .class(
+                    Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,
+                ),
+            ]
+            .spacing(8),
+        ]
+        .spacing(4)
+        .align_x(Horizontal::Right)
+        .max_width(360);
+
+        let card = container(content)
+            .padding(20)
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        let centered = container(opaque(card))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center);
+
+        opaque(mouse_area(centered).on_press(Message::CloseProperties))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn view_main_area<'a>(
         &'a self,
@@ -725,17 +872,15 @@ impl Dashboard {
             .map(|r| r.members.as_slice())
             .unwrap_or(&[]);
 
-        let group_name = active_room_data.map(|r| r.group_name.as_str());
-
         let msg_column: iced::widget::Column<'_, Message, theme::Theme, crate::widget::Renderer> =
             message_view::message_list(
                 messages,
                 members,
-                *active_room,
-                group_name,
                 theme,
                 verification_status,
                 show_verified_indicator,
+                Message::LinkClicked,
+                |index, point, link| Message::MessageContextMenu(index, point, link),
             );
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);

@@ -156,6 +156,31 @@ pub fn danger(theme: &Theme, status: Status) -> Style {
     }
 }
 
+pub fn context_menu_item(theme: &Theme, status: Status) -> Style {
+    let base = Style {
+        background: None,
+        text_color: theme.text,
+        border: Border {
+            radius: 2.0.into(),
+            ..Border::default()
+        },
+        ..Style::default()
+    };
+
+    match status {
+        Status::Active => base,
+        Status::Hovered => Style {
+            background: Some(Background::Color(theme.selection)),
+            ..base
+        },
+        Status::Pressed => Style {
+            background: Some(Background::Color(lighten(theme.selection, 0.05))),
+            ..base
+        },
+        Status::Disabled => base,
+    }
+}
+
 fn lighten(color: Color, amount: f32) -> Color {
     Color {
         r: (color.r + amount).min(1.0),

@@ -109,6 +109,10 @@ fn select_graphemes(text: &str, start: usize, end: usize) -> &str {
     &text[byte_start..byte_end]
 }
 
+/// Maximum distance (in pixels) between press and release to count as a click
+/// rather than a drag selection.
+const CLICK_THRESHOLD: f32 = 3.0;
+
 // ── Interaction state machine ────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -131,34 +135,36 @@ impl Interaction {
 // ── Widget state ─────────────────────────────────────────────────
 
 struct State<P: Paragraph> {
-    spans: Vec<Span<'static, (), P::Font>>,
+    spans: Vec<Span<'static, String, P::Font>>,
     paragraph: P,
     interaction: Interaction,
 }
 
 // ── The widget ───────────────────────────────────────────────────
 
-pub struct SelectableRichText<'a, Theme, Renderer>
+pub struct SelectableRichText<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
-    spans: Cow<'a, [Span<'a, (), Renderer::Font>]>,
+    spans: Cow<'a, [Span<'a, String, Renderer::Font>]>,
     size: Option<Pixels>,
     width: Length,
     font: Option<Renderer::Font>,
     wrapping: Wrapping,
     class: Theme::Class<'a>,
     selection_color: Color,
+    on_link_click: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    on_right_click: Option<Box<dyn Fn(Point, Option<String>) -> Message + 'a>>,
 }
 
-impl<'a, Theme, Renderer> SelectableRichText<'a, Theme, Renderer>
+impl<'a, Message, Theme, Renderer> SelectableRichText<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
     Renderer: text::Renderer,
     Renderer::Font: 'a,
 {
-    pub fn new(spans: Vec<Span<'a, (), Renderer::Font>>) -> Self {
+    pub fn new(spans: Vec<Span<'a, String, Renderer::Font>>) -> Self {
         Self {
             spans: Cow::Owned(spans),
             size: None,
@@ -167,6 +173,8 @@ where
             wrapping: Wrapping::default(),
             class: Theme::default(),
             selection_color: Color::from_rgba8(0x3f, 0x3f, 0x3f, 1.0),
+            on_link_click: None,
+            on_right_click: None,
         }
     }
 
@@ -185,14 +193,32 @@ where
         self
     }
 
+    pub fn on_link_click(mut self, handler: impl Fn(String) -> Message + 'a) -> Self {
+        self.on_link_click = Some(Box::new(handler));
+        self
+    }
+
+    pub fn on_right_click(
+        mut self,
+        handler: impl Fn(Point, Option<String>) -> Message + 'a,
+    ) -> Self {
+        self.on_right_click = Some(Box::new(handler));
+        self
+    }
+
     fn total_text(&self) -> String {
         self.spans.iter().map(|s| s.text.as_ref()).collect()
+    }
+
+    fn span_has_link(&self, span_index: usize) -> Option<&str> {
+        self.spans.get(span_index).and_then(|s| s.link.as_deref())
     }
 }
 
 // ── Widget implementation ────────────────────────────────────────
 
-impl<Theme, Renderer> Widget<(), Theme, Renderer> for SelectableRichText<'_, Theme, Renderer>
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for SelectableRichText<'_, Message, Theme, Renderer>
 where
     Theme: Catalog,
     Renderer: text::Renderer,
@@ -340,6 +366,36 @@ where
             style,
             viewport,
         );
+
+        // Draw underlines for spans that request them (e.g., URL links).
+        // iced's text::draw helper renders glyphs but not decorations,
+        // so we draw them manually like iced's built-in Rich widget does.
+        let translation = bounds.position() - Point::ORIGIN;
+        for (index, span) in self.spans.iter().enumerate() {
+            if !span.underline {
+                continue;
+            }
+            let regions = state.paragraph.span_bounds(index);
+            let span_size = span.size.unwrap_or_else(|| renderer.default_size());
+            let span_line_height = text::LineHeight::default().to_absolute(span_size);
+            let color = span.color.unwrap_or(defaults.text_color);
+            let baseline_offset = iced::Vector::new(
+                0.0,
+                span_size.0 + (span_line_height.0 - span_size.0) / 2.0 - span_size.0 * 0.08,
+            );
+            for region in &regions {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            region.position() + translation + baseline_offset,
+                            Size::new(region.width, 1.0),
+                        ),
+                        ..Default::default()
+                    },
+                    color,
+                );
+            }
+        }
     }
 
     fn update(
@@ -350,7 +406,7 @@ where
         cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, ()>,
+        shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
@@ -384,11 +440,43 @@ where
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(iced::touch::Event::FingerLifted { .. }) => {
                 if let Interaction::Selecting(raw) = state.interaction {
-                    state.interaction = Interaction::Selected(raw);
+                    let distance = ((raw.end.x - raw.start.x).powi(2)
+                        + (raw.end.y - raw.start.y).powi(2))
+                    .sqrt();
+
+                    if distance < CLICK_THRESHOLD {
+                        // This was a click, not a drag. Check for link.
+                        if let Some(on_link_click) = &self.on_link_click {
+                            let local = Point::new(raw.start.x - bounds.x, raw.start.y - bounds.y);
+                            if let Some(span_index) = state.paragraph.hit_span(local) {
+                                if let Some(url) = self.span_has_link(span_index) {
+                                    shell.publish((on_link_click)(url.to_string()));
+                                }
+                            }
+                        }
+                        state.interaction = Interaction::Idle;
+                    } else {
+                        state.interaction = Interaction::Selected(raw);
+                    }
                 } else if matches!(state.interaction, Interaction::Selected(_))
                     && cursor.position().is_none_or(|p| !bounds.contains(p))
                 {
                     state.interaction = Interaction::Idle;
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(on_right_click) = &self.on_right_click
+                    && let Some(position) = cursor.position()
+                    && bounds.contains(position)
+                {
+                    let local = Point::new(position.x - bounds.x, position.y - bounds.y);
+                    let link_url = state
+                        .paragraph
+                        .hit_span(local)
+                        .and_then(|idx| self.span_has_link(idx))
+                        .map(String::from);
+                    shell.publish((on_right_click)(position, link_url));
+                    shell.capture_event();
                 }
             }
             _ => {}
@@ -401,20 +489,28 @@ where
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if cursor
-            .position()
-            .is_some_and(|p| layout.bounds().contains(p))
-        {
-            mouse::Interaction::Text
-        } else {
-            mouse::Interaction::None
+        let bounds = layout.bounds();
+        if let Some(position) = cursor.position() {
+            if bounds.contains(position) {
+                if self.on_link_click.is_some() {
+                    let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+                    let local = Point::new(position.x - bounds.x, position.y - bounds.y);
+                    if let Some(span_index) = state.paragraph.hit_span(local) {
+                        if self.span_has_link(span_index).is_some() {
+                            return mouse::Interaction::Pointer;
+                        }
+                    }
+                }
+                return mouse::Interaction::Text;
+            }
         }
+        mouse::Interaction::None
     }
 
     fn operate(
@@ -438,17 +534,15 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> From<SelectableRichText<'a, Theme, Renderer>>
+impl<'a, Message, Theme, Renderer> From<SelectableRichText<'a, Message, Theme, Renderer>>
     for Element<'a, Message, Theme, Renderer>
 where
     Message: 'a,
     Theme: Catalog + 'a,
     Renderer: text::Renderer + 'a,
 {
-    fn from(widget: SelectableRichText<'a, Theme, Renderer>) -> Self {
-        // The widget produces `()` messages internally (no messages).
-        // We need to erase that to the caller's `Message` type.
-        Element::new(widget).map(|()| unreachable!())
+    fn from(widget: SelectableRichText<'a, Message, Theme, Renderer>) -> Self {
+        Element::new(widget)
     }
 }
 

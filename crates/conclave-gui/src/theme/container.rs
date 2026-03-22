@@ -73,7 +73,7 @@ pub fn warning_banner(theme: &Theme) -> Style {
     }
 }
 
-pub fn tooltip(theme: &Theme) -> Style {
+pub fn context_menu(theme: &Theme) -> Style {
     Style {
         background: Some(Background::Color(theme.surface)),
         border: Border {
