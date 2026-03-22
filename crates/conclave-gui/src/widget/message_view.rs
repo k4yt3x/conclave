@@ -53,7 +53,13 @@ pub fn message_list<'a, M: Clone + 'a>(
                     .color(theme.text_muted),
             );
 
-            // Add verification indicator before the sender name.
+            spans.push(
+                Span::new(format!(" <{sender_name}>"))
+                    .size(13)
+                    .color(nick_color),
+            );
+
+            // Add verification indicator after the sender name.
             if let Some(sid) = message.sender_id {
                 match verification_status.get(&sid) {
                     Some(VerificationStatus::Changed) => {
@@ -73,11 +79,7 @@ pub fn message_list<'a, M: Clone + 'a>(
                 }
             }
 
-            spans.push(
-                Span::new(format!(" <{sender_name}> "))
-                    .size(13)
-                    .color(nick_color),
-            );
+            spans.push(Span::new(" ").size(13));
 
             // Split content into plain text and URL segments.
             for (segment, is_url) in split_urls(&message.content) {

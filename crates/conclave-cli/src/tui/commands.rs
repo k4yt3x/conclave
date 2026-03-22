@@ -821,16 +821,16 @@ async fn execute_member(
                             .unwrap_or(conclave_client::state::VerificationStatus::Unknown);
 
                         let indicator = match verification {
-                            conclave_client::state::VerificationStatus::Changed => "[!] ",
+                            conclave_client::state::VerificationStatus::Changed => " [!]",
                             conclave_client::state::VerificationStatus::Unknown
-                            | conclave_client::state::VerificationStatus::Unverified => "[?] ",
+                            | conclave_client::state::VerificationStatus::Unverified => " [?]",
                             conclave_client::state::VerificationStatus::Verified => "",
                         };
 
                         if m.role == "admin" {
-                            format!("{indicator}{} (admin)", m.display_name())
+                            format!("{}{indicator} (admin)", m.display_name())
                         } else {
-                            format!("{indicator}{}", m.display_name())
+                            format!("{}{indicator}", m.display_name())
                         }
                     })
                     .collect();

@@ -15,16 +15,16 @@ use conclave_client::state::{
 use super::input::InputLine;
 use super::state::{AppState, ConnectionStatus, DisplayMessage, InputMode};
 
-/// Return the verification indicator prefix for a user.
+/// Return the verification indicator suffix for a user.
 fn verification_indicator(
     sender_id: Option<Uuid>,
     verification_status: &std::collections::HashMap<Uuid, VerificationStatus>,
     show_verified: bool,
 ) -> &'static str {
     match sender_id.and_then(|id| verification_status.get(&id)) {
-        Some(VerificationStatus::Changed) => "[!] ",
-        Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
-        Some(VerificationStatus::Verified) if show_verified => "[\u{2713}] ",
+        Some(VerificationStatus::Changed) => " [!]",
+        Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => " [?]",
+        Some(VerificationStatus::Verified) if show_verified => " [\u{2713}]",
         Some(VerificationStatus::Verified) | None => "",
     }
 }
@@ -430,6 +430,8 @@ fn write_message(
             if i == 0 {
                 queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
                 write!(stdout, "[{time}] ")?;
+                queue!(stdout, SetForegroundColor(nick_color))?;
+                write!(stdout, "<{sender}>")?;
                 if !indicator.is_empty() {
                     if let Some(color) =
                         verification_color(msg.sender_id, verification_status, show_verified)
@@ -438,8 +440,6 @@ fn write_message(
                     }
                     write!(stdout, "{indicator}")?;
                 }
-                queue!(stdout, SetForegroundColor(nick_color))?;
-                write!(stdout, "<{sender}>")?;
                 queue!(stdout, ResetColor)?;
                 write!(stdout, " {line}")?;
                 current_row += rows_for_width(prefix_width + display_width(line), cols_usize);

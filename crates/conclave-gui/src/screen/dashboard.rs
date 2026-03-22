@@ -150,6 +150,7 @@ impl Dashboard {
                 active_room,
                 verification_status,
                 show_verified_indicator,
+                theme,
             ));
         }
 
@@ -612,9 +613,7 @@ impl Dashboard {
                 )
                 .on_press(Message::CopyToClipboard(details.to_string()))
                 .padding([4, 12])
-                .class(
-                    Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,
-                ),
+                .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,),
                 button(
                     text("Close")
                         .size(11)
@@ -622,9 +621,7 @@ impl Dashboard {
                 )
                 .on_press(Message::CloseProperties)
                 .padding([4, 12])
-                .class(
-                    Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,
-                ),
+                .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,),
             ]
             .spacing(8),
         ]
@@ -788,6 +785,7 @@ impl Dashboard {
         active_room: &'a Option<Uuid>,
         verification_status: &'a HashMap<Uuid, VerificationStatus>,
         show_verified_indicator: bool,
+        app_theme: &'a crate::theme::Theme,
     ) -> Element<'a, Message> {
         let member_count = active_room
             .and_then(|id| rooms.get(&id))
@@ -814,25 +812,40 @@ impl Dashboard {
                     .then_with(|| a.display_name().cmp(b.display_name()))
             });
             for member in sorted_members {
-                let admin_suffix = if member.role == "admin" { " *" } else { "" };
-                let indicator = match verification_status.get(&member.user_id) {
-                    Some(VerificationStatus::Changed) => "[!] ",
-                    Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => "[?] ",
-                    Some(VerificationStatus::Verified) if show_verified_indicator => "[\u{2713}] ",
-                    Some(VerificationStatus::Verified) | None => "",
+                let nick_color = theme::nick_color(member.user_id);
+                let display_name = match member.alias.as_deref().filter(|a| !a.is_empty()) {
+                    Some(alias) => format!("{alias} (@{})", member.username),
+                    None => format!("@{}", member.username),
                 };
-                let member_display = match member.alias.as_deref().filter(|a| !a.is_empty()) {
-                    Some(alias) => {
-                        format!("{indicator}{alias} (@{}){admin_suffix}", member.username)
+
+                let mut member_row = row![text(display_name).size(13).color(nick_color),];
+
+                match verification_status.get(&member.user_id) {
+                    Some(VerificationStatus::Changed) => {
+                        member_row = member_row
+                            .push(text(" [!]").size(13).color(app_theme.indicator_risky));
                     }
-                    None => format!("{indicator}@{}{admin_suffix}", member.username),
-                };
-                member_list = member_list.push(
-                    text(member_display)
-                        .size(13)
-                        .wrapping(text::Wrapping::None)
-                        .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
-                );
+                    Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
+                        member_row = member_row
+                            .push(text(" [?]").size(13).color(app_theme.indicator_unverified));
+                    }
+                    Some(VerificationStatus::Verified) if show_verified_indicator => {
+                        member_row = member_row.push(
+                            text(" [\u{2713}]").size(13).color(app_theme.indicator_verified),
+                        );
+                    }
+                    Some(VerificationStatus::Verified) | None => {}
+                }
+
+                if member.role == "admin" {
+                    member_row = member_row.push(
+                        text(" *")
+                            .size(13)
+                            .class(Box::new(theme::text::muted) as Box<dyn Fn(&theme::Theme) -> _>),
+                    );
+                }
+
+                member_list = member_list.push(member_row);
             }
         }
 
