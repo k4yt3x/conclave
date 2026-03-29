@@ -12,8 +12,6 @@ use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Size};
 
 use unicode_segmentation::UnicodeSegmentation;
 
-// ── Selection types ──────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RawSelection {
     start: Point,
@@ -113,8 +111,6 @@ fn select_graphemes(text: &str, start: usize, end: usize) -> &str {
 /// rather than a drag selection.
 const CLICK_THRESHOLD: f32 = 3.0;
 
-// ── Interaction state machine ────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 enum Interaction {
     #[default]
@@ -132,15 +128,11 @@ impl Interaction {
     }
 }
 
-// ── Widget state ─────────────────────────────────────────────────
-
 struct State<P: Paragraph> {
     spans: Vec<Span<'static, String, P::Font>>,
     paragraph: P,
     interaction: Interaction,
 }
-
-// ── The widget ───────────────────────────────────────────────────
 
 pub struct SelectableRichText<'a, Message, Theme, Renderer>
 where
@@ -214,8 +206,6 @@ where
         self.spans.get(span_index).and_then(|s| s.link.as_deref())
     }
 }
-
-// ── Widget implementation ────────────────────────────────────────
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for SelectableRichText<'_, Message, Theme, Renderer>
@@ -545,8 +535,6 @@ where
         Element::new(widget)
     }
 }
-
-// ── Public helper: collect selected text from all widgets ────────
 
 pub fn selected<Message: Send + 'static>(
     callback: fn(Vec<(f32, String)>) -> Message,

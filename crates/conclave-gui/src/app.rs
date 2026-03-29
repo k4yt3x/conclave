@@ -349,17 +349,30 @@ impl Conclave {
             },
             Message::ExpungeResult(result) => match result {
                 Ok(()) => {
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                        dashboard.clear_overlay();
+                    }
                     let logout_task = self.perform_logout();
-                    self.push_system_message(
-                        "Account permanently deleted. All data has been wiped.",
-                    );
+                    if let screen::Screen::Login(login) = &mut self.screen {
+                        login.status = screen::login::Status::Error(
+                            "Account permanently deleted. All data has been wiped.".into(),
+                        );
+                    }
                     logout_task
                 }
                 Err(e) => {
                     if let Some(task) = self.check_session_expired(&e) {
+                        if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                            dashboard.clear_overlay();
+                        }
                         return task;
                     }
-                    self.push_system_message(&format!("Failed to delete account: {e}"));
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                        && let Some(screen::dashboard::Overlay::ExpungeDialog { error, .. }) =
+                            &mut dashboard.overlay
+                    {
+                        *error = Some(e);
+                    }
                     Task::none()
                 }
             },
@@ -382,8 +395,8 @@ impl Conclave {
             }
             Message::EscapePressed => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    if dashboard.show_user_popover {
-                        dashboard.show_user_popover = false;
+                    if dashboard.overlay.is_some() {
+                        dashboard.clear_overlay();
                     } else if let Some(room_id) = self.active_room.take() {
                         dashboard.show_members_sidebar = false;
                         let name = self
@@ -465,7 +478,7 @@ impl Conclave {
 
         let dialog_open = matches!(
             &self.screen,
-            screen::Screen::Dashboard(d) if d.show_password_dialog
+            screen::Screen::Dashboard(d) if d.overlay.is_some()
         );
         if on_dashboard && !dialog_open {
             Task::batch([task, focus("chat_input")])
@@ -595,8 +608,6 @@ impl Conclave {
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────
-
     /// Return room IDs sorted by display name (matches sidebar order).
     pub(crate) fn sorted_room_ids(&self) -> Vec<Uuid> {
         let mut rooms: Vec<_> = self.rooms.values().collect();
@@ -608,7 +619,7 @@ impl Conclave {
     pub(crate) fn select_room(&mut self, room_id: Uuid) {
         self.active_room = Some(room_id);
         if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-            dashboard.show_user_popover = false;
+            dashboard.clear_overlay();
         }
         if let Some(room) = self.rooms.get_mut(&room_id) {
             room.last_read_seq = room.last_seen_seq;

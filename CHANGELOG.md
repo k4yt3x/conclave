@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Machine-readable `ErrorCode` enum in `ErrorResponse` protobuf messages.
 - Custom CA certificate support (`ca_cert_path`) for private/self-signed CAs.
 - Zeroization of passwords, MLS signing keys, and session tokens in memory.
+- GUI expunge confirmation dialog with password prompt.
 
 ### Fixed
 
@@ -27,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `/expunge` command now uses interactive password prompt instead of accepting password as argument.
+- GUI dashboard overlays refactored into a single `Overlay` enum.
 - **BREAKING**: User and group IDs changed from integers to UUID v4.
 - **BREAKING**: MLS credential identity changed from 8-byte i64 to 16-byte UUID.
 - **BREAKING**: Protobuf wire format: all ID fields switched from `int64` to `bytes`.

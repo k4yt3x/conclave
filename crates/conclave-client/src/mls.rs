@@ -828,8 +828,6 @@ pub fn normalize_fingerprint(input: &str) -> Result<String> {
     Ok(cleaned)
 }
 
-// ── MLS codec helpers ─────────────────────────────────────────────
-
 fn mls_rs_codec_to_vec(value: &SigningIdentity) -> Result<Vec<u8>> {
     use mls_rs_codec::MlsEncode;
     value
@@ -1435,8 +1433,6 @@ mod tests {
         }
     }
 
-    // ── Multi-Epoch Decryption (RFC 9420 §14 epoch retention) ─────
-
     #[test]
     fn test_multi_epoch_decryption() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -1477,8 +1473,6 @@ mod tests {
         assert_eq!(data, plaintext.to_vec());
     }
 
-    // ── Bidirectional Messaging ───────────────────────────────────
-
     #[test]
     fn test_bidirectional_messaging() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -1516,8 +1510,6 @@ mod tests {
             assert_eq!(data, msg.as_bytes().to_vec());
         }
     }
-
-    // ── Message Content Tests ─────────────────────────────────────
 
     #[test]
     fn test_empty_message_roundtrip() {
@@ -1565,8 +1557,6 @@ mod tests {
         assert_eq!(String::from_utf8(data).unwrap(), unicode_msg);
     }
 
-    // ── Forward Secrecy (RFC 9420 §16.1) ──────────────────────────
-
     #[test]
     fn test_forward_secrecy_removed_member_cannot_decrypt() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -1599,8 +1589,6 @@ mod tests {
         }
     }
 
-    // ── Post-Compromise Security (RFC 9420 §16.2) ─────────────────
-
     #[test]
     fn test_post_compromise_security_via_rotation() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -1619,8 +1607,6 @@ mod tests {
         };
         assert_eq!(data, b"after key rotation");
     }
-
-    // ── Three-Member Group ────────────────────────────────────────
 
     #[test]
     fn test_three_member_group_messaging() {
@@ -1658,8 +1644,6 @@ mod tests {
         };
         assert_eq!(data, b"hello all");
     }
-
-    // ── Sequential Member Addition ────────────────────────────────
 
     #[test]
     fn test_sequential_member_addition() {
@@ -1704,8 +1688,6 @@ mod tests {
         assert_eq!(data, b"trio message");
     }
 
-    // ── External Rejoin ───────────────────────────────────────────
-
     #[test]
     fn test_external_rejoin_without_removal() {
         let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, gi) =
@@ -1723,8 +1705,6 @@ mod tests {
         };
     }
 
-    // ── Group Info Details ─────────────────────────────────────────
-
     #[test]
     fn test_group_info_after_member_add() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -1739,8 +1719,6 @@ mod tests {
         assert!(member_ids.contains(&Some(test_uuid(1))));
         assert!(member_ids.contains(&Some(test_uuid(2))));
     }
-
-    // ── Key Package Properties ────────────────────────────────────
 
     #[test]
     fn test_key_package_uniqueness() {
@@ -1761,8 +1739,6 @@ mod tests {
         );
     }
 
-    // ── Cipher Suite Verification ─────────────────────────────────
-
     #[test]
     fn test_cipher_suite_matches_configured() {
         let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
@@ -1773,8 +1749,6 @@ mod tests {
         let expected = format!("{:?}", CIPHERSUITE);
         assert_eq!(details.cipher_suite, expected);
     }
-
-    // ── Self-Message Handling ─────────────────────────────────────
 
     #[test]
     fn test_decrypt_own_message_returns_failed_self() {
@@ -1792,15 +1766,11 @@ mod tests {
         }
     }
 
-    // ── Data Directory ────────────────────────────────────────────
-
     #[test]
     fn test_manager_data_dir() {
         let (dir, mgr) = create_manager(test_uuid(1));
         assert_eq!(mgr.data_dir(), dir.path());
     }
-
-    // ── Invalid Welcome ───────────────────────────────────────────
 
     #[test]
     fn test_join_with_invalid_welcome_fails() {
@@ -1808,8 +1778,6 @@ mod tests {
         let result = mgr.join_group(b"definitely not a valid welcome");
         assert!(result.is_err());
     }
-
-    // ── Find Member Index ─────────────────────────────────────────
 
     #[test]
     fn test_find_member_index_for_self() {
@@ -1826,8 +1794,6 @@ mod tests {
         let result = alice.find_member_index(&group_id, test_uuid(999)).unwrap();
         assert!(result.is_none());
     }
-
-    // ── Epoch Advances ────────────────────────────────────────────
 
     #[test]
     fn test_epoch_advances_on_add() {
@@ -1880,8 +1846,6 @@ mod tests {
         );
     }
 
-    // ── Delete / Wipe State ───────────────────────────────────────
-
     #[test]
     fn test_delete_group_then_load_fails() {
         let (_dir_a, alice, _alice_id, _dir_b, _bob, _bob_id, group_id, _commit, _welcome, _gi) =
@@ -1900,8 +1864,6 @@ mod tests {
         let kp = mgr2.generate_key_package().unwrap();
         assert!(!kp.is_empty());
     }
-
-    // ── Message After Rotation Both Directions ────────────────────
 
     #[test]
     fn test_message_after_rotation_both_directions() {
@@ -1927,8 +1889,6 @@ mod tests {
         assert_eq!(data, b"from bob");
     }
 
-    // ── Leave Group ───────────────────────────────────────────────
-
     #[test]
     fn test_leave_group_returns_commit() {
         let (_dir_a, _alice, _alice_id, _dir_b, bob, _bob_id, _group_id, _commit, welcome, _gi) =
@@ -1940,8 +1900,6 @@ mod tests {
             assert!(!commit_bytes.is_empty());
         }
     }
-
-    // ── Epoch Retention Boundary (RFC 9420 §14) ─────────────────
 
     #[test]
     fn test_epoch_retention_boundary() {
@@ -1971,8 +1929,6 @@ mod tests {
             other => panic!("expected Failed for evicted epoch, got {other:?}"),
         }
     }
-
-    // ── Five-Member Group ───────────────────────────────────────
 
     #[test]
     fn test_five_member_group() {
@@ -2053,8 +2009,6 @@ mod tests {
         assert_eq!(data, eve_msg.to_vec(), "bob must decrypt eve's message");
     }
 
-    // ── Invite After Multiple Rotations ─────────────────────────
-
     #[test]
     fn test_invite_after_multiple_rotations() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -2105,8 +2059,6 @@ mod tests {
         assert_eq!(data, plaintext.to_vec());
     }
 
-    // ── Removed Member Cannot Rejoin via Welcome ────────────────
-
     #[test]
     fn test_removed_member_cannot_rejoin_via_welcome() {
         let (_dir_a, alice) = create_manager(test_uuid(1));
@@ -2151,8 +2103,6 @@ mod tests {
             "removed member must not be able to rejoin with an old welcome"
         );
     }
-
-    // ── External Rejoin with Self-Removal ───────────────────────
 
     #[test]
     fn test_external_rejoin_with_self_removal() {
@@ -2200,8 +2150,6 @@ mod tests {
         };
         assert_eq!(data, plaintext.to_vec());
     }
-
-    // ── Multiple Groups Isolation ───────────────────────────────
 
     #[test]
     fn test_multiple_groups_isolation() {
@@ -2261,8 +2209,6 @@ mod tests {
         assert_eq!(data, msg2.to_vec());
     }
 
-    // ── Rapid Sequential Messages ───────────────────────────────
-
     #[test]
     fn test_rapid_sequential_messages() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -2294,8 +2240,6 @@ mod tests {
         }
     }
 
-    // ── Binary Payload Roundtrip ────────────────────────────────
-
     #[test]
     fn test_binary_payload_roundtrip() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -2319,8 +2263,6 @@ mod tests {
             "binary payload must survive encrypt/decrypt roundtrip"
         );
     }
-
-    // ── Leave Group Self-Removal Detection ──────────────────────
 
     #[test]
     fn test_leave_group_self_removal_detection() {
@@ -2379,8 +2321,6 @@ mod tests {
         }
     }
 
-    // ── Group Info Epoch Matches ────────────────────────────────
-
     #[test]
     fn test_group_info_epoch_matches() {
         let (_dir_a, alice, _alice_id, _dir_b, bob, _bob_id, group_id, _commit, welcome, _gi) =
@@ -2436,8 +2376,6 @@ mod tests {
             "bob's epoch must match alice's epoch"
         );
     }
-
-    // ── Concurrent Key Rotations from Different Members ─────────
 
     #[test]
     fn test_concurrent_key_rotations_from_different_members() {

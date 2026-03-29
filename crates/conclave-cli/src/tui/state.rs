@@ -17,6 +17,7 @@ pub enum PasswordPromptPurpose {
         server: String,
         username: String,
     },
+    DeleteAccount,
 }
 
 pub enum PasswordPromptStage {
@@ -26,11 +27,13 @@ pub enum PasswordPromptStage {
 }
 
 impl PasswordPromptStage {
-    pub fn label(&self) -> &'static str {
-        match self {
-            PasswordPromptStage::Current => "Current password: ",
-            PasswordPromptStage::New => "New password: ",
-            PasswordPromptStage::Confirm => "Confirm password: ",
+    pub fn label(&self, purpose: &PasswordPromptPurpose) -> &'static str {
+        match (self, purpose) {
+            (PasswordPromptStage::New, PasswordPromptPurpose::Login { .. })
+            | (PasswordPromptStage::New, PasswordPromptPurpose::DeleteAccount) => "Password: ",
+            (PasswordPromptStage::Current, _) => "Current password: ",
+            (PasswordPromptStage::New, _) => "New password: ",
+            (PasswordPromptStage::Confirm, _) => "Confirm password: ",
         }
     }
 }
@@ -340,6 +343,57 @@ mod tests {
 
         assert!(state.resolve_room("My Chat").is_some());
         assert!(state.resolve_room("general").is_none());
+    }
+
+    #[test]
+    fn test_label_login_new() {
+        let purpose = PasswordPromptPurpose::Login {
+            server: "s".into(),
+            username: "u".into(),
+        };
+        assert_eq!(PasswordPromptStage::New.label(&purpose), "Password: ");
+    }
+
+    #[test]
+    fn test_label_delete_account_new() {
+        assert_eq!(
+            PasswordPromptStage::New.label(&PasswordPromptPurpose::DeleteAccount),
+            "Password: "
+        );
+    }
+
+    #[test]
+    fn test_label_register_new() {
+        let purpose = PasswordPromptPurpose::Register {
+            server: "s".into(),
+            username: "u".into(),
+            token: None,
+        };
+        assert_eq!(PasswordPromptStage::New.label(&purpose), "New password: ");
+    }
+
+    #[test]
+    fn test_label_change_password_new() {
+        assert_eq!(
+            PasswordPromptStage::New.label(&PasswordPromptPurpose::ChangePassword),
+            "New password: "
+        );
+    }
+
+    #[test]
+    fn test_label_current() {
+        assert_eq!(
+            PasswordPromptStage::Current.label(&PasswordPromptPurpose::ChangePassword),
+            "Current password: "
+        );
+    }
+
+    #[test]
+    fn test_label_confirm() {
+        assert_eq!(
+            PasswordPromptStage::Confirm.label(&PasswordPromptPurpose::ChangePassword),
+            "Confirm password: "
+        );
     }
 
     #[test]

@@ -95,7 +95,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "expunge",
         aliases: &[],
         category: CommandCategory::Account,
-        usage: "/expunge <password>",
+        usage: "/expunge",
         description: "Permanently delete your account and all data",
     },
     // Rooms
@@ -385,7 +385,7 @@ pub enum Command {
     Trusted,
     Passwd,
     Expunge {
-        password: String,
+        password: Option<String>,
     },
 
     // Rooms
@@ -545,15 +545,7 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
         }
         "trusted" => Ok(Command::Trusted),
         "passwd" => Ok(Command::Passwd),
-        "expunge" => {
-            let parts: Vec<&str> = full_input.splitn(2, ' ').collect();
-            if parts.len() < 2 || parts[1].is_empty() {
-                return Err(Error::Other("Usage: /expunge <password>".into()));
-            }
-            Ok(Command::Expunge {
-                password: parts[1].to_string(),
-            })
-        }
+        "expunge" => Ok(Command::Expunge { password: None }),
 
         // Rooms
         "create" => {
@@ -741,6 +733,12 @@ mod tests {
     fn test_parse_passwd_ignores_extra_args() {
         let cmd = parse("/passwd extra args").unwrap();
         assert!(matches!(cmd, Command::Passwd));
+    }
+
+    #[test]
+    fn test_parse_expunge() {
+        let cmd = parse("/expunge").unwrap();
+        assert!(matches!(cmd, Command::Expunge { password: None }));
     }
 
     // Rooms

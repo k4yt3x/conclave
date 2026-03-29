@@ -184,8 +184,6 @@ impl ApiClient {
         Ok(body.to_vec())
     }
 
-    // ── Auth ──────────────────────────────────────────────────────
-
     pub async fn register(
         &self,
         username: &str,
@@ -300,8 +298,6 @@ impl ApiClient {
         )?)
     }
 
-    // ── Key Packages ──────────────────────────────────────────────
-
     pub async fn upload_key_package(&self, key_package_data: Vec<u8>) -> Result<()> {
         let request = conclave_proto::UploadKeyPackageRequest {
             key_package_data,
@@ -333,8 +329,6 @@ impl ApiClient {
         self.post("/api/v1/key-packages", &request).await?;
         Ok(())
     }
-
-    // ── Groups ────────────────────────────────────────────────────
 
     pub async fn create_group(
         &self,
@@ -391,8 +385,6 @@ impl ApiClient {
         Ok(())
     }
 
-    // ── Messages ──────────────────────────────────────────────────
-
     pub async fn send_message(
         &self,
         group_id: Uuid,
@@ -419,8 +411,6 @@ impl ApiClient {
             bytes.as_slice(),
         )?)
     }
-
-    // ── Welcomes ──────────────────────────────────────────────────
 
     pub async fn list_pending_welcomes(
         &self,
@@ -458,8 +448,6 @@ impl ApiClient {
         }
         Ok(())
     }
-
-    // ── Invite Escrow ──────────────────────────────────────────────
 
     pub async fn escrow_invite(
         &self,
@@ -541,8 +529,6 @@ impl ApiClient {
         Ok(conclave_proto::UserInfoResponse::decode(bytes.as_slice())?)
     }
 
-    // ── Admin Management ──────────────────────────────────────────
-
     pub async fn promote_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
         let request = conclave_proto::PromoteMemberRequest {
             user_id: user_id.as_bytes().to_vec(),
@@ -569,8 +555,6 @@ impl ApiClient {
             bytes.as_slice(),
         )?)
     }
-
-    // ── Member Management ──────────────────────────────────────────
 
     pub async fn remove_member(
         &self,
@@ -674,8 +658,6 @@ impl ApiClient {
         }
         Ok(())
     }
-
-    // ── SSE ───────────────────────────────────────────────────────
 
     /// Create an SSE EventSource connected to the server's event stream.
     pub fn connect_sse(&self) -> Result<EventSource> {

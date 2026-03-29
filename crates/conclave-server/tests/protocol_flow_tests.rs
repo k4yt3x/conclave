@@ -13,8 +13,6 @@ use uuid::Uuid;
 use conclave_client::mls::MlsManager;
 use conclave_server::{api, config, db, state};
 
-// ── Helpers ────────────────────────────────────────────────────────
-
 fn setup() -> Router {
     let database = db::Database::open_in_memory().unwrap();
     let config = config::ServerConfig::default();
@@ -303,8 +301,6 @@ async fn escrow_and_accept_invite(
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
-
-// ── End-to-End Protocol Flow Tests ────────────────────────────────
 
 /// Full flow: register, upload real MLS key packages, create group, invite
 /// member via escrow, have invited member join via welcome, and verify both

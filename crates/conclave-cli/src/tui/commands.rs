@@ -153,26 +153,32 @@ async fn execute_account(
         Command::Expunge { password } => {
             if !state.logged_in {
                 msgs.push(DisplayMessage::system("Not logged in."));
-                return Ok((msgs, start_sse));
+            } else if let Some(password) = password {
+                {
+                    let api_guard = api.lock().await;
+                    operations::delete_account(&api_guard, &password, &config.data_dir).await?;
+                }
+
+                api.lock().await.set_token(String::new());
+                state.logged_in = false;
+                state.username = None;
+                state.user_id = None;
+                state.active_room = None;
+                state.rooms.clear();
+                state.group_mapping.clear();
+                *mls = None;
+
+                msgs.push(DisplayMessage::system(
+                    "Account permanently deleted. All data has been wiped.",
+                ));
+            } else {
+                state.input_mode = InputMode::PasswordPrompt {
+                    purpose: PasswordPromptPurpose::DeleteAccount,
+                    stage: PasswordPromptStage::New,
+                    current_password: zeroize::Zeroizing::new(String::new()),
+                    new_password: zeroize::Zeroizing::new(String::new()),
+                };
             }
-
-            {
-                let api_guard = api.lock().await;
-                operations::delete_account(&api_guard, &password, &config.data_dir).await?;
-            }
-
-            api.lock().await.set_token(String::new());
-            state.logged_in = false;
-            state.username = None;
-            state.user_id = None;
-            state.active_room = None;
-            state.rooms.clear();
-            state.group_mapping.clear();
-            *mls = None;
-
-            msgs.push(DisplayMessage::system(
-                "Account permanently deleted. All data has been wiped.",
-            ));
         }
 
         _ => {}

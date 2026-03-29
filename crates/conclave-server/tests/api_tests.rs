@@ -10,8 +10,6 @@ use uuid::Uuid;
 
 use conclave_server::{api, config, db, state};
 
-// ── Helpers ────────────────────────────────────────────────────────
-
 fn fake_key_package(label: &[u8]) -> Vec<u8> {
     // MLS 1.0 version (0x0001) + mls_key_package wire format (0x0005) + arbitrary payload.
     let mut data = vec![0x00, 0x01, 0x00, 0x05];
@@ -152,8 +150,6 @@ async fn upload_key_packages_batch(
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── Registration Tests (1-5) ──────────────────────────────────────
-
 #[tokio::test]
 async fn test_register_success() {
     let app = setup();
@@ -259,8 +255,6 @@ async fn test_register_long_username() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Login Tests (6-8) ─────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_login_success() {
     let app = setup();
@@ -315,8 +309,6 @@ async fn test_login_nonexistent_user() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ── Logout Test (9) ───────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_logout_success() {
     let app = setup();
@@ -345,8 +337,6 @@ async fn test_logout_success() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Me Tests (10-12) ──────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_me_authenticated() {
@@ -398,8 +388,6 @@ async fn test_me_invalid_token() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Change Password Tests ─────────────────────────────────────────
 
 #[tokio::test]
 async fn test_change_password_success() {
@@ -608,8 +596,6 @@ async fn test_change_password_wrong_current_password() {
     let _token = login_user(&app, "alice", "password123").await;
 }
 
-// ── User Lookup Tests (13-14) ─────────────────────────────────────
-
 #[tokio::test]
 async fn test_get_user_by_username_success() {
     let app = setup();
@@ -687,8 +673,6 @@ async fn test_get_user_by_id_not_found() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
-
-// ── Key Package Tests (15-19) ─────────────────────────────────────
 
 #[tokio::test]
 async fn test_upload_key_package_success() {
@@ -794,8 +778,6 @@ async fn test_get_key_package_none_available() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
-
-// ── Group Tests (20-24) ───────────────────────────────────────────
 
 #[tokio::test]
 async fn test_create_group_success() {
@@ -903,8 +885,6 @@ async fn test_list_groups_with_groups() {
     assert_eq!(resp.groups[0].group_id, group_id.as_bytes().to_vec());
     assert_eq!(resp.groups[0].alias, "my_group");
 }
-
-// ── Message Tests (25-29) ─────────────────────────────────────────
 
 #[tokio::test]
 async fn test_send_message_success() {
@@ -1071,8 +1051,6 @@ async fn test_get_messages_after_seq() {
     assert_eq!(resp.messages[0].sequence_num, 2);
 }
 
-// ── Invite Tests (30-31) ──────────────────────────────────────────
-
 #[tokio::test]
 async fn test_invite_no_usernames() {
     let app = setup();
@@ -1128,8 +1106,6 @@ async fn test_invite_not_member() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Remove Member Tests (32-35) ───────────────────────────────────
 
 #[tokio::test]
 async fn test_remove_member_success() {
@@ -1270,8 +1246,6 @@ async fn test_remove_member_target_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-// ── Leave Group Tests (36-37) ─────────────────────────────────────
-
 #[tokio::test]
 async fn test_leave_group_success() {
     let app = setup();
@@ -1334,8 +1308,6 @@ async fn test_leave_group_not_member() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Group Info Tests (38-40) ──────────────────────────────────────
 
 #[tokio::test]
 async fn test_get_group_info_success() {
@@ -1421,8 +1393,6 @@ async fn test_get_group_info_not_member() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ── External Join Test (41) ───────────────────────────────────────
-
 #[tokio::test]
 async fn test_external_join_success() {
     let app = setup();
@@ -1491,8 +1461,6 @@ async fn test_external_join_success() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── Reset Account Test (42) ───────────────────────────────────────
-
 #[tokio::test]
 async fn test_reset_account_success() {
     let app = setup();
@@ -1524,8 +1492,6 @@ async fn test_reset_account_success() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
-
-// ── Upload Commit Tests (43-44) ───────────────────────────────────
 
 #[tokio::test]
 async fn test_upload_commit_stores_group_info() {
@@ -1601,8 +1567,6 @@ async fn test_upload_commit_not_member() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Welcome Tests (45-46) ─────────────────────────────────────────
 
 #[tokio::test]
 async fn test_accept_welcome_success() {
@@ -1696,8 +1660,6 @@ async fn test_accept_welcome_not_found() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
-
-// ── Batch Key Package Tests (47-49) ───────────────────────────────
 
 #[tokio::test]
 async fn test_batch_upload_and_ordered_consumption() {
@@ -1823,8 +1785,6 @@ async fn test_last_resort_not_deleted_on_consumption() {
     assert_eq!(resp.key_package_data, fake_key_package(b"last_resort"));
 }
 
-// ── Username Validation Tests ─────────────────────────────────────
-
 #[tokio::test]
 async fn test_register_unicode_username_rejected() {
     let app = setup();
@@ -1886,8 +1846,6 @@ async fn test_register_username_with_control_chars() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-
-// ── Key Package Wire Format Validation Tests ──────────────────────
 
 #[tokio::test]
 async fn test_upload_key_package_invalid_mls_version() {
@@ -1994,8 +1952,6 @@ async fn test_batch_upload_validates_wire_format() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Invite Flow Tests ─────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_invite_consumes_key_package() {
     let app = setup();
@@ -2086,8 +2042,6 @@ async fn test_invite_nonexistent_user() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-// ── Upload Commit With Welcomes Test ──────────────────────────────
-
 #[tokio::test]
 async fn test_escrow_invite_creates_pending_welcome_on_accept() {
     let app = setup();
@@ -2133,8 +2087,6 @@ async fn test_escrow_invite_creates_pending_welcome_on_accept() {
     assert_eq!(resp.welcomes[0].welcome_message, b"welcome_data");
 }
 
-// ── Leave Group With Commit Storage ───────────────────────────────
-
 #[tokio::test]
 async fn test_leave_group_stores_commit_message() {
     let app = setup();
@@ -2178,8 +2130,6 @@ async fn test_leave_group_stores_commit_message() {
     assert!(has_leave_commit, "leave commit message should be stored");
 }
 
-// ── Remove Member Stores Group Info ───────────────────────────────
-
 #[tokio::test]
 async fn test_remove_member_stores_group_info() {
     let app = setup();
@@ -2221,8 +2171,6 @@ async fn test_remove_member_stores_group_info() {
     assert_eq!(resp.group_info, b"removal_gi_data");
 }
 
-// ── Last-Resort Replacement ───────────────────────────────────────
-
 #[tokio::test]
 async fn test_last_resort_replacement_via_batch() {
     let app = setup();
@@ -2261,8 +2209,6 @@ async fn test_last_resort_replacement_via_batch() {
     assert_eq!(resp.key_package_data, fake_key_package(b"lr_new"));
 }
 
-// ── Protobuf Error Response Format ────────────────────────────────
-
 #[tokio::test]
 async fn test_error_response_is_protobuf() {
     let app = setup();
@@ -2287,8 +2233,6 @@ async fn test_error_response_is_protobuf() {
     assert!(!error_resp.message.is_empty());
 }
 
-// ── Multiple Groups ───────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_list_multiple_groups() {
     let app = setup();
@@ -2311,8 +2255,6 @@ async fn test_list_multiple_groups() {
     let resp = conclave_proto::ListGroupsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.groups.len(), 3);
 }
-
-// ── Group Members in ListGroups ───────────────────────────────────
 
 #[tokio::test]
 async fn test_list_groups_includes_members() {
@@ -2343,8 +2285,6 @@ async fn test_list_groups_includes_members() {
     assert!(member_names.contains(&"bob"));
 }
 
-// ── Message Sequence Numbers ──────────────────────────────────────
-
 #[tokio::test]
 async fn test_message_sequence_numbers_increment() {
     let app = setup();
@@ -2373,8 +2313,6 @@ async fn test_message_sequence_numbers_increment() {
     }
 }
 
-// ── Multiple Sessions ─────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_multiple_login_sessions() {
     let app = setup();
@@ -2394,8 +2332,6 @@ async fn test_multiple_login_sessions() {
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
-
-// ── Logout Isolation ──────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_logout_invalidates_only_one_token() {
@@ -2432,8 +2368,6 @@ async fn test_logout_invalidates_only_one_token() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── Reset Keeps Session ───────────────────────────────────────────
-
 #[tokio::test]
 async fn test_reset_account_keeps_session() {
     let app = setup();
@@ -2460,8 +2394,6 @@ async fn test_reset_account_keeps_session() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── Nonexistent Group ─────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_send_message_to_nonexistent_group() {
     let app = setup();
@@ -2483,8 +2415,6 @@ async fn test_send_message_to_nonexistent_group() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Empty Batch Entry ─────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_batch_upload_empty_entry_data() {
@@ -2513,8 +2443,6 @@ async fn test_batch_upload_empty_entry_data() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Malformed Protobuf ────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_malformed_protobuf_body() {
     let app = setup();
@@ -2527,8 +2455,6 @@ async fn test_malformed_protobuf_body() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-
-// ── Self-Invite Skipped ───────────────────────────────────────────
 
 #[tokio::test]
 async fn test_invite_self_is_skipped() {
@@ -2562,8 +2488,6 @@ async fn test_invite_self_is_skipped() {
     );
 }
 
-// ── External Join Nonexistent Group ───────────────────────────────
-
 #[tokio::test]
 async fn test_external_join_nonexistent_group() {
     let app = setup();
@@ -2588,8 +2512,6 @@ async fn test_external_join_nonexistent_group() {
         response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::UNAUTHORIZED
     );
 }
-
-// ── Get Messages After Parameter ──────────────────────────────────
 
 #[tokio::test]
 async fn test_get_messages_respects_after_parameter() {
@@ -2627,8 +2549,6 @@ async fn test_get_messages_respects_after_parameter() {
     assert_eq!(resp.messages[0].sequence_num, 4);
     assert_eq!(resp.messages[1].sequence_num, 5);
 }
-
-// ── Username Boundary Validation Tests ────────────────────────────
 
 #[tokio::test]
 async fn test_register_username_exactly_64_chars() {
@@ -2783,8 +2703,6 @@ async fn test_register_empty_password() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Registration Control ─────────────────────────────────────────
-
 #[tokio::test]
 async fn test_register_disabled_no_token_configured() {
     let config = config::ServerConfig {
@@ -2930,8 +2848,6 @@ async fn test_register_enabled_ignores_token() {
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-// ── Key Package Edge Cases ────────────────────────────────────────
-
 #[tokio::test]
 async fn test_key_package_exactly_16kib() {
     let app = setup();
@@ -2979,8 +2895,6 @@ async fn test_batch_upload_oversized_entry() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── External Join Edge Cases ──────────────────────────────────────
-
 #[tokio::test]
 async fn test_external_join_no_group_info_stored() {
     let app = setup();
@@ -3007,8 +2921,6 @@ async fn test_external_join_no_group_info_stored() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-
-// ── Message Pagination ────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_get_messages_limit_capped_at_500() {
@@ -3051,8 +2963,6 @@ async fn test_get_messages_limit_capped_at_500() {
     assert_eq!(resp.messages.len(), 500);
 }
 
-// ── Group Name Validation ─────────────────────────────────────────
-
 #[tokio::test]
 async fn test_create_group_alias_exactly_64_chars() {
     let app = setup();
@@ -3063,8 +2973,6 @@ async fn test_create_group_alias_exactly_64_chars() {
     let group_id = create_group_for(&app, &token, &group_alias).await;
     assert!(!group_id.is_nil());
 }
-
-// ── Auth Header Format ────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_auth_header_without_bearer_prefix() {
@@ -3097,8 +3005,6 @@ async fn test_auth_header_empty_bearer() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Bearer Prefix Edge Cases ─────────────────────────────────────
 
 #[tokio::test]
 async fn test_auth_header_lowercase_bearer_rejected() {
@@ -3150,8 +3056,6 @@ async fn test_auth_header_bearer_extra_space_rejected() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Custom Auth Header ───────────────────────────────────────────
 
 #[tokio::test]
 async fn test_custom_auth_header_end_to_end() {
@@ -3233,8 +3137,6 @@ async fn test_auth_header_lowercase_authorization_is_standard() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── Expired Session ──────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_expired_session_returns_401() {
     let mut server_config = config::ServerConfig::default();
@@ -3256,8 +3158,6 @@ async fn test_expired_session_returns_401() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Process Commit Atomicity ──────────────────────────────────────
 
 #[tokio::test]
 async fn test_escrow_invite_multiple_members() {
@@ -3300,8 +3200,6 @@ async fn test_escrow_invite_multiple_members() {
     }
 }
 
-// ── Leave Group Stores Group Info ─────────────────────────────────
-
 #[tokio::test]
 async fn test_leave_group_stores_group_info() {
     let app = setup();
@@ -3342,8 +3240,6 @@ async fn test_leave_group_stores_group_info() {
     let resp = conclave_proto::GetGroupInfoResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.group_info, b"leave_group_info_data");
 }
-
-// ── External Join Commit Stored as Message ────────────────────────
 
 #[tokio::test]
 async fn test_external_join_commit_stored_as_message() {
@@ -3398,8 +3294,6 @@ async fn test_external_join_commit_stored_as_message() {
     );
 }
 
-// ── Security: External Join Requires Membership ──────────────────
-
 #[tokio::test]
 async fn test_external_join_requires_membership() {
     let app = setup();
@@ -3450,8 +3344,6 @@ async fn test_external_join_requires_membership() {
         "non-member should be rejected from external join"
     );
 }
-
-// ── PATCH /api/v1/me Tests ───────────────────────────────────────
 
 #[tokio::test]
 async fn test_update_profile_alias() {
@@ -3590,8 +3482,6 @@ async fn test_update_profile_unauthenticated() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── PATCH /api/v1/groups/{id} Tests ──────────────────────────────
 
 #[tokio::test]
 async fn test_update_group_alias_by_creator() {
@@ -3861,8 +3751,6 @@ async fn test_update_group_removed_admin_rejected() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
-// ── Group Name Validation ────────────────────────────────────────
 
 #[tokio::test]
 async fn test_create_group_name_with_dot_rejected() {
@@ -4231,8 +4119,6 @@ async fn test_update_group_broadcasts_to_members() {
     }
 }
 
-// ── Helper: add a user to a group via escrow invite flow ──────────
-
 async fn add_member_via_escrow(
     app: &Router,
     admin_token: &str,
@@ -4289,8 +4175,6 @@ async fn add_member_via_escrow(
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
-
-// ── Admin role tests ──────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_promote_member_success() {
@@ -4780,8 +4664,6 @@ async fn test_group_member_role_in_list_groups() {
     let bob_member = group.members.iter().find(|m| m.username == "bob").unwrap();
     assert_eq!(bob_member.role, "member");
 }
-
-// ── Escrow Invite Tests ──────────────────────────────────────────
 
 async fn create_escrow_invite(
     app: &Router,
@@ -5406,8 +5288,6 @@ async fn test_decline_invite_unauthenticated() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ── List group pending invites ───────────────────────────────────
-
 async fn list_group_pending_invites(
     app: &Router,
     token: &str,
@@ -5478,8 +5358,6 @@ async fn test_list_group_pending_invites_not_admin() {
     let (status, _) = list_group_pending_invites(&app, &bob_token, group_id).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
-
-// ── Cancel invite ────────────────────────────────────────────────
 
 async fn cancel_invite(app: &Router, token: &str, group_id: Uuid, invitee_id: Uuid) -> StatusCode {
     let req_body = conclave_proto::CancelInviteRequest {
@@ -5577,8 +5455,6 @@ async fn test_cancel_invite_nonexistent_user() {
     let status = cancel_invite(&app, &alice_token, group_id, Uuid::new_v4()).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
-
-// ── Message Expiration & Retention Tests ─────────────────────────
 
 fn setup_with_config(config: config::ServerConfig) -> Router {
     let database = db::Database::open_in_memory().unwrap();
@@ -6055,8 +5931,6 @@ async fn test_update_group_expiry_not_applied_when_flag_false() {
     assert_eq!(resp.groups[0].message_expiry_seconds, -1);
 }
 
-// ── Account Deletion Tests ──────────────────────────────────────
-
 #[tokio::test]
 async fn test_delete_account_success() {
     let (app, app_state) = setup_with_state();
@@ -6178,8 +6052,6 @@ async fn test_delete_account_cleans_invites() {
     let invites = app_state.db.list_pending_invites_for_user(bob_id).unwrap();
     assert!(invites.is_empty());
 }
-
-// ── Group Deletion Tests ──────────────────────────────────────
 
 #[tokio::test]
 async fn test_delete_group_success() {

@@ -363,8 +363,13 @@ pub fn render_new_message(
 /// Return the (prefix, display_content) for the input line, handling
 /// password prompt mode (masked with '*') vs normal mode.
 fn password_or_normal_input(state: &AppState, input: &InputLine) -> (String, String) {
-    if let InputMode::PasswordPrompt { ref stage, .. } = state.input_mode {
-        let prefix = stage.label().to_string();
+    if let InputMode::PasswordPrompt {
+        ref stage,
+        ref purpose,
+        ..
+    } = state.input_mode
+    {
+        let prefix = stage.label(purpose).to_string();
         let masked = "*".repeat(input.content().chars().count());
         (prefix, masked)
     } else {

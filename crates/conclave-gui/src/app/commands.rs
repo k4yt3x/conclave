@@ -54,13 +54,20 @@ impl Conclave {
             }
             screen::dashboard::Message::ToggleUserPopover => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.show_user_popover = !dashboard.show_user_popover;
+                    if matches!(
+                        dashboard.overlay,
+                        Some(screen::dashboard::Overlay::UserPopover)
+                    ) {
+                        dashboard.overlay = None;
+                    } else {
+                        dashboard.overlay = Some(screen::dashboard::Overlay::UserPopover);
+                    }
                 }
                 Task::none()
             }
             screen::dashboard::Message::CloseUserPopover => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.show_user_popover = false;
+                    dashboard.overlay = None;
                 }
                 Task::none()
             }
@@ -157,49 +164,66 @@ impl Conclave {
                 Task::none()
             }
             screen::dashboard::Message::PasswordDialogCurrentChanged(value) => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.password_dialog.current_password = value;
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    dialog.current_password = value;
                 }
                 Task::none()
             }
             screen::dashboard::Message::PasswordDialogNewChanged(value) => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.password_dialog.new_password = value;
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    dialog.new_password = value;
                 }
                 Task::none()
             }
             screen::dashboard::Message::PasswordDialogConfirmChanged(value) => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.password_dialog.confirm_password = value;
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    dialog.confirm_password = value;
                 }
                 Task::none()
             }
             screen::dashboard::Message::PasswordDialogSubmit => {
-                let (current, new, confirm) =
-                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                        if dashboard.password_dialog.loading {
-                            return Task::none();
-                        }
-                        (
-                            dashboard.password_dialog.current_password.clone(),
-                            dashboard.password_dialog.new_password.clone(),
-                            dashboard.password_dialog.confirm_password.clone(),
-                        )
-                    } else {
+                let (current, new, confirm) = if let screen::Screen::Dashboard(dashboard) =
+                    &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    if dialog.loading {
                         return Task::none();
-                    };
+                    }
+                    (
+                        dialog.current_password.clone(),
+                        dialog.new_password.clone(),
+                        dialog.confirm_password.clone(),
+                    )
+                } else {
+                    return Task::none();
+                };
 
                 if new != confirm {
-                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                        dashboard.password_dialog.error =
-                            Some("New passwords do not match.".to_string());
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                        && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                            &mut dashboard.overlay
+                    {
+                        dialog.error = Some("New passwords do not match.".to_string());
                     }
                     return Task::none();
                 }
 
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.password_dialog.loading = true;
-                    dashboard.password_dialog.error = None;
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    dialog.loading = true;
+                    dialog.error = None;
                 }
 
                 let params = self.api_params();
@@ -218,24 +242,26 @@ impl Conclave {
             }
             screen::dashboard::Message::PasswordDialogCancel => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.show_password_dialog = false;
-                    zeroize_password_dialog(&mut dashboard.password_dialog);
+                    dashboard.clear_overlay();
                 }
                 Task::none()
             }
             screen::dashboard::Message::PasswordDialogResult(result) => {
-                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.password_dialog.loading = false;
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::PasswordDialog(dialog)) =
+                        &mut dashboard.overlay
+                {
+                    dialog.loading = false;
                     match result {
                         Ok(()) => {
-                            dashboard.show_password_dialog = false;
-                            zeroize_password_dialog(&mut dashboard.password_dialog);
+                            zeroize_password_dialog(dialog);
+                            dashboard.overlay = None;
                             self.push_system_message(
                                 "Password changed successfully. Please log in again.",
                             );
                         }
                         Err(e) => {
-                            dashboard.password_dialog.error = Some(e);
+                            dialog.error = Some(e);
                         }
                     }
                 }
@@ -250,30 +276,32 @@ impl Conclave {
             screen::dashboard::Message::MessageContextMenu(index, point, link_url) => {
                 let (content, details) = self.context_menu_message_data(index);
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.context_menu = Some(screen::dashboard::ContextMenuState {
-                        position: point,
-                        message_content: content,
-                        link_url,
-                        details_text: details,
-                    });
+                    dashboard.overlay = Some(screen::dashboard::Overlay::ContextMenu(
+                        screen::dashboard::ContextMenuState {
+                            position: point,
+                            message_content: content,
+                            link_url,
+                            details_text: details,
+                        },
+                    ));
                 }
                 Task::none()
             }
             screen::dashboard::Message::CloseContextMenu => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.context_menu = None;
+                    dashboard.overlay = None;
                 }
                 Task::none()
             }
             screen::dashboard::Message::CopyToClipboard(text) => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.context_menu = None;
+                    dashboard.overlay = None;
                 }
                 iced::clipboard::write(text)
             }
             screen::dashboard::Message::OpenLink(url) => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.context_menu = None;
+                    dashboard.overlay = None;
                 }
                 if let Err(error) = open::that(&url) {
                     tracing::warn!(%error, %url, "failed to open URL");
@@ -282,19 +310,62 @@ impl Conclave {
             }
             screen::dashboard::Message::ShowProperties => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    let details = dashboard
-                        .context_menu
-                        .as_ref()
-                        .map(|ctx| ctx.details_text.clone())
-                        .unwrap_or_default();
-                    dashboard.context_menu = None;
-                    dashboard.properties_text = Some(details);
+                    let details = if let Some(screen::dashboard::Overlay::ContextMenu(ctx)) =
+                        &dashboard.overlay
+                    {
+                        ctx.details_text.clone()
+                    } else {
+                        String::new()
+                    };
+                    dashboard.overlay = Some(screen::dashboard::Overlay::Properties(details));
                 }
                 Task::none()
             }
             screen::dashboard::Message::CloseProperties => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.properties_text = None;
+                    dashboard.overlay = None;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::ExpungeDialogPasswordChanged(password) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::ExpungeDialog {
+                        password: current, ..
+                    }) = &mut dashboard.overlay
+                {
+                    *current = password;
+                }
+                Task::none()
+            }
+            screen::dashboard::Message::ExpungeDialogSubmit => {
+                let password = if let screen::Screen::Dashboard(dashboard) = &self.screen
+                    && let Some(screen::dashboard::Overlay::ExpungeDialog { password, .. }) =
+                        &dashboard.overlay
+                {
+                    password.clone()
+                } else {
+                    return Task::none();
+                };
+                if password.is_empty() {
+                    if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                        && let Some(screen::dashboard::Overlay::ExpungeDialog { error, .. }) =
+                            &mut dashboard.overlay
+                    {
+                        *error = Some("Password is required".into());
+                    }
+                    return Task::none();
+                }
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen
+                    && let Some(screen::dashboard::Overlay::ExpungeDialog { error, .. }) =
+                        &mut dashboard.overlay
+                {
+                    *error = None;
+                }
+                self.expunge_account(password)
+            }
+            screen::dashboard::Message::ExpungeDialogCancel => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.clear_overlay();
                 }
                 Task::none()
             }
@@ -681,8 +752,9 @@ impl Conclave {
             }
             Ok(Command::Passwd) => {
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
-                    dashboard.show_password_dialog = true;
-                    dashboard.password_dialog = PasswordChangeDialog::default();
+                    dashboard.overlay = Some(screen::dashboard::Overlay::PasswordDialog(
+                        PasswordChangeDialog::default(),
+                    ));
                 }
                 Task::none()
             }
@@ -847,7 +919,15 @@ impl Conclave {
             }
 
             // Account deletion / group deletion
-            Ok(Command::Expunge { password }) => self.expunge_account(password),
+            Ok(Command::Expunge { .. }) => {
+                if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
+                    dashboard.overlay = Some(screen::dashboard::Overlay::ExpungeDialog {
+                        password: String::new(),
+                        error: None,
+                    });
+                }
+                Task::none()
+            }
             Ok(Command::Delete) => self.delete_group(),
 
             // Leave / security / reset

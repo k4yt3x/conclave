@@ -36,6 +36,20 @@ pub struct PasswordChangeDialog {
     pub loading: bool,
 }
 
+/// Modal overlay shown on top of the dashboard. Only one can be active at a
+/// time. The focus guard in `app.rs` uses `overlay.is_some()` to suppress
+/// auto-focusing the chat input, so new variants are automatically handled.
+pub enum Overlay {
+    UserPopover,
+    PasswordDialog(PasswordChangeDialog),
+    ExpungeDialog {
+        password: String,
+        error: Option<String>,
+    },
+    ContextMenu(ContextMenuState),
+    Properties(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     RoomSelected(Uuid),
@@ -63,20 +77,19 @@ pub enum Message {
     OpenLink(String),
     ShowProperties,
     CloseProperties,
+    ExpungeDialogPasswordChanged(String),
+    ExpungeDialogSubmit,
+    ExpungeDialogCancel,
 }
 
 pub struct Dashboard {
     pub input_content: text_editor::Content,
-    pub show_user_popover: bool,
     pub show_members_sidebar: bool,
     pub left_sidebar_width: f32,
     pub right_sidebar_width: f32,
     pub dragging: Option<DragTarget>,
     pub last_drag_x: f32,
-    pub show_password_dialog: bool,
-    pub password_dialog: PasswordChangeDialog,
-    pub context_menu: Option<ContextMenuState>,
-    pub properties_text: Option<String>,
+    pub overlay: Option<Overlay>,
 }
 
 pub struct ContextMenuState {
@@ -87,19 +100,31 @@ pub struct ContextMenuState {
 }
 
 impl Dashboard {
+    /// Zeroize any sensitive fields in the current overlay and clear it.
+    pub fn clear_overlay(&mut self) {
+        match &mut self.overlay {
+            Some(Overlay::PasswordDialog(dialog)) => {
+                zeroize::Zeroize::zeroize(&mut dialog.current_password);
+                zeroize::Zeroize::zeroize(&mut dialog.new_password);
+                zeroize::Zeroize::zeroize(&mut dialog.confirm_password);
+            }
+            Some(Overlay::ExpungeDialog { password, .. }) => {
+                zeroize::Zeroize::zeroize(password);
+            }
+            _ => {}
+        }
+        self.overlay = None;
+    }
+
     pub fn new() -> Self {
         Self {
             input_content: text_editor::Content::new(),
-            show_user_popover: false,
             show_members_sidebar: false,
             left_sidebar_width: 200.0,
             right_sidebar_width: 180.0,
             dragging: None,
             last_drag_x: 0.0,
-            show_password_dialog: false,
-            context_menu: None,
-            properties_text: None,
-            password_dialog: PasswordChangeDialog::default(),
+            overlay: None,
         }
     }
 
@@ -164,20 +189,30 @@ impl Dashboard {
             .on_release(Message::DragEnded)
             .interaction(iced::mouse::Interaction::ResizingHorizontally);
             stack![base, overlay].into()
-        } else if self.show_password_dialog {
-            let dialog = self.view_password_dialog();
-            stack![base, dialog].into()
-        } else if self.show_user_popover {
-            let popover = self.view_user_popover(username, user_alias, user_id, server_url);
-            stack![base, popover].into()
-        } else if let Some(details) = &self.properties_text {
-            let dialog = self.view_properties_dialog(details);
-            stack![base, dialog].into()
-        } else if let Some(ctx) = &self.context_menu {
-            let menu = self.view_context_menu(ctx, window_size.width, window_size.height);
-            stack![base, menu].into()
         } else {
-            base.into()
+            match &self.overlay {
+                Some(Overlay::ExpungeDialog { .. }) => {
+                    let dialog = self.view_expunge_dialog();
+                    stack![base, dialog].into()
+                }
+                Some(Overlay::PasswordDialog(_)) => {
+                    let dialog = self.view_password_dialog();
+                    stack![base, dialog].into()
+                }
+                Some(Overlay::UserPopover) => {
+                    let popover = self.view_user_popover(username, user_alias, user_id, server_url);
+                    stack![base, popover].into()
+                }
+                Some(Overlay::Properties(details)) => {
+                    let dialog = self.view_properties_dialog(details);
+                    stack![base, dialog].into()
+                }
+                Some(Overlay::ContextMenu(ctx)) => {
+                    let menu = self.view_context_menu(ctx, window_size.width, window_size.height);
+                    stack![base, menu].into()
+                }
+                None => base.into(),
+            }
         }
     }
 
@@ -417,33 +452,34 @@ impl Dashboard {
     fn view_password_dialog(&self) -> Element<'_, Message> {
         use iced::widget::Space;
 
+        let Some(Overlay::PasswordDialog(dialog)) = &self.overlay else {
+            return Space::new().into();
+        };
+
         let title = text("Change Password")
             .size(18)
             .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>);
 
-        let current_input = text_input("Current password", &self.password_dialog.current_password)
+        let current_input = text_input("Current password", &dialog.current_password)
             .on_input(Message::PasswordDialogCurrentChanged)
             .secure(true)
             .padding(10)
             .size(14);
 
-        let new_input = text_input("New password", &self.password_dialog.new_password)
+        let new_input = text_input("New password", &dialog.new_password)
             .on_input(Message::PasswordDialogNewChanged)
             .secure(true)
             .padding(10)
             .size(14);
 
-        let confirm_input = text_input(
-            "Confirm new password",
-            &self.password_dialog.confirm_password,
-        )
-        .on_input(Message::PasswordDialogConfirmChanged)
-        .on_submit(Message::PasswordDialogSubmit)
-        .secure(true)
-        .padding(10)
-        .size(14);
+        let confirm_input = text_input("Confirm new password", &dialog.confirm_password)
+            .on_input(Message::PasswordDialogConfirmChanged)
+            .on_submit(Message::PasswordDialogSubmit)
+            .secure(true)
+            .padding(10)
+            .size(14);
 
-        let submit_label = if self.password_dialog.loading {
+        let submit_label = if dialog.loading {
             "Changing..."
         } else {
             "Change Password"
@@ -458,7 +494,7 @@ impl Dashboard {
         )
         .width(Length::Fill)
         .padding(10)
-        .on_press_maybe(if self.password_dialog.loading {
+        .on_press_maybe(if dialog.loading {
             None
         } else {
             Some(Message::PasswordDialogSubmit)
@@ -473,7 +509,7 @@ impl Dashboard {
         .width(Length::Fill)
         .padding(10)
         .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>)
-        .on_press_maybe(if self.password_dialog.loading {
+        .on_press_maybe(if dialog.loading {
             None
         } else {
             Some(Message::PasswordDialogCancel)
@@ -502,7 +538,7 @@ impl Dashboard {
         .spacing(4)
         .max_width(400);
 
-        if let Some(error) = &self.password_dialog.error {
+        if let Some(error) = &dialog.error {
             form = form.push(Space::new().height(8));
             form = form.push(
                 text(error.clone())
@@ -640,6 +676,78 @@ impl Dashboard {
             .align_y(Vertical::Center);
 
         opaque(mouse_area(centered).on_press(Message::CloseProperties))
+    }
+
+    fn view_expunge_dialog(&self) -> crate::widget::Element<'_, Message> {
+        let Some(Overlay::ExpungeDialog { password, error }) = &self.overlay else {
+            return iced::widget::Space::new().into();
+        };
+
+        let password_input = text_input("Enter your password to confirm", password)
+            .size(13)
+            .padding(8)
+            .secure(true)
+            .on_input(Message::ExpungeDialogPasswordChanged)
+            .on_submit(Message::ExpungeDialogSubmit)
+            .id("expunge_password");
+
+        let mut form = column![
+            text("Delete Account")
+                .size(16)
+                .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+            iced::widget::Space::new().height(4),
+            text("This action is permanent and cannot be undone. All your data will be wiped.")
+                .size(12)
+                .class(Box::new(theme::text::error) as Box<dyn Fn(&theme::Theme) -> _>),
+            iced::widget::Space::new().height(8),
+            text("Password")
+                .size(12)
+                .class(Box::new(theme::text::secondary) as Box<dyn Fn(&theme::Theme) -> _>),
+            password_input,
+            iced::widget::Space::new().height(12),
+            row![
+                button(
+                    text("Delete Account")
+                        .size(11)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .on_press(Message::ExpungeDialogSubmit)
+                .padding([6, 16])
+                .class(Box::new(theme::button::danger) as Box<dyn Fn(&theme::Theme, _) -> _>),
+                button(
+                    text("Cancel")
+                        .size(11)
+                        .class(Box::new(theme::text::primary) as Box<dyn Fn(&theme::Theme) -> _>),
+                )
+                .on_press(Message::ExpungeDialogCancel)
+                .padding([6, 16])
+                .class(Box::new(theme::button::secondary) as Box<dyn Fn(&theme::Theme, _) -> _>,),
+            ]
+            .spacing(8),
+        ]
+        .spacing(4)
+        .max_width(360);
+
+        if let Some(error) = error {
+            form = form.push(iced::widget::Space::new().height(8));
+            form = form.push(
+                text(error.clone())
+                    .size(13)
+                    .class(Box::new(theme::text::error) as Box<dyn Fn(&theme::Theme) -> _>),
+            );
+        }
+
+        let card = container(form)
+            .padding(24)
+            .class(Box::new(theme::container::card) as Box<dyn Fn(&theme::Theme) -> _>);
+
+        let centered = container(opaque(card))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center);
+
+        opaque(mouse_area(centered).on_press(Message::ExpungeDialogCancel))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -822,8 +930,8 @@ impl Dashboard {
 
                 match verification_status.get(&member.user_id) {
                     Some(VerificationStatus::Changed) => {
-                        member_row = member_row
-                            .push(text(" [!]").size(13).color(app_theme.indicator_risky));
+                        member_row =
+                            member_row.push(text(" [!]").size(13).color(app_theme.indicator_risky));
                     }
                     Some(VerificationStatus::Unknown | VerificationStatus::Unverified) => {
                         member_row = member_row
@@ -831,7 +939,9 @@ impl Dashboard {
                     }
                     Some(VerificationStatus::Verified) if show_verified_indicator => {
                         member_row = member_row.push(
-                            text(" [\u{2713}]").size(13).color(app_theme.indicator_verified),
+                            text(" [\u{2713}]")
+                                .size(13)
+                                .color(app_theme.indicator_verified),
                         );
                     }
                     Some(VerificationStatus::Verified) | None => {}

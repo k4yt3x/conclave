@@ -673,7 +673,6 @@ async fn handle_enter(
             return Ok(LoopAction::Quit);
         }
         Ok(cmd) => {
-            let is_expunge = matches!(cmd, Command::Expunge { .. });
             match commands::execute(cmd, api, state, mls, config, msg_store).await {
                 Ok((msgs, should_start_sse)) => {
                     for msg in msgs {
@@ -687,12 +686,7 @@ async fn handle_enter(
                             notifications,
                         );
                     }
-                    if is_expunge {
-                        return Ok(LoopAction::Quit);
-                    }
                     if should_start_sse {
-                        // Open the message store after a fresh /login
-                        // so messages and seq values are persisted.
                         if msg_store.is_none()
                             && let Ok(store) = MessageStore::open(&config.data_dir)
                         {
@@ -745,6 +739,50 @@ async fn handle_enter(
     Ok(LoopAction::Continue)
 }
 
+/// Execute a pending account deletion. Called from `handle_password_enter`
+/// after the password prompt collects the password. Routes through
+/// `execute_account` rather than making the API call directly in the
+/// password handler, which hangs due to the active SSE connection.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pending_expunge(
+    stdout: &mut impl Write,
+    state: &mut AppState,
+    input: &mut InputLine,
+    api: &Arc<Mutex<ApiClient>>,
+    mls: &mut Option<MlsManager>,
+    config: &ClientConfig,
+    msg_store: &mut Option<MessageStore>,
+    notifications: &NotificationMethod,
+    password: String,
+) -> crate::error::Result<LoopAction> {
+    match commands::execute(
+        Command::Expunge {
+            password: Some(password),
+        },
+        api,
+        state,
+        mls,
+        config,
+        msg_store,
+    )
+    .await
+    {
+        Ok((msgs, _)) => {
+            for msg in msgs {
+                add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+            }
+            let _ = render::render_full(stdout, state, input);
+            Ok(LoopAction::Quit)
+        }
+        Err(e) => {
+            let msg = DisplayMessage::system(&format!("Error: {e}"));
+            add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
+            let _ = render::render_full(stdout, state, input);
+            Ok(LoopAction::Continue)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_password_enter(
     stdout: &mut impl Write,
@@ -773,7 +811,6 @@ async fn handle_password_enter(
     };
 
     match (&purpose, &stage) {
-        // ── ChangePassword ───────────────────────────────────────
         (PasswordPromptPurpose::ChangePassword, PasswordPromptStage::Current) => {
             state.input_mode = InputMode::PasswordPrompt {
                 purpose,
@@ -832,7 +869,6 @@ async fn handle_password_enter(
             }
         }
 
-        // ── Register ─────────────────────────────────────────────
         (PasswordPromptPurpose::Register { .. }, PasswordPromptStage::New) => {
             state.input_mode = InputMode::PasswordPrompt {
                 purpose,
@@ -928,7 +964,6 @@ async fn handle_password_enter(
             }
         }
 
-        // ── Login ────────────────────────────────────────────────
         (PasswordPromptPurpose::Login { .. }, PasswordPromptStage::New) => {
             let PasswordPromptPurpose::Login { server, username } = purpose else {
                 unreachable!()
@@ -1022,6 +1057,21 @@ async fn handle_password_enter(
                     );
                 }
             }
+        }
+
+        (PasswordPromptPurpose::DeleteAccount, PasswordPromptStage::New) => {
+            return execute_pending_expunge(
+                stdout,
+                state,
+                input,
+                api,
+                mls,
+                config,
+                msg_store,
+                notifications,
+                text,
+            )
+            .await;
         }
 
         _ => {}

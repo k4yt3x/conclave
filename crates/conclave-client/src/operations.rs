@@ -19,8 +19,6 @@ fn map_join_error(error: tokio::task::JoinError) -> Error {
     Error::Other(format!("task join error: {error}"))
 }
 
-// ── Result types ─────────────────────────────────────────────────
-
 /// Information about a room loaded from the server.
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
@@ -183,8 +181,6 @@ pub enum SseEvent {
     },
 }
 
-// ── SSE event decoding ───────────────────────────────────────────
-
 /// Decode a hex-encoded protobuf SSE event into a typed `SseEvent`.
 pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
     let bytes =
@@ -245,8 +241,6 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
         None => Err(Error::Other("empty SSE event".into())),
     }
 }
-
-// ── Room loading ─────────────────────────────────────────────────
 
 /// Fetch the list of groups from the server and return them as `RoomInfo`.
 pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
