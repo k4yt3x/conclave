@@ -24,8 +24,13 @@ fn main() -> iced::Result {
         .init();
 
     let config = ClientConfig::load();
-    let _lock = acquire_instance_lock(&config.data_dir)
-        .expect("another conclave instance is already running");
+    let _lock = match acquire_instance_lock(&config.data_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
 
     let icon =
         iced::window::icon::from_file_data(include_bytes!("../../../assets/conclave.png"), None)

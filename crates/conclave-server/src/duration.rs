@@ -49,7 +49,9 @@ pub fn parse_duration(input: &str) -> Result<i64> {
         )));
     }
 
-    Ok(number * multiplier)
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| Error::BadRequest(format!("invalid duration '{input}': value too large")))
 }
 
 #[cfg(test)]
@@ -109,5 +111,10 @@ mod tests {
         assert!(parse_duration("d").is_err());
         assert!(parse_duration("-2d").is_err());
         assert!(parse_duration("0d").is_err());
+    }
+
+    #[test]
+    fn test_parse_overflow() {
+        assert!(parse_duration("999999999999y").is_err());
     }
 }

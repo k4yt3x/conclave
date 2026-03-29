@@ -273,7 +273,7 @@ impl Conclave {
                 }
                 Task::none()
             }
-            screen::dashboard::Message::MessageContextMenu(index, point, link_url) => {
+            screen::dashboard::Message::ContextMenuOpened(index, point, link_url) => {
                 let (content, details) = self.context_menu_message_data(index);
                 if let screen::Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.overlay = Some(screen::dashboard::Overlay::ContextMenu(
@@ -515,7 +515,10 @@ impl Conclave {
 
             // Account
             Ok(Command::Whois { username: None }) => {
-                let own_fingerprint = self.mls.as_ref().map(|m| m.signing_key_fingerprint());
+                let own_fingerprint = self
+                    .mls
+                    .as_ref()
+                    .and_then(|m| m.signing_key_fingerprint().ok());
                 let params = self.api_params();
                 Task::perform(
                     async move {

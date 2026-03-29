@@ -130,7 +130,7 @@ pub async fn initialize_mls_and_upload_key_packages(
     let (entries, fingerprint) = tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
         let entries = generate_initial_key_packages(&mls)?;
-        let fingerprint = mls.signing_key_fingerprint();
+        let fingerprint = mls.signing_key_fingerprint()?;
         Ok::<_, Error>((entries, fingerprint))
     })
     .await
@@ -213,7 +213,7 @@ pub async fn reset_account(api: &ApiClient, data_dir: &Path, user_id: Uuid) -> R
         let (entries, fingerprint) = tokio::task::spawn_blocking(move || {
             let mls = MlsManager::new(&data_dir, user_id)?;
             let entries = generate_initial_key_packages(&mls)?;
-            let fingerprint = mls.signing_key_fingerprint();
+            let fingerprint = mls.signing_key_fingerprint()?;
             Ok::<_, Error>((entries, fingerprint))
         })
         .await

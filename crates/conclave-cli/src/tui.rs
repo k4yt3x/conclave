@@ -104,19 +104,25 @@ pub async fn run(
             // 1 last-resort (permanent fallback) + 5 regular (single-use).
             if let Some(mls_mgr) = &mls {
                 match generate_initial_key_packages(mls_mgr) {
-                    Ok(entries) => {
-                        let fingerprint = mls_mgr.signing_key_fingerprint();
-                        if let Err(e) = api
-                            .lock()
-                            .await
-                            .upload_key_packages(entries, &fingerprint)
-                            .await
-                        {
+                    Ok(entries) => match mls_mgr.signing_key_fingerprint() {
+                        Ok(fingerprint) => {
+                            if let Err(e) = api
+                                .lock()
+                                .await
+                                .upload_key_packages(entries, &fingerprint)
+                                .await
+                            {
+                                state.system_messages.push(DisplayMessage::system(&format!(
+                                    "Warning: failed to upload key packages: {e}"
+                                )));
+                            }
+                        }
+                        Err(e) => {
                             state.system_messages.push(DisplayMessage::system(&format!(
-                                "Warning: failed to upload key packages: {e}"
+                                "Warning: failed to compute signing key fingerprint: {e}"
                             )));
                         }
-                    }
+                    },
                     Err(e) => {
                         state.system_messages.push(DisplayMessage::system(&format!(
                             "Warning: failed to generate key packages: {e}"
@@ -1083,6 +1089,7 @@ async fn handle_password_enter(
 
 /// Perform auto-logout: clear auth state, stop SSE, and delete the session file.
 /// Used when the server returns 401 with an expired/invalidated token.
+#[allow(clippy::too_many_arguments)]
 async fn auto_logout(
     stdout: &mut impl Write,
     state: &mut AppState,
@@ -1108,10 +1115,10 @@ async fn auto_logout(
 
 fn remove_session_file(data_dir: &std::path::Path) {
     let session_path = data_dir.join("session.toml");
-    if let Err(error) = std::fs::remove_file(&session_path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(%error, "failed to remove session file");
-        }
+    if let Err(error) = std::fs::remove_file(&session_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, "failed to remove session file");
     }
 }
 
@@ -1244,7 +1251,9 @@ async fn accept_pending_welcomes(
         )));
     }
 
-    let _ = commands::load_rooms(api, state, msg_store).await;
+    if let Err(error) = commands::load_rooms(api, state, msg_store).await {
+        tracing::warn!(%error, "failed to reload rooms after processing welcomes");
+    }
 }
 
 /// Fetch messages that arrived while the client was offline for all rooms.

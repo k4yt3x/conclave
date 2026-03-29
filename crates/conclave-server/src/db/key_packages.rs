@@ -20,7 +20,7 @@ impl Database {
         data: &[u8],
         is_last_resort: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let uid_str = user_id.to_string();
 
         if is_last_resort {
@@ -53,7 +53,7 @@ impl Database {
     /// Falls back to the last-resort package if no regular ones remain — the
     /// last-resort package is returned but **not** deleted.
     pub fn consume_key_package(&self, user_id: Uuid) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let uid_str = user_id.to_string();
 
         let mut stmt = conn.prepare(
@@ -83,7 +83,7 @@ impl Database {
 
     /// Count key packages for a user: (regular, last_resort).
     pub fn count_key_packages(&self, user_id: Uuid) -> Result<(i64, i64)> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let uid_str = user_id.to_string();
         let regular: i64 = conn.query_row(
             "SELECT COUNT(*) FROM key_packages WHERE user_id = ?1 AND is_last_resort = 0",
@@ -99,7 +99,7 @@ impl Database {
     }
 
     pub fn delete_key_packages(&self, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM key_packages WHERE user_id = ?1",
             params![user_id.to_string()],

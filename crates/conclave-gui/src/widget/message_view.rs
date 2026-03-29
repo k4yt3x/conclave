@@ -134,9 +134,7 @@ fn split_urls(text: &str) -> Vec<(&str, bool)> {
 
                 // Trim trailing punctuation that's likely not part of the URL.
                 let url = &url_part[..end];
-                let trimmed_end = url
-                    .trim_end_matches(|c: char| matches!(c, '.' | ',' | ')' | ']' | ';' | '!'))
-                    .len();
+                let trimmed_end = url.trim_end_matches(['.', ',', ')', ']', ';', '!']).len();
 
                 segments.push((&url_part[..trimmed_end], true));
                 remaining = &url_part[trimmed_end..];

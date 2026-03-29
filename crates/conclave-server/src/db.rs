@@ -25,6 +25,15 @@ pub struct UserRow {
     pub signing_key_fingerprint: Option<String>,
 }
 
+/// A user info record without the password hash, used for lookups and member lists.
+#[derive(Debug)]
+pub struct UserInfo {
+    pub user_id: Uuid,
+    pub username: String,
+    pub alias: Option<String>,
+    pub signing_key_fingerprint: Option<String>,
+}
+
 /// A pending welcome from the `pending_welcomes` table.
 #[derive(Debug)]
 pub struct PendingWelcomeRow {
@@ -103,6 +112,13 @@ pub struct Database {
 }
 
 impl Database {
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|error| {
+            tracing::warn!("database mutex was poisoned, recovering");
+            error.into_inner()
+        })
+    }
+
     /// Open (or create) the database at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -124,7 +140,7 @@ impl Database {
     }
 
     fn initialize(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(
@@ -356,9 +372,9 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = db.create_user("alice", "hash").unwrap();
         let user = db.get_user_by_id(id).unwrap().unwrap();
-        assert_eq!(user.0, id);
-        assert_eq!(user.1, "alice");
-        assert!(user.2.is_none());
+        assert_eq!(user.user_id, id);
+        assert_eq!(user.username, "alice");
+        assert!(user.alias.is_none());
     }
 
     #[test]
@@ -930,17 +946,17 @@ mod tests {
 
         // Initially no alias.
         let user = db.get_user_by_id(uid).unwrap().unwrap();
-        assert!(user.2.is_none());
+        assert!(user.alias.is_none());
 
         // Set alias.
         db.update_user_alias(uid, Some("Alice Wonderland")).unwrap();
         let user = db.get_user_by_id(uid).unwrap().unwrap();
-        assert_eq!(user.2, Some("Alice Wonderland".to_string()));
+        assert_eq!(user.alias, Some("Alice Wonderland".to_string()));
 
         // Clear alias.
         db.update_user_alias(uid, None).unwrap();
         let user = db.get_user_by_id(uid).unwrap().unwrap();
-        assert!(user.2.is_none());
+        assert!(user.alias.is_none());
     }
 
     #[test]
@@ -1018,11 +1034,11 @@ mod tests {
 
         db.update_user_alias(uid, Some("Alice")).unwrap();
         let user = db.get_user_by_id(uid).unwrap().unwrap();
-        assert_eq!(user.2, Some("Alice".to_string()));
+        assert_eq!(user.alias, Some("Alice".to_string()));
 
         db.update_user_alias(uid, None).unwrap();
         let user = db.get_user_by_id(uid).unwrap().unwrap();
-        assert!(user.2.is_none());
+        assert!(user.alias.is_none());
     }
 
     #[test]
@@ -1182,8 +1198,8 @@ mod tests {
 
         let admins = db.get_group_admins(group_id).unwrap();
         assert_eq!(admins.len(), 1);
-        assert_eq!(admins[0].0, alice);
-        assert_eq!(admins[0].1, "alice");
+        assert_eq!(admins[0].user_id, alice);
+        assert_eq!(admins[0].username, "alice");
 
         db.promote_member(group_id, bob).unwrap();
         let admins = db.get_group_admins(group_id).unwrap();

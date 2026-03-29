@@ -1,7 +1,7 @@
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::db::UserGroupRow;
+use crate::db::{UserGroupRow, UserInfo};
 use crate::error::{Error, Result};
 use crate::validation::{validate_alias, validate_group_name};
 
@@ -9,7 +9,7 @@ use super::Database;
 
 impl Database {
     pub fn group_exists(&self, group_id: Uuid) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT 1 FROM groups WHERE id = ?1")?;
         let exists: Option<i64> = stmt
             .query_row(params![group_id.to_string()], |row| row.get(0))
@@ -28,7 +28,7 @@ impl Database {
             validate_alias(alias)?;
         }
         let group_id = Uuid::new_v4();
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO groups (id, group_name, alias) VALUES (?1, ?2, ?3)",
             params![group_id.to_string(), group_name, alias],
@@ -49,7 +49,7 @@ impl Database {
     }
 
     pub fn add_group_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?1, ?2)",
             params![group_id.to_string(), user_id.to_string()],
@@ -58,7 +58,7 @@ impl Database {
     }
 
     pub fn is_group_member(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt =
             conn.prepare("SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2")?;
         let exists: Option<i64> = stmt
@@ -70,7 +70,7 @@ impl Database {
     }
 
     pub fn list_user_groups(&self, user_id: Uuid) -> Result<Vec<UserGroupRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id,
                     g.message_expiry_seconds
@@ -112,7 +112,7 @@ impl Database {
     }
 
     pub fn set_mls_group_id(&self, group_id: Uuid, mls_group_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE groups SET mls_group_id = ?2 WHERE id = ?1 AND mls_group_id IS NULL",
             params![group_id.to_string(), mls_group_id],
@@ -121,7 +121,7 @@ impl Database {
     }
 
     pub fn remove_group_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
             params![group_id.to_string(), user_id.to_string()],
@@ -130,7 +130,7 @@ impl Database {
     }
 
     pub fn get_group_members(&self, group_id: Uuid) -> Result<Vec<crate::db::GroupMemberRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.alias, gm.role, u.signing_key_fingerprint
              FROM users u
@@ -160,7 +160,7 @@ impl Database {
 
     /// Get the name for a group.
     pub fn get_group_name(&self, group_id: Uuid) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let result: Option<String> = conn
             .prepare("SELECT group_name FROM groups WHERE id = ?1")?
             .query_row(params![group_id.to_string()], |row| row.get(0))
@@ -169,7 +169,7 @@ impl Database {
     }
 
     pub fn get_group_alias(&self, group_id: Uuid) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT alias FROM groups WHERE id = ?1")?;
         let result: Option<Option<String>> = stmt
             .query_row(params![group_id.to_string()], |row| row.get(0))
@@ -181,7 +181,7 @@ impl Database {
         if let Some(alias) = alias {
             validate_alias(alias)?;
         }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE groups SET alias = ?1 WHERE id = ?2",
             params![alias, group_id.to_string()],
@@ -190,7 +190,7 @@ impl Database {
     }
 
     pub fn update_group_name(&self, group_id: Uuid, group_name: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE groups SET group_name = ?1 WHERE id = ?2",
             params![group_name, group_id.to_string()],
@@ -211,7 +211,7 @@ impl Database {
 
     /// Get the message expiry setting for a group.
     pub fn get_group_expiry(&self, group_id: Uuid) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let expiry: i64 = conn
             .prepare("SELECT message_expiry_seconds FROM groups WHERE id = ?1")?
             .query_row(params![group_id.to_string()], |row| row.get(0))
@@ -222,7 +222,7 @@ impl Database {
 
     /// Set the message expiry setting for a group.
     pub fn set_group_expiry(&self, group_id: Uuid, seconds: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE groups SET message_expiry_seconds = ?2 WHERE id = ?1",
             params![group_id.to_string(), seconds],
@@ -233,7 +233,7 @@ impl Database {
     /// Delete a group. CASCADE handles all dependent rows (group_members,
     /// pending_welcomes, messages, message_fetch_watermarks, etc.).
     pub fn delete_group(&self, group_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM groups WHERE id = ?1",
             params![group_id.to_string()],
@@ -243,7 +243,7 @@ impl Database {
 
     /// Check whether a user is an admin of a group.
     pub fn is_group_admin(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2 AND role = 'admin'",
         )?;
@@ -257,7 +257,7 @@ impl Database {
 
     /// Promote a member to admin.
     pub fn promote_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
             params![group_id.to_string(), user_id.to_string()],
@@ -267,7 +267,7 @@ impl Database {
 
     /// Demote an admin to regular member.
     pub fn demote_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE group_members SET role = 'member' WHERE group_id = ?1 AND user_id = ?2",
             params![group_id.to_string(), user_id.to_string()],
@@ -277,7 +277,7 @@ impl Database {
 
     /// Count the number of admins in a group.
     pub fn count_group_admins(&self, group_id: Uuid) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND role = 'admin'",
             params![group_id.to_string()],
@@ -286,12 +286,9 @@ impl Database {
         Ok(count)
     }
 
-    /// List admin members of a group: (user_id, username, alias, signing_key_fingerprint).
-    pub fn get_group_admins(
-        &self,
-        group_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, Option<String>, Option<String>)>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// List admin members of a group.
+    pub fn get_group_admins(&self, group_id: Uuid) -> Result<Vec<UserInfo>> {
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.alias, u.signing_key_fingerprint
              FROM users u
@@ -305,10 +302,15 @@ impl Database {
             })?
             .collect::<std::result::Result<Vec<(String, String, Option<String>, Option<String>)>, _>>()?;
         let mut result = Vec::with_capacity(rows.len());
-        for (id_str, username, alias, fingerprint) in rows {
-            let uid = Uuid::parse_str(&id_str)
+        for (id_str, username, alias, signing_key_fingerprint) in rows {
+            let user_id = Uuid::parse_str(&id_str)
                 .map_err(|e| Error::Internal(format!("invalid user UUID: {e}")))?;
-            result.push((uid, username, alias, fingerprint));
+            result.push(UserInfo {
+                user_id,
+                username,
+                alias,
+                signing_key_fingerprint,
+            });
         }
         Ok(result)
     }

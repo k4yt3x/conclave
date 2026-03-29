@@ -95,7 +95,7 @@ pub async fn list_pending_invites(
         let inviter_username = state
             .db
             .get_user_by_id(row.inviter_id)?
-            .map(|(_, username, _, _)| username)
+            .map(|info| info.username)
             .unwrap_or_default();
         let group_name = state.db.get_group_name(row.group_id)?.unwrap_or_default();
         let group_alias = state.db.get_group_alias(row.group_id)?.unwrap_or_default();
@@ -183,7 +183,7 @@ pub async fn list_group_pending_invites(
         let inviter_username = state
             .db
             .get_user_by_id(row.inviter_id)?
-            .map(|(_, username, _, _)| username)
+            .map(|info| info.username)
             .unwrap_or_default();
         let group_name = state.db.get_group_name(row.group_id)?.unwrap_or_default();
         let group_alias = state.db.get_group_alias(row.group_id)?.unwrap_or_default();

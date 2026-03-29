@@ -13,7 +13,7 @@ impl Database {
         sender_id: Uuid,
         mls_message: &[u8],
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let gid_str = group_id.to_string();
         let next_seq: i64 = conn.query_row(
             "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM messages WHERE group_id = ?1",
@@ -34,7 +34,7 @@ impl Database {
         after_seq: i64,
         limit: i64,
     ) -> Result<Vec<StoredMessageRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT sequence_num, sender_id, mls_message, created_at
              FROM messages
@@ -65,7 +65,7 @@ impl Database {
     /// Delete messages that exceed the server-wide retention or per-group expiry.
     /// Returns the total number of rows deleted.
     pub fn cleanup_expired_messages(&self, server_retention_seconds: i64) -> Result<u64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut total: u64 = 0;
 
         // Server-wide retention (when > 0).
@@ -94,7 +94,7 @@ impl Database {
     /// Delete messages in groups with `message_expiry_seconds = 0` where all current
     /// members have fetched past that sequence number.
     pub fn cleanup_fully_fetched_messages(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let count = conn.execute(
             "DELETE FROM messages WHERE group_id IN (
                 SELECT id FROM groups WHERE message_expiry_seconds = 0
@@ -117,7 +117,7 @@ impl Database {
         user_id: Uuid,
         sequence_num: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO message_fetch_watermarks (group_id, user_id, last_fetched_seq)
              VALUES (?1, ?2, ?3)

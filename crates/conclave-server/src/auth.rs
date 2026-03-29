@@ -98,11 +98,15 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             .validate_session(token)?
             .ok_or_else(|| Error::token_expired("invalid or expired token"))?;
 
-        let new_expires_at = SystemTime::now()
+        let now_secs: i64 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| Error::Internal(format!("system clock error: {e}")))?
-            .as_secs() as i64
-            + state.config.token_ttl_seconds;
+            .as_secs()
+            .try_into()
+            .map_err(|_| Error::Internal("system clock overflow".into()))?;
+        let new_expires_at = now_secs
+            .checked_add(state.config.token_ttl_seconds)
+            .ok_or_else(|| Error::Internal("token expiry overflow".into()))?;
         state.db.extend_session(token, new_expires_at)?;
 
         Ok(AuthUser {

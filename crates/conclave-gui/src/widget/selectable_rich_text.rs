@@ -134,6 +134,8 @@ struct State<P: Paragraph> {
     interaction: Interaction,
 }
 
+type RightClickHandler<'a, Message> = Option<Box<dyn Fn(Point, Option<String>) -> Message + 'a>>;
+
 pub struct SelectableRichText<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
@@ -147,7 +149,7 @@ where
     class: Theme::Class<'a>,
     selection_color: Color,
     on_link_click: Option<Box<dyn Fn(String) -> Message + 'a>>,
-    on_right_click: Option<Box<dyn Fn(Point, Option<String>) -> Message + 'a>>,
+    on_right_click: RightClickHandler<'a, Message>,
 }
 
 impl<'a, Message, Theme, Renderer> SelectableRichText<'a, Message, Theme, Renderer>
@@ -438,10 +440,10 @@ where
                         // This was a click, not a drag. Check for link.
                         if let Some(on_link_click) = &self.on_link_click {
                             let local = Point::new(raw.start.x - bounds.x, raw.start.y - bounds.y);
-                            if let Some(span_index) = state.paragraph.hit_span(local) {
-                                if let Some(url) = self.span_has_link(span_index) {
-                                    shell.publish((on_link_click)(url.to_string()));
-                                }
+                            if let Some(span_index) = state.paragraph.hit_span(local)
+                                && let Some(url) = self.span_has_link(span_index)
+                            {
+                                shell.publish((on_link_click)(url.to_string()));
                             }
                         }
                         state.interaction = Interaction::Idle;
@@ -486,19 +488,19 @@ where
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let bounds = layout.bounds();
-        if let Some(position) = cursor.position() {
-            if bounds.contains(position) {
-                if self.on_link_click.is_some() {
-                    let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
-                    let local = Point::new(position.x - bounds.x, position.y - bounds.y);
-                    if let Some(span_index) = state.paragraph.hit_span(local) {
-                        if self.span_has_link(span_index).is_some() {
-                            return mouse::Interaction::Pointer;
-                        }
-                    }
+        if let Some(position) = cursor.position()
+            && bounds.contains(position)
+        {
+            if self.on_link_click.is_some() {
+                let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+                let local = Point::new(position.x - bounds.x, position.y - bounds.y);
+                if let Some(span_index) = state.paragraph.hit_span(local)
+                    && self.span_has_link(span_index).is_some()
+                {
+                    return mouse::Interaction::Pointer;
                 }
-                return mouse::Interaction::Text;
             }
+            return mouse::Interaction::Text;
         }
         mouse::Interaction::None
     }

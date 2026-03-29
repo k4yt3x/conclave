@@ -133,6 +133,16 @@ impl ServerConfig {
                 );
             }
         }
+
+        crate::duration::parse_duration(&self.message_retention).map_err(|e| {
+            format!(
+                "invalid message_retention '{}': {e}",
+                self.message_retention
+            )
+        })?;
+        crate::duration::parse_duration(&self.cleanup_interval)
+            .map_err(|e| format!("invalid cleanup_interval '{}': {e}", self.cleanup_interval))?;
+
         Ok(())
     }
 

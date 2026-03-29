@@ -1056,7 +1056,7 @@ async fn execute_profile(
                 resp.username
             )));
             if let Some(mls_mgr) = mls {
-                let fp = mls_mgr.signing_key_fingerprint();
+                let fp = mls_mgr.signing_key_fingerprint()?;
                 let formatted = conclave_client::mls::format_fingerprint(&fp);
                 msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
             }

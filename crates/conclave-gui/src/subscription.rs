@@ -138,23 +138,22 @@ fn sse_stream(
                         if let reqwest_eventsource::Error::InvalidStatusCode(
                             status, response,
                         ) = error
+                            && status == reqwest::StatusCode::UNAUTHORIZED
                         {
-                            if status == reqwest::StatusCode::UNAUTHORIZED {
-                                let is_token_expired = response
-                                    .bytes()
-                                    .await
-                                    .ok()
-                                    .and_then(|body| {
-                                        conclave_proto::ErrorResponse::decode(body.as_ref()).ok()
-                                    })
-                                    .is_some_and(|err| {
-                                        err.error_code
-                                            == conclave_proto::ErrorCode::AuthTokenExpired as i32
-                                    });
-                                if is_token_expired {
-                                    yield SseUpdate::Unauthorized;
-                                    return;
-                                }
+                            let is_token_expired = response
+                                .bytes()
+                                .await
+                                .ok()
+                                .and_then(|body| {
+                                    conclave_proto::ErrorResponse::decode(body.as_ref()).ok()
+                                })
+                                .is_some_and(|err| {
+                                    err.error_code
+                                        == conclave_proto::ErrorCode::AuthTokenExpired as i32
+                                });
+                            if is_token_expired {
+                                yield SseUpdate::Unauthorized;
+                                return;
                             }
                         }
                         yield SseUpdate::Disconnected;

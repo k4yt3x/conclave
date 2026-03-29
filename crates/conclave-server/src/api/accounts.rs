@@ -118,7 +118,7 @@ pub async fn logout(
 }
 
 pub async fn me(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<impl IntoResponse> {
-    let (user_id, username, alias, fingerprint) = state
+    let user_info = state
         .db
         .get_user_by_id(auth.user_id)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
@@ -126,10 +126,10 @@ pub async fn me(State(state): State<Arc<AppState>>, auth: AuthUser) -> Result<im
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id: user_id.as_bytes().to_vec(),
-            username,
-            alias: alias.unwrap_or_default(),
-            signing_key_fingerprint: fingerprint.unwrap_or_default(),
+            user_id: user_info.user_id.as_bytes().to_vec(),
+            username: user_info.username,
+            alias: user_info.alias.unwrap_or_default(),
+            signing_key_fingerprint: user_info.signing_key_fingerprint.unwrap_or_default(),
         },
     ))
 }
@@ -195,7 +195,7 @@ pub async fn get_user_by_id(
     _auth: AuthUser,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let (uid, username, alias, fingerprint) = state
+    let user_info = state
         .db
         .get_user_by_id(user_id)?
         .ok_or_else(|| Error::NotFound("user not found".into()))?;
@@ -203,10 +203,10 @@ pub async fn get_user_by_id(
     Ok(proto_response(
         StatusCode::OK,
         &conclave_proto::UserInfoResponse {
-            user_id: uid.as_bytes().to_vec(),
-            username,
-            alias: alias.unwrap_or_default(),
-            signing_key_fingerprint: fingerprint.unwrap_or_default(),
+            user_id: user_info.user_id.as_bytes().to_vec(),
+            username: user_info.username,
+            alias: user_info.alias.unwrap_or_default(),
+            signing_key_fingerprint: user_info.signing_key_fingerprint.unwrap_or_default(),
         },
     ))
 }

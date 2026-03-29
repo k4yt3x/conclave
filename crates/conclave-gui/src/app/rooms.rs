@@ -170,12 +170,10 @@ impl Conclave {
                 .any(|m| m.content == "Reconnecting...");
             self.system_messages
                 .retain(|m| m.content != "Reconnecting...");
-            if is_reconnect {
-                if let Some(username) = &self.username {
-                    self.push_system_message(&format!(
-                        "Welcome back, {username}. Type /help for commands."
-                    ));
-                }
+            if is_reconnect && let Some(username) = &self.username {
+                self.push_system_message(&format!(
+                    "Welcome back, {username}. Type /help for commands."
+                ));
             }
         }
         self.rooms_loaded = true;

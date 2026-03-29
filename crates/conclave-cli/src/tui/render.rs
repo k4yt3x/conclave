@@ -72,7 +72,7 @@ fn rows_for_width(width: usize, cols: usize) -> u16 {
     if cols == 0 || width == 0 {
         return 1;
     }
-    ((width + cols - 1) / cols) as u16
+    width.div_ceil(cols) as u16
 }
 
 /// Width of the message prefix in terminal columns.

@@ -15,7 +15,7 @@ impl Database {
         welcome_data: &[u8],
     ) -> Result<()> {
         let welcome_id = Uuid::new_v4();
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO pending_welcomes (id, group_id, group_alias, user_id, welcome_data)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -32,7 +32,7 @@ impl Database {
 
     /// Returns (welcome_id, group_id, group_alias, welcome_data).
     pub fn get_pending_welcomes(&self, user_id: Uuid) -> Result<Vec<PendingWelcomeRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, group_alias, welcome_data
              FROM pending_welcomes
@@ -63,7 +63,7 @@ impl Database {
     }
 
     pub fn delete_pending_welcome(&self, welcome_id: Uuid, user_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM pending_welcomes WHERE id = ?1 AND user_id = ?2",
             params![welcome_id.to_string(), user_id.to_string()],
@@ -72,7 +72,7 @@ impl Database {
     }
 
     pub fn store_group_info(&self, group_id: Uuid, group_info_data: &[u8]) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO group_infos (group_id, group_info_data, updated_at)
              VALUES (?1, ?2, unixepoch())
@@ -85,7 +85,7 @@ impl Database {
     }
 
     pub fn get_group_info(&self, group_id: Uuid) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt =
             conn.prepare("SELECT group_info_data FROM group_infos WHERE group_id = ?1")?;
         let result = stmt
@@ -104,7 +104,7 @@ impl Database {
         group_info: &[u8],
         commit_message: &[u8],
     ) -> Result<super::CommitResult> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.lock_conn();
         let transaction = conn.savepoint()?;
         let gid_str = group_id.to_string();
 

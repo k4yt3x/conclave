@@ -17,7 +17,7 @@ impl Database {
         group_info: &[u8],
     ) -> Result<Uuid> {
         let invite_id = Uuid::new_v4();
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO pending_invites (id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -37,7 +37,7 @@ impl Database {
     }
 
     pub fn get_pending_invite(&self, invite_id: Uuid) -> Result<Option<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
              FROM pending_invites WHERE id = ?1",
@@ -85,7 +85,7 @@ impl Database {
     }
 
     pub fn list_pending_invites_for_user(&self, user_id: Uuid) -> Result<Vec<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
              FROM pending_invites WHERE invitee_id = ?1
@@ -139,7 +139,7 @@ impl Database {
     /// group_members, store the welcome in pending_welcomes, and store the commit
     /// as a group message.
     pub fn accept_pending_invite(&self, invite_id: Uuid) -> Result<AcceptedInvite> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.lock_conn();
         let transaction = conn.savepoint()?;
 
         let invite = transaction
@@ -256,7 +256,7 @@ impl Database {
     }
 
     pub fn list_pending_invites_for_group(&self, group_id: Uuid) -> Result<Vec<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
              FROM pending_invites WHERE group_id = ?1
@@ -311,7 +311,7 @@ impl Database {
         group_id: Uuid,
         invitee_id: Uuid,
     ) -> Result<Option<PendingInviteRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, inviter_id, invitee_id, commit_message, welcome_data, group_info, created_at
              FROM pending_invites WHERE group_id = ?1 AND invitee_id = ?2",
@@ -362,7 +362,7 @@ impl Database {
     }
 
     pub fn delete_pending_invite(&self, invite_id: Uuid) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM pending_invites WHERE id = ?1",
             params![invite_id.to_string()],
@@ -371,7 +371,7 @@ impl Database {
     }
 
     pub fn cleanup_expired_invites(&self, max_age_secs: i64) -> Result<u64> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let deleted = conn.execute(
             "DELETE FROM pending_invites WHERE created_at < (unixepoch() - ?1)",
             params![max_age_secs],

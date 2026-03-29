@@ -39,6 +39,10 @@ pub struct PasswordChangeDialog {
 /// Modal overlay shown on top of the dashboard. Only one can be active at a
 /// time. The focus guard in `app.rs` uses `overlay.is_some()` to suppress
 /// auto-focusing the chat input, so new variants are automatically handled.
+/// Result payload for fingerprint verification operations.
+pub type VerifyResultPayload =
+    Result<(Option<(Uuid, VerificationStatus)>, Vec<DisplayMessage>), String>;
+
 pub enum Overlay {
     UserPopover,
     PasswordDialog(PasswordChangeDialog),
@@ -63,7 +67,7 @@ pub enum Message {
     DragStarted(DragTarget),
     DragUpdate(f32),
     DragEnded,
-    VerifyResult(Result<(Option<(Uuid, VerificationStatus)>, Vec<DisplayMessage>), String>),
+    VerifyResult(VerifyResultPayload),
     PasswordDialogCurrentChanged(String),
     PasswordDialogNewChanged(String),
     PasswordDialogConfirmChanged(String),
@@ -71,7 +75,7 @@ pub enum Message {
     PasswordDialogCancel,
     PasswordDialogResult(Result<(), String>),
     LinkClicked(String),
-    MessageContextMenu(usize, Point, Option<String>),
+    ContextMenuOpened(usize, Point, Option<String>),
     CloseContextMenu,
     CopyToClipboard(String),
     OpenLink(String),
@@ -1003,7 +1007,7 @@ impl Dashboard {
                 verification_status,
                 show_verified_indicator,
                 Message::LinkClicked,
-                |index, point, link| Message::MessageContextMenu(index, point, link),
+                Message::ContextMenuOpened,
             );
 
         let content = container(msg_column.padding([4, 12])).width(Length::Fill);

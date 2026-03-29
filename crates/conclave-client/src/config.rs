@@ -174,10 +174,10 @@ pub fn load_group_mapping(data_dir: &Path) -> HashMap<Uuid, String> {
 
 pub fn save_group_mapping(data_dir: &Path, mapping: &HashMap<Uuid, String>) {
     let path = data_dir.join("group_mapping.toml");
-    if let Ok(contents) = toml::to_string_pretty(mapping) {
-        if let Err(error) = write_restricted_file(&path, contents.as_bytes()) {
-            tracing::warn!(%error, path = %path.display(), "failed to write group mapping");
-        }
+    if let Ok(contents) = toml::to_string_pretty(mapping)
+        && let Err(error) = write_restricted_file(&path, contents.as_bytes())
+    {
+        tracing::warn!(%error, path = %path.display(), "failed to write group mapping");
     }
 }
 
@@ -197,7 +197,7 @@ fn write_restricted_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(path)?;
         file.write_all(data)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {

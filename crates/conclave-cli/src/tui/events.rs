@@ -46,7 +46,9 @@ pub async fn handle_sse_message(
         } => handle_member_removed(group_id, removed_user_id, api, state, data_dir).await,
         SseEvent::IdentityReset { group_id, user_id } => {
             // Process the external commit to advance our MLS epoch state.
-            let _ = handle_new_message(group_id, api, state, data_dir).await;
+            if let Err(error) = handle_new_message(group_id, api, state, data_dir).await {
+                tracing::warn!(%error, group_id = %group_id, "failed to process identity reset message");
+            }
 
             // Refresh member list and fingerprints so TOFU check detects the change.
             commands::load_rooms(api, state, msg_store).await?;

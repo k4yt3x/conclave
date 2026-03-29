@@ -1,7 +1,7 @@
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::db::UserRow;
+use crate::db::{UserInfo, UserRow};
 use crate::error::{Error, Result};
 use crate::validation::validate_alias;
 
@@ -10,7 +10,7 @@ use super::Database;
 impl Database {
     pub fn create_user(&self, username: &str, password_hash: &str) -> Result<Uuid> {
         let user_id = Uuid::new_v4();
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO users (id, username, password_hash) VALUES (?1, ?2, ?3)",
             params![user_id.to_string(), username, password_hash],
@@ -27,7 +27,7 @@ impl Database {
     }
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, username, password_hash, alias, signing_key_fingerprint
              FROM users WHERE username = ?1",
@@ -54,11 +54,8 @@ impl Database {
         }
     }
 
-    pub fn get_user_by_id(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Option<(Uuid, String, Option<String>, Option<String>)>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn get_user_by_id(&self, user_id: Uuid) -> Result<Option<UserInfo>> {
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, username, alias, signing_key_fingerprint FROM users WHERE id = ?1",
         )?;
@@ -69,17 +66,22 @@ impl Database {
             })
             .optional()?;
         match result {
-            Some((id_str, username, alias, fingerprint)) => {
-                let uid = Uuid::parse_str(&id_str)
+            Some((id_str, username, alias, signing_key_fingerprint)) => {
+                let user_id = Uuid::parse_str(&id_str)
                     .map_err(|e| Error::Internal(format!("invalid user UUID: {e}")))?;
-                Ok(Some((uid, username, alias, fingerprint)))
+                Ok(Some(UserInfo {
+                    user_id,
+                    username,
+                    alias,
+                    signing_key_fingerprint,
+                }))
             }
             None => Ok(None),
         }
     }
 
     pub fn get_password_hash(&self, user_id: Uuid) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT password_hash FROM users WHERE id = ?1")?;
         let result = stmt
             .query_row(params![user_id.to_string()], |row| row.get(0))
@@ -88,7 +90,7 @@ impl Database {
     }
 
     pub fn get_user_id_by_username(&self, username: &str) -> Result<Option<Uuid>> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT id FROM users WHERE username = ?1")?;
         let result: Option<String> = stmt
             .query_row(params![username], |row| row.get(0))
@@ -104,7 +106,7 @@ impl Database {
     }
 
     pub fn update_user_password(&self, user_id: Uuid, password_hash: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE users SET password_hash = ?1 WHERE id = ?2",
             params![password_hash, user_id.to_string()],
@@ -113,7 +115,7 @@ impl Database {
     }
 
     pub fn update_signing_key_fingerprint(&self, user_id: Uuid, fingerprint: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE users SET signing_key_fingerprint = ?1 WHERE id = ?2",
             params![fingerprint, user_id.to_string()],
@@ -125,19 +127,19 @@ impl Database {
     /// ON DELETE CASCADE (pending_invites, messages) before deleting the user
     /// row, which cascades to everything else.
     pub fn delete_user(&self, user_id: Uuid) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let sp = conn.savepoint()?;
+        let mut conn = self.lock_conn();
+        let savepoint = conn.savepoint()?;
         let uid_str = user_id.to_string();
-        sp.execute(
+        savepoint.execute(
             "DELETE FROM pending_invites WHERE inviter_id = ?1 OR invitee_id = ?1",
             params![uid_str],
         )?;
-        sp.execute(
+        savepoint.execute(
             "DELETE FROM messages WHERE sender_id = ?1",
             params![uid_str],
         )?;
-        sp.execute("DELETE FROM users WHERE id = ?1", params![uid_str])?;
-        sp.commit()?;
+        savepoint.execute("DELETE FROM users WHERE id = ?1", params![uid_str])?;
+        savepoint.commit()?;
         Ok(())
     }
 
@@ -145,7 +147,7 @@ impl Database {
         if let Some(alias) = alias {
             validate_alias(alias)?;
         }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE users SET alias = ?1 WHERE id = ?2",
             params![alias, user_id.to_string()],

@@ -154,12 +154,11 @@ impl MlsManager {
     /// Compute the SHA-256 fingerprint of the MLS signing public key.
     ///
     /// Returns a 64-character lowercase hex string.
-    pub fn signing_key_fingerprint(&self) -> String {
-        let signing_identity: SigningIdentity =
-            mls_rs_codec_from_slice(&self.identity_bytes).expect("stored identity is valid");
+    pub fn signing_key_fingerprint(&self) -> Result<String> {
+        let signing_identity: SigningIdentity = mls_rs_codec_from_slice(&self.identity_bytes)?;
         let public_key_bytes = signing_identity.signature_key.as_ref();
         let hash = Sha256::digest(public_key_bytes);
-        hex::encode(hash)
+        Ok(hex::encode(hash))
     }
 
     /// Build an mls-rs Client with SQLite-backed storage.
@@ -169,6 +168,8 @@ impl MlsManager {
             .map_err(|e| Error::Mls(format!("SQLite storage init failed: {e}")))?;
 
         let signing_identity: SigningIdentity = mls_rs_codec_from_slice(&self.identity_bytes)?;
+        // The cloned bytes are immediately moved into SignatureSecretKey,
+        // which derives ZeroizeOnDrop and will zeroize them when dropped.
         let secret_key =
             mls_rs_core::crypto::SignatureSecretKey::from((*self.signing_key_bytes).clone());
 
@@ -251,7 +252,7 @@ impl MlsManager {
     fn build_commit_with_members(
         group: &mut mls_rs::Group<impl MlsConfig>,
         member_key_packages: &HashMap<Uuid, Vec<u8>>,
-    ) -> Result<(Vec<u8>, HashMap<Uuid, Vec<u8>>, Vec<u8>)> {
+    ) -> Result<InviteResult> {
         let cipher_suite = OpensslCryptoProvider::default()
             .cipher_suite_provider(CIPHERSUITE)
             .ok_or_else(|| Error::Mls("cipher suite not supported".into()))?;
@@ -312,7 +313,11 @@ impl MlsManager {
             .write_to_storage()
             .map_err(|e| Error::Mls(format!("write group state failed: {e}")))?;
 
-        Ok((commit_bytes, welcome_map, group_info_bytes))
+        Ok(InviteResult {
+            commit: commit_bytes,
+            welcomes: welcome_map,
+            group_info: group_info_bytes,
+        })
     }
 
     /// Create a new MLS group, add members from their key packages.
@@ -325,16 +330,15 @@ impl MlsManager {
             .create_group(ExtensionList::default(), Default::default(), None)
             .map_err(|e| Error::Mls(format!("create group failed: {e}")))?;
 
-        let (commit, welcomes, group_info) =
-            Self::build_commit_with_members(&mut group, member_key_packages)?;
+        let result = Self::build_commit_with_members(&mut group, member_key_packages)?;
 
         let mls_group_id = hex::encode(group.group_id());
 
         Ok(GroupCreationResult {
             mls_group_id,
-            commit,
-            welcomes,
-            group_info,
+            commit: result.commit,
+            welcomes: result.welcomes,
+            group_info: result.group_info,
         })
     }
 
@@ -352,14 +356,7 @@ impl MlsManager {
             .load_group(&group_id_bytes)
             .map_err(|e| Error::Mls(format!("load group failed: {e}")))?;
 
-        let (commit, welcomes, group_info) =
-            Self::build_commit_with_members(&mut group, member_key_packages)?;
-
-        Ok(InviteResult {
-            commit,
-            welcomes,
-            group_info,
-        })
+        Self::build_commit_with_members(&mut group, member_key_packages)
     }
 
     /// Join a group via a welcome message.
