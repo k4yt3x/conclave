@@ -268,6 +268,7 @@ impl ApiClient {
             group_name: String::new(),
             message_expiry_seconds: 0,
             update_message_expiry: false,
+            visibility: 0,
         };
         self.patch(&format!("/api/v1/groups/{group_id}"), &request)
             .await?;
@@ -280,6 +281,7 @@ impl ApiClient {
             group_name: String::new(),
             message_expiry_seconds: seconds,
             update_message_expiry: true,
+            visibility: 0,
         };
         self.patch(&format!("/api/v1/groups/{group_id}"), &request)
             .await?;
@@ -631,6 +633,49 @@ impl ApiClient {
         self.post(&format!("/api/v1/groups/{group_id}/delete"), &empty)
             .await?;
         Ok(())
+    }
+
+    pub async fn set_group_visibility(&self, group_id: Uuid, visibility: i32) -> Result<()> {
+        let request = conclave_proto::UpdateGroupRequest {
+            alias: String::new(),
+            group_name: String::new(),
+            message_expiry_seconds: 0,
+            update_message_expiry: false,
+            visibility,
+        };
+        self.patch(&format!("/api/v1/groups/{group_id}"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_public_groups(
+        &self,
+        pattern: Option<&str>,
+    ) -> Result<conclave_proto::ListPublicGroupsResponse> {
+        let path = match pattern {
+            Some(pat) => format!("/api/v1/groups/public?pattern={pat}"),
+            None => "/api/v1/groups/public".to_string(),
+        };
+        let bytes = self.get(&path).await?;
+        Ok(conclave_proto::ListPublicGroupsResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
+    pub async fn join_public_group(
+        &self,
+        group_id: Uuid,
+    ) -> Result<conclave_proto::GetGroupInfoResponse> {
+        let empty = conclave_proto::CreateGroupRequest {
+            alias: String::new(),
+            group_name: String::new(),
+        };
+        let bytes = self
+            .post(&format!("/api/v1/groups/{group_id}/join"), &empty)
+            .await?;
+        Ok(conclave_proto::GetGroupInfoResponse::decode(
+            bytes.as_slice(),
+        )?)
     }
 
     pub async fn reset_account(&self) -> Result<()> {

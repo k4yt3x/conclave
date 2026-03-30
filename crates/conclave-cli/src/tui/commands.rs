@@ -43,7 +43,9 @@ pub async fn execute(
         | Command::Unread
         | Command::Info
         | Command::Expire { .. }
-        | Command::Delete => execute_room(cmd, api, state, mls, config, msg_store).await,
+        | Command::Delete
+        | Command::Visibility { .. }
+        | Command::Discover { .. } => execute_room(cmd, api, state, mls, config, msg_store).await,
         Command::Invite { .. }
         | Command::Kick { .. }
         | Command::Promote { .. }
@@ -297,9 +299,63 @@ async fn execute_room(
                 }
                 msgs.push(DisplayMessage::system(&format!("Switched to #{name}")));
             } else {
-                msgs.push(DisplayMessage::system(&format!(
-                    "Unknown room '{target}'. Use /rooms to list available rooms."
-                )));
+                // Room not found locally — try joining as a public room.
+                let user_id = require_user_id(state)?;
+                let api_guard = api.lock().await;
+
+                // Look up the room in the public groups list.
+                let public_groups = api_guard.list_public_groups(Some(&target)).await?;
+                let matching_group = public_groups.groups.iter().find(|g| g.group_name == target);
+
+                if let Some(group) = matching_group {
+                    let group_id = uuid::Uuid::from_slice(&group.group_id)?;
+                    drop(api_guard);
+
+                    let result = {
+                        let api_guard = api.lock().await;
+                        operations::join_public_room(
+                            &api_guard,
+                            &config.data_dir,
+                            user_id,
+                            group_id,
+                        )
+                        .await?
+                    };
+
+                    state
+                        .group_mapping
+                        .insert(result.server_group_id, result.mls_group_id);
+
+                    load_rooms(api, state, msg_store).await?;
+
+                    state.active_room = Some(result.server_group_id);
+                    state.scroll_offset = 0;
+
+                    // Mark current sequence as seen to skip the join commit.
+                    if let Some(room) = state.rooms.get_mut(&result.server_group_id) {
+                        let max_seq = match api
+                            .lock()
+                            .await
+                            .get_messages(result.server_group_id, 0)
+                            .await
+                        {
+                            Ok(resp) => resp.messages.last().map(|m| m.sequence_num).unwrap_or(0),
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to fetch message sequence");
+                                0
+                            }
+                        };
+                        room.last_seen_seq = max_seq;
+                    }
+
+                    msgs.push(DisplayMessage::system(&format!(
+                        "Joined public room #{target}"
+                    )));
+                } else {
+                    msgs.push(DisplayMessage::system(&format!(
+                        "Unknown room '{target}'. Use /rooms to list your rooms or /discover to find public rooms."
+                    )));
+                }
             }
         }
 
@@ -513,6 +569,73 @@ async fn execute_room(
             msgs.push(DisplayMessage::system(&format!(
                 "Room #{name} has been deleted"
             )));
+        }
+
+        Command::Visibility { visibility: None } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+            let room = state
+                .rooms
+                .get(&group_id)
+                .ok_or_else(|| Error::Other("room not found in local state".into()))?;
+            let label = if room.visibility == conclave_proto::GroupVisibility::Public as i32 {
+                "public"
+            } else {
+                "private"
+            };
+            msgs.push(DisplayMessage::system(&format!("Room visibility: {label}")));
+        }
+
+        Command::Visibility {
+            visibility: Some(visibility),
+        } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            let value = if visibility == "public" {
+                conclave_proto::GroupVisibility::Public as i32
+            } else {
+                conclave_proto::GroupVisibility::Private as i32
+            };
+
+            api.lock()
+                .await
+                .set_group_visibility(group_id, value)
+                .await?;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Room visibility set to {visibility}"
+            )));
+        }
+
+        Command::Discover { pattern } => {
+            let response = api
+                .lock()
+                .await
+                .list_public_groups(pattern.as_deref())
+                .await?;
+
+            if response.groups.is_empty() {
+                msgs.push(DisplayMessage::system("No public rooms found."));
+            } else {
+                msgs.push(DisplayMessage::system("Public rooms:"));
+                for group in &response.groups {
+                    let alias = if group.alias.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", group.alias)
+                    };
+                    msgs.push(DisplayMessage::system(&format!(
+                        "  #{}{} — {} member(s)",
+                        group.group_name, alias, group.member_count
+                    )));
+                }
+                msgs.push(DisplayMessage::system(
+                    "Use /join <room_name> to join a public room.",
+                ));
+            }
         }
 
         Command::Rooms => {
@@ -1288,6 +1411,7 @@ pub async fn load_rooms(
                 last_seen_seq: existing_seq,
                 last_read_seq: existing_read,
                 message_expiry_seconds: room_info.message_expiry_seconds,
+                visibility: room_info.visibility,
             },
         );
     }

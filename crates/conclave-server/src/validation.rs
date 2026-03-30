@@ -59,6 +59,16 @@ pub fn validate_password(password: &str) -> Result<()> {
     Ok(())
 }
 
+/// Check whether a visibility value is valid (must be PRIVATE=1 or PUBLIC=2).
+pub fn validate_visibility(value: i32) -> Result<()> {
+    if value != 1 && value != 2 {
+        return Err(Error::Validation(
+            "visibility must be 'private' (1) or 'public' (2)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Check whether an alias string is valid (no ASCII control characters, max 64 chars).
 pub fn validate_alias(alias: &str) -> Result<()> {
     if alias.len() > MAX_ALIAS_LENGTH {

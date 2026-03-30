@@ -377,3 +377,30 @@ pub async fn accept_welcomes(
 
     Ok(results)
 }
+
+/// Join a public room via MLS external commit.
+pub async fn join_public_room(
+    api: &ApiClient,
+    data_dir: &Path,
+    user_id: Uuid,
+    group_id: Uuid,
+) -> Result<GroupCreatedResult> {
+    let response = api.join_public_group(group_id).await?;
+    let group_info_bytes = response.group_info;
+
+    let data_dir = data_dir.to_path_buf();
+    let (mls_group_id, commit_message) = tokio::task::spawn_blocking(move || {
+        let mls = MlsManager::new(&data_dir, user_id)?;
+        mls.external_rejoin_group(&group_info_bytes, None)
+    })
+    .await
+    .map_err(super::map_join_error)??;
+
+    api.external_join(group_id, commit_message, &mls_group_id)
+        .await?;
+
+    Ok(GroupCreatedResult {
+        server_group_id: group_id,
+        mls_group_id,
+    })
+}

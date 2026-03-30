@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Public rooms: `/visibility`, `/discover`, and `/join` for discoverable open groups.
+- Typed protobuf enums for `GroupRole`, `GroupUpdateType`, and `GroupVisibility`.
 - Configurable `auth_header` setting for server and client config.
 - Custom HTTP headers support (`[custom_headers]`) in client config.
 - Proxy support (`proxy_url`) for HTTP, HTTPS, SOCKS5, and SOCKS5h.
@@ -30,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `/expunge` command now uses interactive password prompt instead of accepting password as argument.
 - GUI dashboard overlays refactored into a single `Overlay` enum.
+- **BREAKING**: `GroupMember.role` and `GroupUpdateEvent.update_type` switched to typed enums.
+- **BREAKING**: Removed unused `created_at` from `users`/`groups` tables and `GroupInfo` proto.
 - **BREAKING**: User and group IDs changed from integers to UUID v4.
 - **BREAKING**: MLS credential identity changed from 8-byte i64 to 16-byte UUID.
 - **BREAKING**: Protobuf wire format: all ID fields switched from `int64` to `bytes`.

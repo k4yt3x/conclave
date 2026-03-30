@@ -95,6 +95,8 @@ pub struct Room {
     pub last_read_seq: u64,
     /// Message expiry policy: -1=disabled, 0=fetch-then-delete, >0=seconds.
     pub message_expiry_seconds: i64,
+    /// Group visibility: 1=private, 2=public.
+    pub visibility: i32,
 }
 
 impl Room {
@@ -251,6 +253,7 @@ mod tests {
             last_seen_seq: 0,
             last_read_seq: 0,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(room.display_name(), "Dev Team");
     }
@@ -265,6 +268,7 @@ mod tests {
             last_seen_seq: 0,
             last_read_seq: 0,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(room.display_name(), "devs");
     }
@@ -279,6 +283,7 @@ mod tests {
             last_seen_seq: 0,
             last_read_seq: 0,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(room.display_name(), "devs");
     }
@@ -349,6 +354,7 @@ mod tests {
             last_seen_seq: 0,
             last_read_seq: 0,
             message_expiry_seconds: expiry,
+            visibility: 1,
         }
     }
 

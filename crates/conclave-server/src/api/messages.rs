@@ -42,7 +42,7 @@ pub async fn upload_commit(
             Some(auth.user_id),
             conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
                 group_id: group_id.as_bytes().to_vec(),
-                update_type: "commit".into(),
+                update_type: conclave_proto::GroupUpdateType::Commit.into(),
             }),
         );
     }

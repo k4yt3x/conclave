@@ -207,7 +207,7 @@ pub async fn promote_member(
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id: group_id.as_bytes().to_vec(),
-            update_type: "role_change".into(),
+            update_type: conclave_proto::GroupUpdateType::RoleChange.into(),
         }),
     );
 
@@ -252,7 +252,7 @@ pub async fn demote_member(
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id: group_id.as_bytes().to_vec(),
-            update_type: "role_change".into(),
+            update_type: conclave_proto::GroupUpdateType::RoleChange.into(),
         }),
     );
 
@@ -278,7 +278,7 @@ pub async fn list_admins(
             user_id: admin.user_id.as_bytes().to_vec(),
             username: admin.username,
             alias: admin.alias.unwrap_or_default(),
-            role: "admin".into(),
+            role: conclave_proto::GroupRole::Admin.into(),
             signing_key_fingerprint: admin.signing_key_fingerprint.unwrap_or_default(),
         })
         .collect();

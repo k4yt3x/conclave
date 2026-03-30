@@ -3495,6 +3495,7 @@ async fn test_update_group_alias_by_creator() {
         update_message_expiry: false,
         alias: "updated_alias".to_string(),
         group_name: "alias_update_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3538,6 +3539,7 @@ async fn test_update_group_name_by_creator() {
         update_message_expiry: false,
         alias: String::new(),
         group_name: "new_group_name".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3585,6 +3587,7 @@ async fn test_update_group_non_creator_rejected() {
         update_message_expiry: false,
         alias: "hijacked".to_string(),
         group_name: "non_creator_update_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3612,6 +3615,7 @@ async fn test_update_group_not_found() {
         update_message_expiry: false,
         alias: "phantom".to_string(),
         group_name: "not_found_update_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3661,6 +3665,7 @@ async fn test_update_group_duplicate_group_name() {
         update_message_expiry: false,
         alias: String::new(),
         group_name: "unique_name".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3689,6 +3694,7 @@ async fn test_update_group_invalid_alias() {
         update_message_expiry: false,
         alias: "a".repeat(65),
         group_name: "invalid_alias_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3737,6 +3743,7 @@ async fn test_update_group_removed_admin_rejected() {
         update_message_expiry: false,
         alias: "hijacked".to_string(),
         group_name: String::new(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     update_body.encode(&mut body).unwrap();
@@ -3946,6 +3953,7 @@ async fn test_update_group_name_with_dot_rejected() {
         update_message_expiry: false,
         alias: String::new(),
         group_name: "new.name".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -3974,6 +3982,7 @@ async fn test_update_group_name_with_hyphen_rejected() {
         update_message_expiry: false,
         alias: String::new(),
         group_name: "new-name".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4027,12 +4036,15 @@ async fn test_update_profile_broadcasts_to_group_members() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Bob should receive a GroupUpdateEvent with update_type "member_profile".
+    // Bob should receive a GroupUpdateEvent with update_type GroupSettings.
     let event = rx.try_recv().expect("expected SSE event for bob");
     let server_event = conclave_proto::ServerEvent::decode(event.data.as_slice()).unwrap();
     match server_event.event {
         Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
-            assert_eq!(update.update_type, "member_profile");
+            assert_eq!(
+                update.update_type,
+                conclave_proto::GroupUpdateType::GroupSettings as i32
+            );
         }
         other => panic!("expected GroupUpdate event, got {other:?}"),
     }
@@ -4092,6 +4104,7 @@ async fn test_update_group_broadcasts_to_members() {
         update_message_expiry: false,
         alias: "new_topic".to_string(),
         group_name: "broadcast_update_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4107,13 +4120,16 @@ async fn test_update_group_broadcasts_to_members() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Bob should receive a GroupUpdateEvent with update_type "group_settings".
+    // Bob should receive a GroupUpdateEvent with update_type GroupSettings.
     let event = rx.try_recv().expect("expected SSE event for bob");
     let server_event = conclave_proto::ServerEvent::decode(event.data.as_slice()).unwrap();
     match server_event.event {
         Some(conclave_proto::server_event::Event::GroupUpdate(update)) => {
             assert_eq!(update.group_id, group_id.as_bytes().to_vec());
-            assert_eq!(update.update_type, "group_settings");
+            assert_eq!(
+                update.update_type,
+                conclave_proto::GroupUpdateType::GroupSettings as i32
+            );
         }
         other => panic!("expected GroupUpdate event, got {other:?}"),
     }
@@ -4489,7 +4505,7 @@ async fn test_list_admins_success() {
     let resp = conclave_proto::ListAdminsResponse::decode(body_bytes).unwrap();
     assert_eq!(resp.admins.len(), 1);
     assert_eq!(resp.admins[0].username, "alice");
-    assert_eq!(resp.admins[0].role, "admin");
+    assert_eq!(resp.admins[0].role, conclave_proto::GroupRole::Admin as i32);
 }
 
 #[tokio::test]
@@ -4609,6 +4625,7 @@ async fn test_update_group_requires_admin() {
         update_message_expiry: false,
         alias: "new_alias".to_string(),
         group_name: "new_name".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -4659,10 +4676,10 @@ async fn test_group_member_role_in_list_groups() {
         .iter()
         .find(|m| m.username == "alice")
         .unwrap();
-    assert_eq!(alice_member.role, "admin");
+    assert_eq!(alice_member.role, conclave_proto::GroupRole::Admin as i32);
 
     let bob_member = group.members.iter().find(|m| m.username == "bob").unwrap();
-    assert_eq!(bob_member.role, "member");
+    assert_eq!(bob_member.role, conclave_proto::GroupRole::Member as i32);
 }
 
 async fn create_escrow_invite(
@@ -5475,6 +5492,7 @@ async fn test_set_group_expiry_via_update_group() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "expiry_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5520,6 +5538,7 @@ async fn test_set_group_expiry_fetch_then_delete() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "ftd_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5562,6 +5581,7 @@ async fn test_set_group_expiry_disabled() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "disable_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5583,6 +5603,7 @@ async fn test_set_group_expiry_disabled() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "disable_group".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5625,6 +5646,7 @@ async fn test_set_group_expiry_invalid_value_rejected() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "invalid_exp".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5657,6 +5679,7 @@ async fn test_set_group_expiry_exceeds_server_retention_rejected() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "over_retention".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5689,6 +5712,7 @@ async fn test_set_group_expiry_within_server_retention_ok() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "within_ret".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5724,6 +5748,7 @@ async fn test_set_group_expiry_non_admin_rejected() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "admin_only_exp".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5756,6 +5781,7 @@ async fn test_get_retention_policy() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "retention_pol".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5861,6 +5887,7 @@ async fn test_list_groups_includes_message_expiry() {
         update_message_expiry: true,
         alias: String::new(),
         group_name: "expiry_list".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -5902,6 +5929,7 @@ async fn test_update_group_expiry_not_applied_when_flag_false() {
         update_message_expiry: false,
         alias: String::new(),
         group_name: "no_apply_exp".to_string(),
+        visibility: 0,
     };
     let mut body = Vec::new();
     request_body.encode(&mut body).unwrap();
@@ -6125,4 +6153,235 @@ async fn test_delete_group_not_found() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ============================================================
+// Public rooms
+// ============================================================
+
+#[tokio::test]
+async fn test_list_public_groups_empty() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups/public")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListPublicGroupsResponse::decode(body).unwrap();
+    assert!(resp.groups.is_empty());
+}
+
+#[tokio::test]
+async fn test_list_public_groups_filters_private() {
+    let (app, state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    create_group_for(&app, &token, "private_room").await;
+
+    let public_id = create_group_for(&app, &token, "public_room").await;
+    state
+        .db
+        .set_group_visibility(public_id, conclave_proto::GroupVisibility::Public as i32)
+        .unwrap();
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups/public")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListPublicGroupsResponse::decode(body).unwrap();
+    assert_eq!(resp.groups.len(), 1);
+    assert_eq!(resp.groups[0].group_name, "public_room");
+    assert_eq!(resp.groups[0].member_count, 1);
+}
+
+#[tokio::test]
+async fn test_list_public_groups_pattern_filter() {
+    let (app, state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let id1 = create_group_for(&app, &token, "dev_chat").await;
+    let id2 = create_group_for(&app, &token, "ops_chat").await;
+    state
+        .db
+        .set_group_visibility(id1, conclave_proto::GroupVisibility::Public as i32)
+        .unwrap();
+    state
+        .db
+        .set_group_visibility(id2, conclave_proto::GroupVisibility::Public as i32)
+        .unwrap();
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups/public?pattern=dev")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListPublicGroupsResponse::decode(body).unwrap();
+    assert_eq!(resp.groups.len(), 1);
+    assert_eq!(resp.groups[0].group_name, "dev_chat");
+}
+
+#[tokio::test]
+async fn test_join_public_group() {
+    let (app, state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    let group_id = create_group_for(&app, &alice_token, "open_room").await;
+    state
+        .db
+        .set_group_visibility(group_id, conclave_proto::GroupVisibility::Public as i32)
+        .unwrap();
+    state
+        .db
+        .store_group_info(group_id, b"fake_group_info")
+        .unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&format!("/api/v1/groups/{group_id}/join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::GetGroupInfoResponse::decode(body).unwrap();
+    assert_eq!(resp.group_info, b"fake_group_info");
+
+    let bob_id = state
+        .db
+        .get_user_by_username("bob")
+        .unwrap()
+        .unwrap()
+        .user_id;
+    assert!(state.db.is_group_member(group_id, bob_id).unwrap());
+}
+
+#[tokio::test]
+async fn test_join_private_group_rejected() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let alice_token = login_user(&app, "alice", "password123").await;
+
+    register_user(&app, "bob", "password123").await;
+    let bob_token = login_user(&app, "bob", "password123").await;
+
+    let group_id = create_group_for(&app, &alice_token, "private_room2").await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&format!("/api/v1/groups/{group_id}/join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_join_already_member() {
+    let (app, state) = setup_with_state();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let group_id = create_group_for(&app, &token, "my_room2").await;
+    state
+        .db
+        .set_group_visibility(group_id, conclave_proto::GroupVisibility::Public as i32)
+        .unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&format!("/api/v1/groups/{group_id}/join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_update_group_visibility() {
+    let app = setup();
+
+    register_user(&app, "alice", "password123").await;
+    let token = login_user(&app, "alice", "password123").await;
+
+    let group_id = create_group_for(&app, &token, "vis_room").await;
+
+    let req_body = conclave_proto::UpdateGroupRequest {
+        alias: String::new(),
+        group_name: String::new(),
+        message_expiry_seconds: 0,
+        update_message_expiry: false,
+        visibility: conclave_proto::GroupVisibility::Public as i32,
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(&format!("/api/v1/groups/{group_id}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/groups/public")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let resp = conclave_proto::ListPublicGroupsResponse::decode(body).unwrap();
+    assert_eq!(resp.groups.len(), 1);
+    assert_eq!(resp.groups[0].group_name, "vis_room");
 }

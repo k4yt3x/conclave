@@ -155,7 +155,7 @@ pub async fn accept_invite(
         Some(auth.user_id),
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id: result.group_id.as_bytes().to_vec(),
-            update_type: "commit".into(),
+            update_type: conclave_proto::GroupUpdateType::Commit.into(),
         }),
     );
 

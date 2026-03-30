@@ -1172,3 +1172,151 @@ async fn test_e2e_message_ordering_and_sequence_numbers() {
     }
     assert_eq!(decrypted_count, 10);
 }
+
+fn setup_with_state() -> (Router, Arc<state::AppState>) {
+    let database = db::Database::open_in_memory().unwrap();
+    let config = config::ServerConfig::default();
+    let app_state = Arc::new(state::AppState::new(database, config));
+    let router = api::router().with_state(app_state.clone());
+    (router, app_state)
+}
+
+/// Full flow: Alice creates a group, sets it public, Bob discovers it via
+/// the public listing, joins via external commit, then both exchange encrypted
+/// messages through the server.
+#[tokio::test]
+async fn test_e2e_public_room_external_commit_join() {
+    let (app, app_state) = setup_with_state();
+    let alice_dir = TempDir::new().unwrap();
+    let bob_dir = TempDir::new().unwrap();
+
+    let (alice_id, alice_token) = register_and_login(&app, "alice").await;
+    let (bob_id, bob_token) = register_and_login(&app, "bob").await;
+
+    let alice_mls = MlsManager::new(alice_dir.path(), alice_id).unwrap();
+    let bob_mls = MlsManager::new(bob_dir.path(), bob_id).unwrap();
+
+    upload_real_key_packages(&app, &alice_token, &alice_mls).await;
+    upload_real_key_packages(&app, &bob_token, &bob_mls).await;
+
+    // Alice creates a group (she's the only member initially).
+    let server_group_id = create_server_group(&app, &alice_token, "public_room").await;
+    let create_result = alice_mls.create_group(&HashMap::new()).unwrap();
+    let mls_group_id = create_result.mls_group_id.clone();
+    upload_commit(
+        &app,
+        &alice_token,
+        server_group_id,
+        create_result.commit,
+        create_result.group_info.clone(),
+        create_result.mls_group_id,
+    )
+    .await;
+
+    // Set the group to public via DB (simulating /visibility public).
+    app_state
+        .db
+        .set_group_visibility(
+            server_group_id,
+            conclave_proto::GroupVisibility::Public as i32,
+        )
+        .unwrap();
+
+    // Bob calls the join endpoint to get the GroupInfo.
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{server_group_id}/join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let join_resp = conclave_proto::GetGroupInfoResponse::decode(body_bytes).unwrap();
+
+    // Bob builds an external commit from the GroupInfo.
+    let (bob_mls_group_id, bob_commit) = bob_mls
+        .external_rejoin_group(&join_resp.group_info, None)
+        .unwrap();
+    assert_eq!(bob_mls_group_id, mls_group_id);
+
+    // Bob submits the external commit.
+    let req_body = conclave_proto::ExternalJoinRequest {
+        commit_message: bob_commit,
+        mls_group_id: bob_mls_group_id.clone(),
+    };
+    let mut body = Vec::new();
+    req_body.encode(&mut body).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/groups/{server_group_id}/external-join"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Alice fetches the external commit and processes it.
+    let messages = get_messages(&app, &alice_token, server_group_id, 0).await;
+    assert!(
+        !messages.is_empty(),
+        "alice should see bob's external commit"
+    );
+    let commit_msg = &messages.last().unwrap().mls_message;
+    let decrypted = alice_mls
+        .decrypt_message(&mls_group_id, commit_msg)
+        .unwrap();
+    assert!(
+        matches!(decrypted, conclave_client::mls::DecryptedMessage::Commit(_)),
+        "alice should see a commit message from bob's join"
+    );
+
+    // Now test bidirectional messaging.
+
+    // Alice sends a message.
+    let alice_ciphertext = alice_mls
+        .encrypt_message(&mls_group_id, b"hello from alice")
+        .unwrap();
+    let seq = send_mls_message(&app, &alice_token, server_group_id, alice_ciphertext).await;
+    assert!(seq > 0);
+
+    // Bob fetches and decrypts Alice's message.
+    let messages = get_messages(&app, &bob_token, server_group_id, 0).await;
+    let alice_msg = messages
+        .iter()
+        .find(|m| m.sequence_num == seq)
+        .expect("bob should see alice's message");
+    let decrypted = bob_mls
+        .decrypt_message(&bob_mls_group_id, &alice_msg.mls_message)
+        .unwrap();
+    match decrypted {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
+            assert_eq!(String::from_utf8(data).unwrap(), "hello from alice");
+        }
+        other => panic!("expected Application, got: {other:?}"),
+    }
+
+    // Bob sends a message back.
+    let bob_ciphertext = bob_mls
+        .encrypt_message(&bob_mls_group_id, b"hello from bob")
+        .unwrap();
+    let seq2 = send_mls_message(&app, &bob_token, server_group_id, bob_ciphertext).await;
+
+    // Alice fetches and decrypts Bob's message.
+    let messages = get_messages(&app, &alice_token, server_group_id, seq as i64).await;
+    let bob_msg = messages
+        .iter()
+        .find(|m| m.sequence_num == seq2)
+        .expect("alice should see bob's message");
+    let decrypted = alice_mls
+        .decrypt_message(&mls_group_id, &bob_msg.mls_message)
+        .unwrap();
+    match decrypted {
+        conclave_client::mls::DecryptedMessage::Application(data) => {
+            assert_eq!(String::from_utf8(data).unwrap(), "hello from bob");
+        }
+        other => panic!("expected Application, got: {other:?}"),
+    }
+}

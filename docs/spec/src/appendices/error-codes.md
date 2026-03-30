@@ -46,6 +46,10 @@ Clients SHOULD auto-logout only on `ERROR_CODE_AUTH_TOKEN_EXPIRED` (code 202). A
 
 Returned when access is explicitly denied by server policy.
 
+| Scenario | Error Code | Endpoint(s) |
+|----------|------------|-------------|
+| Group is not public | `ERROR_CODE_GROUP_NOT_PUBLIC` | `POST /api/v1/groups/{id}/join` when group visibility is PRIVATE |
+
 | Condition | Error Code | Context |
 |-----------|------------|---------|
 | Registration disabled | `ERROR_CODE_RESOURCE_FORBIDDEN` | `POST /api/v1/register` when `registration_enabled` is `false` and no valid token provided |

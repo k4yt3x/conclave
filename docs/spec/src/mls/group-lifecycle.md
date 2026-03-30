@@ -76,6 +76,17 @@ External join REQUIRES:
 
 See [Account Reset and External Rejoin](../flows/account-reset.md) for the complete flow.
 
+## Public Room Join via External Commit
+
+Public rooms (visibility = PUBLIC) can be joined by any authenticated user without an invitation, using the MLS external commit mechanism described in RFC 9420 Section 3.3.
+
+The join flow is a two-step process:
+
+1. The user calls `POST /api/v1/groups/{id}/join`. The server validates that the group is public, adds the user to `group_members`, and returns the MLS GroupInfo.
+2. The user builds an MLS external commit from the GroupInfo (with no `old_leaf_index`, since they are new) and submits it via `POST /api/v1/groups/{id}/external-join`.
+
+The server adds the user as a member **before** the external commit to maintain its authorization model — the `external_join` endpoint requires the caller to be a server-side member. The `external_join` handler distinguishes new joiners from account-reset resets by checking whether the user has any prior message history in the group. For new joiners, it emits a `GroupUpdateEvent` (type COMMIT) instead of `IdentityResetEvent`.
+
 ## GroupInfo Storage
 
 The server stores the latest MLS GroupInfo blob for each group. GroupInfo is updated by:

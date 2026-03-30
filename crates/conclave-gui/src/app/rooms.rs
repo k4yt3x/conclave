@@ -23,7 +23,7 @@ impl Conclave {
                     .insert(info.server_group_id, info.mls_group_id);
 
                 self.active_room = Some(info.server_group_id);
-                self.push_system_message(&format!("Group created ({})", info.server_group_id));
+                self.push_system_message(&format!("Joined group ({})", info.server_group_id));
 
                 self.load_rooms_task()
             }
@@ -77,6 +77,7 @@ impl Conclave {
                             last_seen_seq: seq,
                             last_read_seq: read,
                             message_expiry_seconds: info.message_expiry_seconds,
+                            visibility: info.visibility,
                         },
                     );
 

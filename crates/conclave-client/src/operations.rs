@@ -28,6 +28,7 @@ pub struct RoomInfo {
     pub members: Vec<MemberInfo>,
     pub mls_group_id: Option<String>,
     pub message_expiry_seconds: i64,
+    pub visibility: i32,
 }
 
 impl RoomInfo {
@@ -152,7 +153,7 @@ pub enum SseEvent {
     },
     GroupUpdate {
         group_id: Uuid,
-        update_type: String,
+        update_type: i32,
     },
     MemberRemoved {
         group_id: Uuid,
@@ -242,6 +243,14 @@ pub fn decode_sse_event(hex_data: &str) -> Result<SseEvent> {
     }
 }
 
+/// Convert a protobuf `GroupRole` enum value to its string representation.
+fn role_from_proto(value: i32) -> String {
+    match conclave_proto::GroupRole::try_from(value) {
+        Ok(conclave_proto::GroupRole::Admin) => "admin".into(),
+        _ => "member".into(),
+    }
+}
+
 /// Fetch the list of groups from the server and return them as `RoomInfo`.
 pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
     let response = api.list_groups().await?;
@@ -259,7 +268,7 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
                 } else {
                     Some(m.alias)
                 },
-                role: m.role,
+                role: role_from_proto(m.role),
                 signing_key_fingerprint: if m.signing_key_fingerprint.is_empty() {
                     None
                 } else {
@@ -282,6 +291,7 @@ pub async fn load_rooms(api: &ApiClient) -> Result<Vec<RoomInfo>> {
                 Some(group.mls_group_id)
             },
             message_expiry_seconds: group.message_expiry_seconds,
+            visibility: group.visibility,
         });
     }
     Ok(rooms)
@@ -305,6 +315,7 @@ mod tests {
             members: vec![],
             mls_group_id: None,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(info.display_name(), "Dev Team");
     }
@@ -318,6 +329,7 @@ mod tests {
             members: vec![],
             mls_group_id: None,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(info.display_name(), "devs");
     }
@@ -331,6 +343,7 @@ mod tests {
             members: vec![],
             mls_group_id: None,
             message_expiry_seconds: -1,
+            visibility: 1,
         };
         assert_eq!(info.display_name(), "devs");
     }
@@ -439,7 +452,7 @@ mod tests {
             event: Some(conclave_proto::server_event::Event::GroupUpdate(
                 conclave_proto::GroupUpdateEvent {
                     group_id: test_uuid(7).as_bytes().to_vec(),
-                    update_type: "commit".into(),
+                    update_type: conclave_proto::GroupUpdateType::Commit.into(),
                 },
             )),
         };
@@ -455,7 +468,7 @@ mod tests {
             panic!("expected GroupUpdate variant");
         };
         assert_eq!(group_id, test_uuid(7));
-        assert_eq!(update_type, "commit");
+        assert_eq!(update_type, conclave_proto::GroupUpdateType::Commit as i32);
     }
 
     #[test]

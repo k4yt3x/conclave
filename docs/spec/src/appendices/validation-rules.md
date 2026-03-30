@@ -94,6 +94,16 @@ Values above 500 are capped to 500.
 | Length | 64 characters (SHA-256 output = 256 bits = 64 hex digits) |
 | Validation | Not strictly validated on upload; stored as-is |
 
+## Group Visibility
+
+| Property | Rule |
+|----------|------|
+| Allowed values | `GROUP_VISIBILITY_PRIVATE` (1), `GROUP_VISIBILITY_PUBLIC` (2) |
+| Default | `GROUP_VISIBILITY_PRIVATE` |
+| Who can change | Group admins only (via `UpdateGroupRequest.visibility`) |
+
+The `GROUP_VISIBILITY_UNSPECIFIED` (0) value in `UpdateGroupRequest` means no change to the current visibility. Setting a group to PUBLIC makes it discoverable via `GET /api/v1/groups/public` and joinable via `POST /api/v1/groups/{id}/join`.
+
 ## Key Package Count Limits
 
 | Property | Rule |

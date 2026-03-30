@@ -450,8 +450,51 @@ impl Conclave {
             Ok(Command::Join {
                 target: Some(target),
             }) => {
-                self.switch_to_room(&target);
-                Task::none()
+                // Try local room first
+                if self.find_room_by_name(&target).is_some()
+                    || target
+                        .parse::<Uuid>()
+                        .is_ok_and(|id| self.rooms.contains_key(&id))
+                {
+                    self.switch_to_room(&target);
+                    return Task::none();
+                }
+
+                // Not found locally — try public room join
+                let user_id = match self.user_id {
+                    Some(id) => id,
+                    None => {
+                        self.push_system_message("Not logged in.");
+                        return Task::none();
+                    }
+                };
+                let params = self.api_params();
+                let data_dir = self.config.data_dir.clone();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let public_groups = api
+                            .list_public_groups(Some(&target))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let group = public_groups
+                            .groups
+                            .iter()
+                            .find(|g| g.group_name == target)
+                            .ok_or_else(|| {
+                                format!(
+                                    "Unknown room '{target}'. Use /rooms to list your rooms \
+                                     or /discover to find public rooms."
+                                )
+                            })?;
+                        let group_id =
+                            Uuid::from_slice(&group.group_id).map_err(|e| e.to_string())?;
+                        operations::join_public_room(&api, &data_dir, user_id, group_id)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::GroupCreated,
+                )
             }
 
             // Members
@@ -932,6 +975,85 @@ impl Conclave {
                 Task::none()
             }
             Ok(Command::Delete) => self.delete_group(),
+
+            Ok(Command::Visibility { visibility: None }) => {
+                let Some(group_id) = self.active_room else {
+                    self.push_system_message("No active room.");
+                    return Task::none();
+                };
+                let label = if self.rooms.get(&group_id).map(|r| r.visibility)
+                    == Some(conclave_proto::GroupVisibility::Public as i32)
+                {
+                    "public"
+                } else {
+                    "private"
+                };
+                self.push_system_message(&format!("Room visibility: {label}"));
+                Task::none()
+            }
+
+            Ok(Command::Visibility {
+                visibility: Some(visibility),
+            }) => {
+                let Some(group_id) = self.active_room else {
+                    self.push_system_message("No active room.");
+                    return Task::none();
+                };
+                let value = if visibility == "public" {
+                    conclave_proto::GroupVisibility::Public as i32
+                } else {
+                    conclave_proto::GroupVisibility::Private as i32
+                };
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        api.set_group_visibility(group_id, value)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(vec![DisplayMessage::system(&format!(
+                            "Room visibility set to {visibility}"
+                        ))])
+                    },
+                    Message::CommandResult,
+                )
+            }
+
+            Ok(Command::Discover { pattern }) => {
+                let params = self.api_params();
+                Task::perform(
+                    async move {
+                        let api = params.into_client();
+                        let response = api
+                            .list_public_groups(pattern.as_deref())
+                            .await
+                            .map_err(|e| e.to_string())?;
+
+                        let mut msgs = Vec::new();
+                        if response.groups.is_empty() {
+                            msgs.push(DisplayMessage::system("No public rooms found."));
+                        } else {
+                            msgs.push(DisplayMessage::system("Public rooms:"));
+                            for group in &response.groups {
+                                let alias = if group.alias.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({})", group.alias)
+                                };
+                                msgs.push(DisplayMessage::system(&format!(
+                                    "  #{}{} — {} member(s)",
+                                    group.group_name, alias, group.member_count
+                                )));
+                            }
+                            msgs.push(DisplayMessage::system(
+                                "Use /join <room_name> to join a public room.",
+                            ));
+                        }
+                        Ok(msgs)
+                    },
+                    Message::CommandResult,
+                )
+            }
 
             // Leave / security / reset
             Ok(Command::Part) => self.leave_group(),

@@ -69,12 +69,16 @@ pub fn router() -> Router<Arc<AppState>> {
         // Groups
         //
 
+        // List public groups (must come before /groups/{group_id} to avoid capture).
+        .route("/api/v1/groups/public", get(groups::list_public_groups))
         // POST: create a new group with a name and optional alias. GET: list the current user's groups.
         .route("/api/v1/groups", post(groups::create_group).get(groups::list_groups))
         // Update a group's display alias or name.
         .route("/api/v1/groups/{group_id}", patch(groups::update_group))
         // Fetch the MLS GroupInfo message for external joins.
         .route("/api/v1/groups/{group_id}/group-info", get(groups::get_group_info))
+        // Join a public group.
+        .route("/api/v1/groups/{group_id}/join", post(groups::join_public_group))
         // Delete a group permanently (admin only).
         .route("/api/v1/groups/{group_id}/delete", post(groups::delete_group))
         // Fetch the retention policy for a group (server + group expiry).

@@ -9,9 +9,17 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{Error, Result};
 use crate::state::AppState;
-use crate::validation::validate_group_name;
+use crate::validation::{validate_group_name, validate_visibility};
 
 use super::{broadcast_sse, decode_proto, notify_group_members, proto_response};
+
+/// Convert a DB role string to the protobuf `GroupRole` enum value.
+fn role_to_proto(role: &str) -> i32 {
+    match role {
+        "admin" => conclave_proto::GroupRole::Admin.into(),
+        _ => conclave_proto::GroupRole::Member.into(),
+    }
+}
 
 pub async fn create_group(
     State(state): State<Arc<AppState>>,
@@ -57,7 +65,7 @@ pub async fn list_groups(
                 user_id: m.user_id.as_bytes().to_vec(),
                 username: m.username,
                 alias: m.alias.unwrap_or_default(),
-                role: m.role,
+                role: role_to_proto(&m.role),
                 signing_key_fingerprint: m.signing_key_fingerprint.unwrap_or_default(),
             })
             .collect();
@@ -67,9 +75,9 @@ pub async fn list_groups(
             alias: row.alias.unwrap_or_default(),
             group_name: row.group_name,
             members: member_protos,
-            created_at: row.created_at as u64,
             mls_group_id: row.mls_group_id.unwrap_or_default(),
             message_expiry_seconds: row.message_expiry_seconds,
+            visibility: row.visibility,
         });
     }
 
@@ -124,13 +132,20 @@ pub async fn update_group(
         state.db.set_group_expiry(group_id, seconds)?;
     }
 
+    if request.visibility != 0 {
+        validate_visibility(request.visibility)?;
+        state
+            .db
+            .set_group_visibility(group_id, request.visibility)?;
+    }
+
     notify_group_members(
         &state,
         group_id,
         None,
         conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
             group_id: group_id.as_bytes().to_vec(),
-            update_type: "group_settings".into(),
+            update_type: conclave_proto::GroupUpdateType::GroupSettings.into(),
         }),
     );
 
@@ -211,6 +226,74 @@ pub async fn get_group_info(
         .db
         .get_group_info(group_id)?
         .ok_or_else(|| Error::NotFound("no group info available".into()))?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::GetGroupInfoResponse {
+            group_info: group_info_data,
+        },
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ListPublicGroupsQuery {
+    pub pattern: Option<String>,
+}
+
+pub async fn list_public_groups(
+    State(state): State<Arc<AppState>>,
+    _auth: AuthUser,
+    axum::extract::Query(query): axum::extract::Query<ListPublicGroupsQuery>,
+) -> Result<impl IntoResponse> {
+    let rows = state.db.list_public_groups(query.pattern.as_deref())?;
+
+    let groups = rows
+        .into_iter()
+        .map(|row| conclave_proto::PublicGroupInfo {
+            group_id: row.group_id.as_bytes().to_vec(),
+            group_name: row.group_name,
+            alias: row.alias.unwrap_or_default(),
+            member_count: row.member_count,
+        })
+        .collect();
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ListPublicGroupsResponse { groups },
+    ))
+}
+
+pub async fn join_public_group(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    if !state.db.group_exists(group_id)? {
+        return Err(Error::NotFound("group not found".into()));
+    }
+
+    let visibility = state.db.get_group_visibility(group_id)?;
+    if visibility != conclave_proto::GroupVisibility::Public as i32 {
+        return Err(Error::not_public("this group is not public"));
+    }
+
+    if state.db.is_group_member(group_id, auth.user_id)? {
+        return Err(Error::Conflict("already a member of this group".into()));
+    }
+
+    // Check for pending invite.
+    if state.db.has_pending_invite(group_id, auth.user_id)? {
+        return Err(Error::Conflict(
+            "you have a pending invite for this group".into(),
+        ));
+    }
+
+    let group_info_data = state
+        .db
+        .get_group_info(group_id)?
+        .ok_or_else(|| Error::BadRequest("no group info available for this group".into()))?;
+
+    state.db.add_group_member(group_id, auth.user_id)?;
 
     Ok(proto_response(
         StatusCode::OK,

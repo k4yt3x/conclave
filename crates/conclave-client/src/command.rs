@@ -118,7 +118,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         category: CommandCategory::Rooms,
         usage: "/join [room]",
-        description: "Accept pending invitations or switch to a room",
+        description: "Accept invitations, switch to a room, or join a public room",
     },
     CommandSpec {
         name: "close",
@@ -168,6 +168,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         category: CommandCategory::Rooms,
         usage: "/delete",
         description: "Delete the active room (admin only)",
+    },
+    CommandSpec {
+        name: "visibility",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/visibility [public|private]",
+        description: "Show or set room visibility (admin only to set)",
+    },
+    CommandSpec {
+        name: "discover",
+        aliases: &[],
+        category: CommandCategory::Rooms,
+        usage: "/discover [pattern]",
+        description: "List public rooms",
     },
     // Members
     CommandSpec {
@@ -408,6 +422,12 @@ pub enum Command {
         duration: Option<String>,
     },
     Delete,
+    Visibility {
+        visibility: Option<String>,
+    },
+    Discover {
+        pattern: Option<String>,
+    },
 
     // Members
     Members,
@@ -582,6 +602,23 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 None
             };
             Ok(Command::Expire { duration })
+        }
+
+        "visibility" => {
+            if parts.len() < 2 {
+                return Ok(Command::Visibility { visibility: None });
+            }
+            let value = parts[1].to_lowercase();
+            if value != "public" && value != "private" {
+                return Err(Error::Other("Usage: /visibility [public|private]".into()));
+            }
+            Ok(Command::Visibility {
+                visibility: Some(value),
+            })
+        }
+        "discover" => {
+            let pattern = parts.get(1).map(|s| s.to_string());
+            Ok(Command::Discover { pattern })
         }
 
         // Members
@@ -1193,6 +1230,56 @@ mod tests {
                 category.label,
             );
         }
+    }
+
+    #[test]
+    fn test_parse_visibility_public() {
+        let cmd = parse("/visibility public").unwrap();
+        let Command::Visibility { visibility } = cmd else {
+            panic!("expected Visibility variant");
+        };
+        assert_eq!(visibility, Some("public".to_string()));
+    }
+
+    #[test]
+    fn test_parse_visibility_private() {
+        let cmd = parse("/visibility private").unwrap();
+        let Command::Visibility { visibility } = cmd else {
+            panic!("expected Visibility variant");
+        };
+        assert_eq!(visibility, Some("private".to_string()));
+    }
+
+    #[test]
+    fn test_parse_visibility_invalid() {
+        assert!(parse("/visibility open").is_err());
+    }
+
+    #[test]
+    fn test_parse_visibility_no_arg() {
+        let cmd = parse("/visibility").unwrap();
+        let Command::Visibility { visibility } = cmd else {
+            panic!("expected Visibility variant");
+        };
+        assert!(visibility.is_none());
+    }
+
+    #[test]
+    fn test_parse_discover_no_pattern() {
+        let cmd = parse("/discover").unwrap();
+        let Command::Discover { pattern } = cmd else {
+            panic!("expected Discover variant");
+        };
+        assert!(pattern.is_none());
+    }
+
+    #[test]
+    fn test_parse_discover_with_pattern() {
+        let cmd = parse("/discover dev").unwrap();
+        let Command::Discover { pattern } = cmd else {
+            panic!("expected Discover variant");
+        };
+        assert_eq!(pattern, Some("dev".to_string()));
     }
 
     #[test]

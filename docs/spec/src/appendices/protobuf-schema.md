@@ -65,17 +65,17 @@ message GroupInfo {
   bytes group_id = 1;
   string alias = 2;
   repeated GroupMember members = 3;
-  uint64 created_at = 4;                    // Unix timestamp (seconds)
-  string group_name = 5;
-  string mls_group_id = 6;                  // Hex-encoded MLS group ID
-  int64 message_expiry_seconds = 7;         // -1=disabled, 0=fetch-then-delete, >0=seconds
+  string group_name = 4;
+  string mls_group_id = 5;                  // Hex-encoded MLS group ID
+  int64 message_expiry_seconds = 6;         // -1=disabled, 0=fetch-then-delete, >0=seconds
+  GroupVisibility visibility = 7;           // PRIVATE or PUBLIC
 }
 
 message GroupMember {
   bytes user_id = 1;
   string username = 2;
   string alias = 3;
-  string role = 4;                          // "admin" or "member"
+  GroupRole role = 4;                       // MEMBER or ADMIN
   string signing_key_fingerprint = 5;       // SHA-256 hex of signing public key
 }
 
@@ -83,11 +83,23 @@ message ListGroupsResponse {
   repeated GroupInfo groups = 1;
 }
 
+message PublicGroupInfo {
+  bytes group_id = 1;
+  string group_name = 2;
+  string alias = 3;
+  uint32 member_count = 4;
+}
+
+message ListPublicGroupsResponse {
+  repeated PublicGroupInfo groups = 1;
+}
+
 message UpdateGroupRequest {
   string alias = 1;
   string group_name = 2;
   int64 message_expiry_seconds = 3;
   bool update_message_expiry = 4;           // Must be true to apply expiry field
+  GroupVisibility visibility = 5;           // PRIVATE or PUBLIC
 }
 
 message UpdateGroupResponse {}
@@ -269,11 +281,19 @@ message UpdateProfileRequest {
 message UpdateProfileResponse {}
 
 message ChangePasswordRequest {
-  // Field 1 reserved.
+  string current_password = 1;
   string new_password = 2;
 }
 
 message ChangePasswordResponse {}
+
+message DeleteAccountRequest {
+  string password = 1;
+}
+
+message DeleteAccountResponse {}
+
+message DeleteGroupResponse {}
 ```
 
 ## SSE Events
@@ -289,6 +309,7 @@ message ServerEvent {
     InviteReceivedEvent invite_received = 6;
     InviteDeclinedEvent invite_declined = 7;
     InviteCancelledEvent invite_cancelled = 8;
+    GroupDeletedEvent group_deleted = 9;
   }
 }
 
@@ -300,7 +321,7 @@ message NewMessageEvent {
 
 message GroupUpdateEvent {
   bytes group_id = 1;
-  string update_type = 2;                 // "commit", "member_profile", "group_settings", "role_change"
+  GroupUpdateType update_type = 2;        // COMMIT, GROUP_SETTINGS, ROLE_CHANGE
 }
 
 message WelcomeEvent {
@@ -334,6 +355,33 @@ message InviteDeclinedEvent {
 message InviteCancelledEvent {
   bytes group_id = 1;
 }
+
+message GroupDeletedEvent {
+  bytes group_id = 1;
+}
+```
+
+## Enums
+
+```protobuf
+enum GroupVisibility {
+  GROUP_VISIBILITY_UNSPECIFIED = 0;
+  GROUP_VISIBILITY_PRIVATE = 1;
+  GROUP_VISIBILITY_PUBLIC = 2;
+}
+
+enum GroupRole {
+  GROUP_ROLE_UNSPECIFIED = 0;
+  GROUP_ROLE_MEMBER = 1;
+  GROUP_ROLE_ADMIN = 2;
+}
+
+enum GroupUpdateType {
+  GROUP_UPDATE_TYPE_UNSPECIFIED = 0;
+  GROUP_UPDATE_TYPE_COMMIT = 1;
+  GROUP_UPDATE_TYPE_GROUP_SETTINGS = 2;
+  GROUP_UPDATE_TYPE_ROLE_CHANGE = 3;
+}
 ```
 
 ## Common
@@ -359,6 +407,7 @@ enum ErrorCode {
   // Group operation errors (400-499)
   ERROR_CODE_GROUP_NOT_MEMBER = 400;
   ERROR_CODE_GROUP_NOT_ADMIN = 401;
+  ERROR_CODE_GROUP_NOT_PUBLIC = 402;
 }
 
 message ErrorResponse {

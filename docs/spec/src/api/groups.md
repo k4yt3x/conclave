@@ -74,9 +74,9 @@ Each `GroupInfo`:
 | `alias` | string | Display name (may be empty). |
 | `group_name` | string | Unique group name. |
 | `members` | repeated `GroupMember` | All members of the group. |
-| `created_at` | uint64 | Unix timestamp of group creation (seconds). |
 | `mls_group_id` | string | Hex-encoded MLS group identifier. |
 | `message_expiry_seconds` | int64 | Per-group message expiry (-1=disabled, 0=delete-after-fetch, >0=seconds). |
+| `visibility` | `GroupVisibility` | PRIVATE (default) or PUBLIC. |
 
 Each `GroupMember`:
 
@@ -85,7 +85,7 @@ Each `GroupMember`:
 | `user_id` | bytes | Member's user ID (UUID). |
 | `username` | string | Member's username. |
 | `alias` | string | Member's display name (may be empty). |
-| `role` | string | Either `"admin"` or `"member"`. |
+| `role` | `GroupRole` | `GROUP_ROLE_ADMIN` or `GROUP_ROLE_MEMBER`. |
 | `signing_key_fingerprint` | string | SHA-256 hex of the member's MLS signing public key (may be empty). |
 
 ### Status Codes
@@ -125,6 +125,7 @@ PATCH /api/v1/groups/{group_id}
 | `group_name` | string | No | New group name. Same validation rules as creation. |
 | `message_expiry_seconds` | int64 | No | New message expiry value. Only applied when `update_message_expiry` is `true`. |
 | `update_message_expiry` | bool | No | MUST be `true` for the `message_expiry_seconds` field to take effect. |
+| `visibility` | `GroupVisibility` | No | New visibility setting. `UNSPECIFIED` (0) means no change. |
 
 ### Message Expiry Validation
 
@@ -147,7 +148,7 @@ Empty message.
 
 ### SSE Events
 
-- **`GroupUpdateEvent`** with `update_type: "group_settings"` — sent to all group members, **including the sender**.
+- **`GroupUpdateEvent`** with `update_type: GROUP_UPDATE_TYPE_GROUP_SETTINGS` — sent to all group members, **including the sender**.
 
 ---
 
@@ -228,6 +229,105 @@ None.
 ### SSE Events
 
 None.
+
+---
+
+## List Public Groups
+
+Lists all groups with PUBLIC visibility. Available to any authenticated user.
+
+```
+GET /api/v1/groups/public?pattern={pattern}
+```
+
+**Authentication**: Required.
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pattern` | string | No | Substring filter on `group_name`. Only groups whose name contains this string are returned. |
+
+### Request Body
+
+None.
+
+### Response Body — `ListPublicGroupsResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `groups` | repeated `PublicGroupInfo` | List of public groups. |
+
+Each `PublicGroupInfo`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `group_id` | bytes | Server-assigned group ID (UUID). |
+| `group_name` | string | Unique group name. |
+| `alias` | string | Display name (may be empty). |
+| `member_count` | uint32 | Number of members in the group. |
+
+### Status Codes
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | Success. Returns an empty list if no public groups exist. |
+| 401 Unauthorized | Invalid or expired token. |
+
+### SSE Events
+
+None.
+
+---
+
+## Join Public Group
+
+Adds the caller as a member of a public group and returns the MLS GroupInfo needed to build an external commit. The caller must not already be a member.
+
+```
+POST /api/v1/groups/{group_id}/join
+```
+
+**Authentication**: Required.
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_id` | string | The public group to join. |
+
+### Request Body
+
+None (empty body).
+
+### Response Body — `GetGroupInfoResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `group_info` | bytes | MLS GroupInfo message for building an external commit. |
+
+### Notes
+
+This is step 1 of a two-step join flow:
+
+1. **`POST /api/v1/groups/{group_id}/join`** — Server validates the group is public, adds the user as a member, and returns the MLS GroupInfo.
+2. **`POST /api/v1/groups/{group_id}/external-join`** — Client builds an MLS external commit from the GroupInfo and submits it. The `external_join` handler detects this is a new joiner (no prior message history) and emits a `GroupUpdateEvent` instead of `IdentityResetEvent`.
+
+The server adds the user as a member with the `member` role **before** the external commit is submitted. This maintains the server's authorization model while allowing the existing `external_join` endpoint's membership check to pass.
+
+### Status Codes
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | User added as member. Returns MLS GroupInfo for external commit. |
+| 400 Bad Request | No GroupInfo available for the group. |
+| 403 Forbidden | Group is not public (`ERROR_CODE_GROUP_NOT_PUBLIC`). |
+| 404 Not Found | Group does not exist. |
+| 409 Conflict | User is already a member or has a pending invite. |
+
+### SSE Events
+
+None (SSE events are emitted by the subsequent `external_join` call).
 
 ---
 

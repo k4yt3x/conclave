@@ -78,9 +78,17 @@ pub struct UserGroupRow {
     pub group_id: Uuid,
     pub group_name: String,
     pub alias: Option<String>,
-    pub created_at: i64,
     pub mls_group_id: Option<String>,
     pub message_expiry_seconds: i64,
+    pub visibility: i32,
+}
+
+/// A public group row for the discovery listing.
+pub struct PublicGroupRow {
+    pub group_id: Uuid,
+    pub group_name: String,
+    pub alias: Option<String>,
+    pub member_count: u32,
 }
 
 /// A group member row from the `group_members` table joined with user info.
@@ -149,8 +157,7 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                alias TEXT,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                alias TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
@@ -172,9 +179,9 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 group_name TEXT UNIQUE NOT NULL,
                 alias TEXT,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 mls_group_id TEXT,
-                message_expiry_seconds INTEGER NOT NULL DEFAULT -1
+                message_expiry_seconds INTEGER NOT NULL DEFAULT -1,
+                visibility INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS group_members (
@@ -259,6 +266,16 @@ impl Database {
             let message = error.to_string();
             if !message.contains("duplicate column") {
                 tracing::warn!(%error, "migration failed: add signing_key_fingerprint column");
+            }
+        }
+
+        // Migration: add visibility column to existing databases.
+        if let Err(error) = conn
+            .execute_batch("ALTER TABLE groups ADD COLUMN visibility INTEGER NOT NULL DEFAULT 1;")
+        {
+            let message = error.to_string();
+            if !message.contains("duplicate column") {
+                tracing::warn!(%error, "migration failed: add visibility column");
             }
         }
 

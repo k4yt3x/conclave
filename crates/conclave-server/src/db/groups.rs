@@ -72,12 +72,12 @@ impl Database {
     pub fn list_user_groups(&self, user_id: Uuid) -> Result<Vec<UserGroupRow>> {
         let conn = self.lock_conn();
         let mut stmt = conn.prepare(
-            "SELECT g.id, g.group_name, g.alias, g.created_at, g.mls_group_id,
-                    g.message_expiry_seconds
+            "SELECT g.id, g.group_name, g.alias, g.mls_group_id,
+                    g.message_expiry_seconds, g.visibility
              FROM groups g
              JOIN group_members gm ON g.id = gm.group_id
              WHERE gm.user_id = ?1
-             ORDER BY g.created_at DESC",
+             ORDER BY g.group_name ASC",
         )?;
         let rows = stmt
             .query_map(params![user_id.to_string()], |row| {
@@ -92,20 +92,20 @@ impl Database {
                 ))
             })?
             .collect::<std::result::Result<
-                Vec<(String, String, Option<String>, i64, Option<String>, i64)>,
+                Vec<(String, String, Option<String>, Option<String>, i64, i32)>,
                 _,
             >>()?;
         let mut result = Vec::with_capacity(rows.len());
-        for (id_str, group_name, alias, created_at, mls_group_id, message_expiry_seconds) in rows {
+        for (id_str, group_name, alias, mls_group_id, message_expiry_seconds, visibility) in rows {
             let group_id = Uuid::parse_str(&id_str)
                 .map_err(|e| Error::Internal(format!("invalid group UUID: {e}")))?;
             result.push(UserGroupRow {
                 group_id,
                 group_name,
                 alias,
-                created_at,
                 mls_group_id,
                 message_expiry_seconds,
+                visibility,
             });
         }
         Ok(result)
@@ -228,6 +228,78 @@ impl Database {
             params![group_id.to_string(), seconds],
         )?;
         Ok(())
+    }
+
+    /// Get the visibility setting for a group.
+    pub fn get_group_visibility(&self, group_id: Uuid) -> Result<i32> {
+        let conn = self.lock_conn();
+        let visibility: i32 = conn
+            .prepare("SELECT visibility FROM groups WHERE id = ?1")?
+            .query_row(params![group_id.to_string()], |row| row.get(0))
+            .optional()?
+            .unwrap_or(1);
+        Ok(visibility)
+    }
+
+    /// Set the visibility setting for a group.
+    pub fn set_group_visibility(&self, group_id: Uuid, visibility: i32) -> Result<()> {
+        let conn = self.lock_conn();
+        conn.execute(
+            "UPDATE groups SET visibility = ?2 WHERE id = ?1",
+            params![group_id.to_string(), visibility],
+        )?;
+        Ok(())
+    }
+
+    /// List all public groups, optionally filtered by name pattern.
+    pub fn list_public_groups(
+        &self,
+        pattern: Option<&str>,
+    ) -> Result<Vec<crate::db::PublicGroupRow>> {
+        let conn = self.lock_conn();
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match pattern {
+            Some(pat) => (
+                "SELECT g.id, g.group_name, g.alias, COUNT(gm.user_id) as member_count
+                 FROM groups g
+                 LEFT JOIN group_members gm ON g.id = gm.group_id
+                 WHERE g.visibility = 2 AND g.group_name LIKE ?1
+                 GROUP BY g.id
+                 ORDER BY g.group_name ASC"
+                    .to_string(),
+                vec![Box::new(format!("%{pat}%")) as Box<dyn rusqlite::types::ToSql>],
+            ),
+            None => (
+                "SELECT g.id, g.group_name, g.alias, COUNT(gm.user_id) as member_count
+                 FROM groups g
+                 LEFT JOIN group_members gm ON g.id = gm.group_id
+                 WHERE g.visibility = 2
+                 GROUP BY g.id
+                 ORDER BY g.group_name ASC"
+                    .to_string(),
+                vec![],
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                let id_str: String = row.get(0)?;
+                Ok((id_str, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)?))
+            })?
+            .collect::<std::result::Result<Vec<(String, String, Option<String>, i64)>, _>>()?;
+        let mut result = Vec::with_capacity(rows.len());
+        for (id_str, group_name, alias, member_count) in rows {
+            let group_id = Uuid::parse_str(&id_str)
+                .map_err(|e| Error::Internal(format!("invalid group UUID: {e}")))?;
+            result.push(crate::db::PublicGroupRow {
+                group_id,
+                group_name,
+                alias,
+                member_count: member_count as u32,
+            });
+        }
+        Ok(result)
     }
 
     /// Delete a group. CASCADE handles all dependent rows (group_members,

@@ -361,6 +361,18 @@ impl Database {
         }
     }
 
+    /// Check whether a pending invite exists for a given group and user.
+    pub fn has_pending_invite(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
+        let conn = self.lock_conn();
+        let exists: Option<i64> = conn
+            .prepare("SELECT 1 FROM pending_invites WHERE group_id = ?1 AND invitee_id = ?2")?
+            .query_row(params![group_id.to_string(), user_id.to_string()], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(exists.is_some())
+    }
+
     pub fn delete_pending_invite(&self, invite_id: Uuid) -> Result<()> {
         let conn = self.lock_conn();
         conn.execute(

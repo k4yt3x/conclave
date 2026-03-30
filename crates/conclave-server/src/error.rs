@@ -18,8 +18,8 @@ pub enum Error {
     #[error("unauthorized: {message}")]
     Unauthorized { message: String, code: i32 },
 
-    #[error("forbidden: {0}")]
-    Forbidden(String),
+    #[error("forbidden: {message}")]
+    Forbidden { message: String, code: i32 },
 
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -62,6 +62,13 @@ impl Error {
             code: ErrorCode::GroupNotAdmin.into(),
         }
     }
+
+    pub fn not_public(message: impl Into<String>) -> Self {
+        Error::Forbidden {
+            message: message.into(),
+            code: ErrorCode::GroupNotPublic.into(),
+        }
+    }
 }
 
 impl IntoResponse for Error {
@@ -98,10 +105,10 @@ impl IntoResponse for Error {
                 message.clone(),
                 ErrorCode::try_from(*code).unwrap_or(ErrorCode::Unspecified),
             ),
-            Error::Forbidden(msg) => (
+            Error::Forbidden { message, code } => (
                 StatusCode::FORBIDDEN,
-                msg.clone(),
-                ErrorCode::ResourceForbidden,
+                message.clone(),
+                ErrorCode::try_from(*code).unwrap_or(ErrorCode::ResourceForbidden),
             ),
             Error::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,

@@ -24,7 +24,10 @@ pub async fn register(
     if !state.config.registration_enabled {
         match &state.config.registration_token {
             None => {
-                return Err(Error::Forbidden("registration is disabled".into()));
+                return Err(Error::Forbidden {
+                    message: "registration is disabled".into(),
+                    code: conclave_proto::ErrorCode::ResourceForbidden.into(),
+                });
             }
             Some(configured_token) => {
                 if !bool::from(
@@ -33,7 +36,10 @@ pub async fn register(
                         .as_bytes()
                         .ct_eq(configured_token.as_bytes()),
                 ) {
-                    return Err(Error::Forbidden("invalid registration token".into()));
+                    return Err(Error::Forbidden {
+                        message: "invalid registration token".into(),
+                        code: conclave_proto::ErrorCode::ResourceForbidden.into(),
+                    });
                 }
             }
         }
@@ -158,7 +164,7 @@ pub async fn update_profile(
             None,
             conclave_proto::server_event::Event::GroupUpdate(conclave_proto::GroupUpdateEvent {
                 group_id: group_row.group_id.as_bytes().to_vec(),
-                update_type: "member_profile".into(),
+                update_type: conclave_proto::GroupUpdateType::GroupSettings.into(),
             }),
         );
     }
