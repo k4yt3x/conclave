@@ -100,6 +100,12 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/groups/{group_id}/demote", post(members::demote_member))
         // List all admins of a group.
         .route("/api/v1/groups/{group_id}/admins", get(members::list_admins))
+        // Ban a member from a group (admin only). Removes from group + prevents rejoin.
+        .route("/api/v1/groups/{group_id}/ban", post(members::ban_member))
+        // Unban a user from a group (admin only).
+        .route("/api/v1/groups/{group_id}/unban", post(members::unban_member))
+        // List all banned users for a group (admin only).
+        .route("/api/v1/groups/{group_id}/banned", get(members::list_banned))
         // Rejoin a group via MLS external commit (e.g., after account reset).
         .route("/api/v1/groups/{group_id}/external-join", post(external::external_join))
 

@@ -424,7 +424,7 @@ impl Conclave {
                             .await
                             .map_err(|e| e.to_string())?;
                         if rooms.is_empty() {
-                            return Ok(vec![DisplayMessage::system("No rooms.")]);
+                            return Ok(vec![DisplayMessage::system("No rooms joined yet.")]);
                         }
                         let mut msgs = vec![DisplayMessage::system("Rooms:")];
                         for r in &rooms {
@@ -524,13 +524,13 @@ impl Conclave {
                             })
                             .collect();
                         self.push_system_message(&format!(
-                            "Members of #{}: {}",
+                            "Members of #{}: {}.",
                             room.display_name(),
                             member_names.join(", ")
                         ));
                     }
                 } else {
-                    self.push_system_message("No active room.");
+                    self.push_system_message("No active room — use /join first.");
                 }
                 Task::none()
             }
@@ -546,7 +546,7 @@ impl Conclave {
                         .map(|r| r.display_name())
                         .unwrap_or_default();
                     self.push_system_message(&format!(
-                        "Switched away from #{name} (use /part to leave)"
+                        "Switched away from #{name} (use /part to leave)."
                     ));
                 }
                 Task::none()
@@ -570,12 +570,12 @@ impl Conclave {
                             .map(|id| id.to_string())
                             .unwrap_or_else(|_| "?".into());
                         let mut msgs = vec![DisplayMessage::system(&format!(
-                            "User: {} (ID: {self_user_id})",
+                            "User: {} (ID: {self_user_id}).",
                             resp.username
                         ))];
                         if let Some(fp) = own_fingerprint {
                             msgs.push(DisplayMessage::system(&format!(
-                                "Fingerprint: {}",
+                                "Fingerprint: {}.",
                                 format_fingerprint(&fp)
                             )));
                         }
@@ -599,12 +599,12 @@ impl Conclave {
                         let user_id = Uuid::from_slice(&resp.user_id)
                             .map_err(|e| format!("Invalid user ID: {e}"))?;
                         let mut msgs = vec![DisplayMessage::system(&format!(
-                            "User: {} (ID: {})",
+                            "User: {} (ID: {}).",
                             resp.username, user_id
                         ))];
                         if !resp.signing_key_fingerprint.is_empty() {
                             msgs.push(DisplayMessage::system(&format!(
-                                "Fingerprint: {}",
+                                "Fingerprint: {}.",
                                 format_fingerprint(&resp.signing_key_fingerprint)
                             )));
                             if let Ok(store) = MessageStore::open(&data_dir) {
@@ -626,7 +626,9 @@ impl Conclave {
                                         "Changed (warning!)"
                                     }
                                 };
-                                msgs.push(DisplayMessage::system(&format!("Status: {status_str}")));
+                                msgs.push(DisplayMessage::system(&format!(
+                                    "Status: {status_str}."
+                                )));
                             }
                         }
                         Ok(msgs)
@@ -810,7 +812,7 @@ impl Conclave {
                 let group_id = match self.active_room {
                     Some(id) => id,
                     None => {
-                        self.push_system_message("No active room — use /join first");
+                        self.push_system_message("No active room — use /join first.");
                         return Task::none();
                     }
                 };
@@ -823,7 +825,7 @@ impl Conclave {
                             .await
                             .map_err(|e| e.to_string())?;
                         Ok(vec![DisplayMessage::system(&format!(
-                            "Room alias set to: {topic}"
+                            "Room alias set to: {topic}."
                         ))])
                     },
                     Message::CommandResult,
@@ -849,7 +851,7 @@ impl Conclave {
                 let group_id = match self.active_room {
                     Some(id) => id,
                     None => {
-                        self.push_system_message("No active room.");
+                        self.push_system_message("No active room — use /join first.");
                         return Task::none();
                     }
                 };
@@ -878,7 +880,7 @@ impl Conclave {
                             })
                             .collect();
                         Ok(vec![DisplayMessage::system(&format!(
-                            "Admins of #{room_name}: {}",
+                            "Admins of #{room_name}: {}.",
                             admin_names.join(", ")
                         ))])
                     },
@@ -889,6 +891,9 @@ impl Conclave {
             // Invites
             Ok(Command::Invited) => self.list_group_invites(),
             Ok(Command::Uninvite { username }) => self.cancel_invite(username),
+            Ok(Command::Ban { username }) => self.ban_member(username),
+            Ok(Command::Unban { username }) => self.unban_member(username),
+            Ok(Command::Banned) => self.list_banned_users(),
             Ok(Command::Invites) => self.list_invites(),
             Ok(Command::Accept { invite_id }) => self.accept_invites(invite_id),
             Ok(Command::Decline { invite_id }) => self.decline_invite(invite_id),
@@ -898,7 +903,7 @@ impl Conclave {
                 let group_id = match self.active_room {
                     Some(id) => id,
                     None => {
-                        self.push_system_message("No active room — use /join first");
+                        self.push_system_message("No active room — use /join first.");
                         return Task::none();
                     }
                 };
@@ -920,10 +925,10 @@ impl Conclave {
                             policy.group_expiry_seconds,
                         );
                         Ok(vec![
-                            DisplayMessage::system(&format!("Server retention: {server}")),
-                            DisplayMessage::system(&format!("Room expiry: {group}")),
+                            DisplayMessage::system(&format!("Server retention: {server}.")),
+                            DisplayMessage::system(&format!("Room expiry: {group}.")),
                             DisplayMessage::system(&format!(
-                                "Effective: {}",
+                                "Effective: {}.",
                                 conclave_client::duration::format_duration(effective)
                             )),
                         ])
@@ -937,7 +942,7 @@ impl Conclave {
                 let group_id = match self.active_room {
                     Some(id) => id,
                     None => {
-                        self.push_system_message("No active room — use /join first");
+                        self.push_system_message("No active room — use /join first.");
                         return Task::none();
                     }
                 };
@@ -957,7 +962,7 @@ impl Conclave {
                             .await
                             .map_err(|e| e.to_string())?;
                         Ok(vec![DisplayMessage::system(&format!(
-                            "Message expiry set to {formatted}"
+                            "Message expiry set to {formatted}."
                         ))])
                     },
                     Message::CommandResult,
@@ -978,7 +983,7 @@ impl Conclave {
 
             Ok(Command::Visibility { visibility: None }) => {
                 let Some(group_id) = self.active_room else {
-                    self.push_system_message("No active room.");
+                    self.push_system_message("No active room — use /join first.");
                     return Task::none();
                 };
                 let label = if self.rooms.get(&group_id).map(|r| r.visibility)
@@ -988,7 +993,7 @@ impl Conclave {
                 } else {
                     "private"
                 };
-                self.push_system_message(&format!("Room visibility: {label}"));
+                self.push_system_message(&format!("Room visibility: {label}."));
                 Task::none()
             }
 
@@ -996,7 +1001,7 @@ impl Conclave {
                 visibility: Some(visibility),
             }) => {
                 let Some(group_id) = self.active_room else {
-                    self.push_system_message("No active room.");
+                    self.push_system_message("No active room — use /join first.");
                     return Task::none();
                 };
                 let value = if visibility == "public" {
@@ -1012,7 +1017,7 @@ impl Conclave {
                             .await
                             .map_err(|e| e.to_string())?;
                         Ok(vec![DisplayMessage::system(&format!(
-                            "Room visibility set to {visibility}"
+                            "Room visibility set to {visibility}."
                         ))])
                     },
                     Message::CommandResult,

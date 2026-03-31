@@ -376,3 +376,66 @@ All members' local MLS state for the group becomes orphaned. Clients clean up lo
 ### SSE Events
 
 `GroupDeletedEvent` is broadcast to all former group members (including the caller).
+
+## Ban Member
+
+Bans a member from the group. Performs an MLS removal (like Remove Member) and additionally adds the user to the group's ban list, preventing them from rejoining via public join or invite acceptance. Any pending invites for the banned user in the group are also cancelled.
+
+```
+POST /api/v1/groups/{group_id}/ban
+```
+
+**Auth**: Required (admin only)
+
+**Request Body**: `BanMemberRequest` (protobuf)
+
+**Response**: `BanMemberResponse` (protobuf)
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | Member banned. |
+| 400 Bad Request | Target is not a member. |
+| 401 Unauthorized | Caller is not an admin. |
+| 404 Not Found | User not found. |
+
+### SSE Events
+
+`MemberRemovedEvent` is broadcast to all remaining members and the banned user.
+
+## Unban Member
+
+Removes a user from the group's ban list, allowing them to rejoin.
+
+```
+POST /api/v1/groups/{group_id}/unban
+```
+
+**Auth**: Required (admin only)
+
+**Request Body**: `UnbanMemberRequest` (protobuf)
+
+**Response**: `UnbanMemberResponse` (protobuf)
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | User unbanned. |
+| 400 Bad Request | User is not banned. |
+| 401 Unauthorized | Caller is not an admin. |
+| 404 Not Found | User not found. |
+
+## List Banned Users
+
+Lists all banned users for a group.
+
+```
+GET /api/v1/groups/{group_id}/banned
+```
+
+**Auth**: Required (admin only)
+
+**Response**: `ListBannedUsersResponse` (protobuf)
+
+| Code | Condition |
+|------|-----------|
+| 200 OK | Returns ban list. |
+| 401 Unauthorized | Caller is not an admin. |

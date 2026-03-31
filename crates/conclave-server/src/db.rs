@@ -1,3 +1,4 @@
+mod bans;
 mod groups;
 mod invites;
 mod key_packages;
@@ -89,6 +90,15 @@ pub struct PublicGroupRow {
     pub group_name: String,
     pub alias: Option<String>,
     pub member_count: u32,
+}
+
+/// A banned user row from the `banned_users` table joined with user info.
+pub struct BannedUserRow {
+    pub user_id: Uuid,
+    pub username: String,
+    pub alias: Option<String>,
+    pub banned_by: Uuid,
+    pub banned_at: i64,
 }
 
 /// A group member row from the `group_members` table joined with user info.
@@ -231,6 +241,20 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_pending_invites_invitee
                 ON pending_invites(invitee_id);
+
+            CREATE TABLE IF NOT EXISTS banned_users (
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                banned_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                banned_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (group_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_external_joins (
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                PRIMARY KEY (group_id, user_id)
+            );
 
             CREATE TABLE IF NOT EXISTS message_fetch_watermarks (
                 group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

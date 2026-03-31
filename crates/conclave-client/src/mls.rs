@@ -753,6 +753,41 @@ impl MlsManager {
         Ok(())
     }
 
+    /// Delete local MLS group state for groups no longer present on the server.
+    /// Called on startup/reconnect to clean up state orphaned by offline kicks.
+    pub fn cleanup_orphaned_groups(
+        &self,
+        valid_mls_group_ids: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let db_path = self.data_dir.join("mls_state.db");
+        if !db_path.exists() {
+            return Ok(());
+        }
+
+        let storage = SqLiteDataStorageEngine::new(FileConnectionStrategy::new(&db_path))
+            .map_err(|e| Error::Mls(format!("SQLite storage init failed: {e}")))?;
+
+        let group_state = storage
+            .group_state_storage()
+            .map_err(|e| Error::Mls(format!("group state storage: {e}")))?;
+
+        let local_ids = group_state
+            .group_ids()
+            .map_err(|e| Error::Mls(format!("list group IDs failed: {e}")))?;
+
+        for raw_id in &local_ids {
+            let hex_id = hex::encode(raw_id);
+            if !valid_mls_group_ids.contains(&hex_id) {
+                tracing::debug!(group_id = hex_id, "deleting orphaned MLS group state");
+                group_state
+                    .delete_group(raw_id)
+                    .map_err(|e| Error::Mls(format!("delete orphaned group failed: {e}")))?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Wipe all local MLS state (identity + group state DB).
     /// Used for account reset.
     pub fn wipe_local_state(&self) -> Result<()> {

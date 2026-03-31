@@ -246,6 +246,32 @@ message RemoveMemberRequest {
 
 message RemoveMemberResponse {}
 
+message BanMemberRequest {
+  bytes user_id = 1;                       // Target user to ban
+  bytes commit_message = 2;                // MLS removal commit
+  bytes group_info = 3;                    // Updated MLS GroupInfo
+}
+
+message BanMemberResponse {}
+
+message UnbanMemberRequest {
+  bytes user_id = 1;                       // Target user to unban
+}
+
+message UnbanMemberResponse {}
+
+message BannedUser {
+  bytes user_id = 1;                       // Banned user ID
+  string username = 2;                     // Banned user's username
+  string alias = 3;                        // Banned user's alias
+  uint64 banned_at = 4;                    // Unix timestamp of ban
+  bytes banned_by = 5;                     // Admin who issued the ban
+}
+
+message ListBannedUsersResponse {
+  repeated BannedUser users = 1;
+}
+
 message LeaveGroupRequest {
   bytes commit_message = 1;               // MLS self-removal commit
   bytes group_info = 2;                    // Updated MLS GroupInfo
@@ -408,6 +434,7 @@ enum ErrorCode {
   ERROR_CODE_GROUP_NOT_MEMBER = 400;
   ERROR_CODE_GROUP_NOT_ADMIN = 401;
   ERROR_CODE_GROUP_NOT_PUBLIC = 402;
+  ERROR_CODE_GROUP_BANNED = 403;
 }
 
 message ErrorResponse {

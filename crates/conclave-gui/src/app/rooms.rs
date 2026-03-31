@@ -23,7 +23,7 @@ impl Conclave {
                     .insert(info.server_group_id, info.mls_group_id);
 
                 self.active_room = Some(info.server_group_id);
-                self.push_system_message(&format!("Joined group ({})", info.server_group_id));
+                self.push_system_message(&format!("Joined group ({}).", info.server_group_id));
 
                 self.load_rooms_task()
             }
@@ -115,6 +115,21 @@ impl Conclave {
                     }
                 }
 
+                // Clean up orphaned MLS group state (e.g., kicked while offline).
+                if let Some(user_id) = self.user_id {
+                    let valid_ids: std::collections::HashSet<String> =
+                        self.group_mapping.values().cloned().collect();
+                    let data_dir = self.config.data_dir.clone();
+                    tokio::task::spawn(async move {
+                        if let Err(error) =
+                            operations::cleanup_orphaned_mls_state(&data_dir, user_id, valid_ids)
+                                .await
+                        {
+                            tracing::warn!(%error, "failed to clean up orphaned MLS state");
+                        }
+                    });
+                }
+
                 // Update TOFU verification status for all members.
                 // Collect warnings separately to avoid borrow conflict.
                 let mut warnings = Vec::new();
@@ -157,6 +172,30 @@ impl Conclave {
                 self.push_system_message(&format!("Failed to load rooms: {e}"));
                 return Task::none();
             }
+        }
+
+        // Show join notifications for members that appeared since the snapshot.
+        let snapshots = std::mem::take(&mut self.member_snapshot_for_join_diff);
+        let mut join_messages = Vec::new();
+        for (gid, old_members) in &snapshots {
+            if let Some(room) = self.rooms.get(gid) {
+                for member in &room.members {
+                    if !old_members.contains(&member.user_id)
+                        && self.user_id != Some(member.user_id)
+                    {
+                        join_messages.push((
+                            *gid,
+                            DisplayMessage::system(&format!(
+                                "{} joined the group.",
+                                member.display_name()
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+        for (gid, msg) in join_messages {
+            self.add_message_to_room(gid, msg);
         }
 
         // On the very first load during a reconnect, replace the
@@ -356,7 +395,7 @@ impl Conclave {
                         .as_deref()
                         .filter(|a| !a.is_empty())
                         .unwrap_or(&group_id_str);
-                    self.push_system_message(&format!("Joined #{display} ({})", w.group_id));
+                    self.push_system_message(&format!("Joined #{display} ({}).", w.group_id));
                 }
 
                 // Defer the missed-message fetch until rooms_task completes
@@ -428,7 +467,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -440,7 +479,7 @@ impl Conclave {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
-                self.push_system_message("Group mapping not found");
+                self.push_system_message("Group mapping not found for this room.");
                 return Task::none();
             }
         };
@@ -448,7 +487,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -482,7 +521,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -505,7 +544,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -513,7 +552,7 @@ impl Conclave {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
-                self.push_system_message("Group mapping not found");
+                self.push_system_message("Group mapping not found for this room.");
                 return Task::none();
             }
         };
@@ -521,7 +560,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -568,7 +607,7 @@ impl Conclave {
                         .collect();
 
                     Ok(vec![DisplayMessage::system(&format!(
-                        "Invited {} to the room",
+                        "Invited {} to the room.",
                         invited_names.join(", ")
                     ))])
                 }
@@ -603,7 +642,7 @@ impl Conclave {
                             .map(|id| id.to_string())
                             .unwrap_or_else(|_| "?".into());
                         messages.push(DisplayMessage::system(&format!(
-                            "[{invite_uuid}] #{display} — invited by {}",
+                            "[{invite_uuid}] #{display} — invited by {}.",
                             invite.inviter_username
                         )));
                     }
@@ -621,7 +660,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -669,7 +708,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -690,7 +729,7 @@ impl Conclave {
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(vec![DisplayMessage::system(&format!(
-                    "Cancelled invitation for {username}"
+                    "Cancelled invitation for {username}."
                 ))])
             },
             Message::CommandResult,
@@ -701,7 +740,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -741,7 +780,7 @@ impl Conclave {
                         let id_string = result.group_id.to_string();
                         let display = result.group_alias.as_deref().unwrap_or(&id_string);
                         messages.push(DisplayMessage::system(&format!(
-                            "Accepted invitation to #{display} ({})",
+                            "Accepted invitation to #{display} ({}).",
                             result.group_id
                         )));
                     }
@@ -773,7 +812,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -781,7 +820,7 @@ impl Conclave {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
-                self.push_system_message("Group mapping not found");
+                self.push_system_message("Group mapping not found for this room.");
                 return Task::none();
             }
         };
@@ -790,29 +829,52 @@ impl Conclave {
             match room.members.iter().find(|m| m.username == target) {
                 Some(member) => member.user_id,
                 None => {
-                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    self.push_system_message(&format!("User '{target}' not found in room."));
                     return Task::none();
                 }
             }
         } else {
-            self.push_system_message("Room not found");
+            self.push_system_message("Room not found in local state.");
             return Task::none();
         };
 
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
 
+        let last_seq = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.last_seen_seq)
+            .unwrap_or(0);
+        let members = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.members.clone())
+            .unwrap_or_default();
         let params = self.api_params();
         let data_dir = self.config.data_dir.clone();
 
         Task::perform(
             async move {
                 let api = params.into_client();
+
+                // Sync MLS state before roster lookup.
+                let _ = operations::fetch_and_decrypt(
+                    &api,
+                    group_id,
+                    last_seq,
+                    &mls_group_id,
+                    &data_dir,
+                    user_id,
+                    &members,
+                )
+                .await;
+
                 operations::kick_member(
                     &api,
                     group_id,
@@ -825,7 +887,7 @@ impl Conclave {
                 .map_err(|e| e.to_string())?;
 
                 Ok(vec![DisplayMessage::system(&format!(
-                    "Removed {target} from the room"
+                    "Removed {target} from the room."
                 ))])
             },
             Message::RefreshRooms,
@@ -836,7 +898,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -846,12 +908,12 @@ impl Conclave {
             match room.members.iter().find(|m| m.username == target) {
                 Some(member) => member.user_id,
                 None => {
-                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    self.push_system_message(&format!("User '{target}' not found in room."));
                     return Task::none();
                 }
             }
         } else {
-            self.push_system_message("Room not found");
+            self.push_system_message("Room not found in local state.");
             return Task::none();
         };
 
@@ -865,7 +927,7 @@ impl Conclave {
                     .map_err(|e| e.to_string())?;
 
                 Ok(vec![DisplayMessage::system(&format!(
-                    "Promoted {target} to admin"
+                    "Promoted {target} to admin."
                 ))])
             },
             Message::CommandResult,
@@ -876,7 +938,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -886,12 +948,12 @@ impl Conclave {
             match room.members.iter().find(|m| m.username == target) {
                 Some(member) => member.user_id,
                 None => {
-                    self.push_system_message(&format!("User '{target}' not found in room"));
+                    self.push_system_message(&format!("User '{target}' not found in room."));
                     return Task::none();
                 }
             }
         } else {
-            self.push_system_message("Room not found");
+            self.push_system_message("Room not found in local state.");
             return Task::none();
         };
 
@@ -905,8 +967,193 @@ impl Conclave {
                     .map_err(|e| e.to_string())?;
 
                 Ok(vec![DisplayMessage::system(&format!(
-                    "Demoted {target} to regular member"
+                    "Demoted {target} to regular member."
                 ))])
+            },
+            Message::CommandResult,
+        )
+    }
+
+    pub(crate) fn ban_member(&mut self, target: String) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first.");
+                return Task::none();
+            }
+        };
+
+        // Try local member lookup (MLS removal path).
+        let local_member = self.rooms.get(&group_id).and_then(|room| {
+            room.members
+                .iter()
+                .find(|m| m.username == target)
+                .map(|m| m.user_id)
+        });
+
+        if let Some(target_user_id) = local_member {
+            let mls_group_id = match self.group_mapping.get(&group_id) {
+                Some(id) => id.clone(),
+                None => {
+                    self.push_system_message("Group mapping not found for this room.");
+                    return Task::none();
+                }
+            };
+
+            let user_id = match self.user_id {
+                Some(id) => id,
+                None => {
+                    self.push_system_message("Not logged in.");
+                    return Task::none();
+                }
+            };
+
+            let last_seq = self
+                .rooms
+                .get(&group_id)
+                .map(|r| r.last_seen_seq)
+                .unwrap_or(0);
+            let members = self
+                .rooms
+                .get(&group_id)
+                .map(|r| r.members.clone())
+                .unwrap_or_default();
+            let params = self.api_params();
+            let data_dir = self.config.data_dir.clone();
+
+            return Task::perform(
+                async move {
+                    let api = params.into_client();
+
+                    // Sync MLS state before roster lookup.
+                    let _ = operations::fetch_and_decrypt(
+                        &api,
+                        group_id,
+                        last_seq,
+                        &mls_group_id,
+                        &data_dir,
+                        user_id,
+                        &members,
+                    )
+                    .await;
+
+                    operations::ban_member(
+                        &api,
+                        group_id,
+                        &mls_group_id,
+                        target_user_id,
+                        &data_dir,
+                        user_id,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                    Ok(vec![DisplayMessage::system(&format!(
+                        "Banned {target} from the room."
+                    ))])
+                },
+                Message::RefreshRooms,
+            );
+        }
+
+        // Non-member: resolve username via API and ban without MLS removal.
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                let user_info = api
+                    .get_user_by_username(&target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let target_user_id = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| format!("invalid user ID: {e}"))?;
+                api.ban_member(group_id, target_user_id, vec![], vec![])
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![DisplayMessage::system(&format!(
+                    "Banned {target} from the room."
+                ))])
+            },
+            Message::CommandResult,
+        )
+    }
+
+    pub(crate) fn unban_member(&mut self, target: String) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first.");
+                return Task::none();
+            }
+        };
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                let user_info = api
+                    .get_user_by_username(&target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let target_user_id = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| format!("invalid user ID: {e}"))?;
+                api.unban_member(group_id, target_user_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![DisplayMessage::system(&format!("Unbanned {target}."))])
+            },
+            Message::CommandResult,
+        )
+    }
+
+    pub(crate) fn list_banned_users(&mut self) -> Task<Message> {
+        let group_id = match self.active_room {
+            Some(id) => id,
+            None => {
+                self.push_system_message("No active room — use /join first.");
+                return Task::none();
+            }
+        };
+
+        let room_name = self
+            .rooms
+            .get(&group_id)
+            .map(|r| r.display_name())
+            .unwrap_or_default();
+
+        let params = self.api_params();
+
+        Task::perform(
+            async move {
+                let api = params.into_client();
+                let response = api
+                    .list_banned_users(group_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                if response.users.is_empty() {
+                    return Ok(vec![DisplayMessage::system(
+                        "No banned users in this room.",
+                    )]);
+                }
+
+                let mut messages = vec![DisplayMessage::system(&format!(
+                    "Banned users in #{room_name}:"
+                ))];
+                for user in &response.users {
+                    let display = if user.alias.is_empty() {
+                        &user.username
+                    } else {
+                        &user.alias
+                    };
+                    messages.push(DisplayMessage::system(&format!(
+                        "  {display} (@{})",
+                        user.username
+                    )));
+                }
+                Ok(messages)
             },
             Message::CommandResult,
         )
@@ -918,7 +1165,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -934,7 +1181,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -945,7 +1192,7 @@ impl Conclave {
         self.group_mapping.remove(&group_id);
         self.rooms.remove(&group_id);
         self.active_room = None;
-        self.push_system_message(&format!("Left #{room_name}"));
+        self.push_system_message(&format!("Left #{room_name}."));
 
         Task::perform(
             async move {
@@ -969,7 +1216,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -977,7 +1224,7 @@ impl Conclave {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
-                self.push_system_message("Group mapping not found");
+                self.push_system_message("Group mapping not found for this room.");
                 return Task::none();
             }
         };
@@ -985,7 +1232,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -1012,7 +1259,7 @@ impl Conclave {
         let user_id = match self.user_id {
             Some(id) => id,
             None => {
-                self.push_system_message("Not logged in");
+                self.push_system_message("Not logged in.");
                 return Task::none();
             }
         };
@@ -1088,7 +1335,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return Task::none();
             }
         };
@@ -1104,7 +1351,7 @@ impl Conclave {
         self.group_mapping.remove(&group_id);
         self.rooms.remove(&group_id);
         self.active_room = None;
-        self.push_system_message(&format!("Room #{room_name} has been deleted"));
+        self.push_system_message(&format!("Room #{room_name} has been deleted."));
 
         Task::perform(
             async move {

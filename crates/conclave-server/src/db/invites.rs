@@ -192,6 +192,18 @@ impl Database {
             ));
         }
 
+        let is_banned: bool = transaction
+            .prepare(
+                "SELECT EXISTS(SELECT 1 FROM banned_users WHERE group_id = ?1 AND user_id = ?2)",
+            )?
+            .query_row(
+                params![group_id.to_string(), invitee_id.to_string()],
+                |row| row.get(0),
+            )?;
+        if is_banned {
+            return Err(Error::banned("you are banned from this group"));
+        }
+
         // Add the invitee to group members.
         transaction.execute(
             "INSERT INTO group_members (group_id, user_id) VALUES (?1, ?2)",

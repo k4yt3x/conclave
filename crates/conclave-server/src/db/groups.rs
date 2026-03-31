@@ -57,6 +57,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn add_pending_external_join(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
+        let conn = self.lock_conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO pending_external_joins (group_id, user_id) VALUES (?1, ?2)",
+            params![group_id.to_string(), user_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn take_pending_external_join(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
+        let conn = self.lock_conn();
+        let rows = conn.execute(
+            "DELETE FROM pending_external_joins WHERE group_id = ?1 AND user_id = ?2",
+            params![group_id.to_string(), user_id.to_string()],
+        )?;
+        Ok(rows > 0)
+    }
+
     pub fn is_group_member(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
         let conn = self.lock_conn();
         let mut stmt =

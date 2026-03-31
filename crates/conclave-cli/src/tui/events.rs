@@ -34,11 +34,44 @@ pub async fn handle_sse_message(
             group_alias,
         } => handle_welcome(group_id, &group_alias, api, state, data_dir, msg_store).await,
         SseEvent::GroupUpdate {
-            group_id: _,
-            update_type: _,
+            group_id,
+            update_type,
         } => {
+            let is_commit = update_type == conclave_proto::GroupUpdateType::Commit as i32;
+
+            let old_member_ids: std::collections::HashSet<Uuid> = state
+                .rooms
+                .get(&group_id)
+                .map(|r| r.members.iter().map(|m| m.user_id).collect())
+                .unwrap_or_default();
+
+            if is_commit {
+                if let Err(error) = handle_new_message(group_id, api, state, data_dir).await {
+                    tracing::warn!(%error, group_id = %group_id, "failed to process group update commit");
+                }
+            }
+
             commands::load_rooms(api, state, msg_store).await?;
-            Ok(vec![])
+
+            let mut results = Vec::new();
+            if is_commit {
+                if let Some(room) = state.rooms.get(&group_id) {
+                    for member in &room.members {
+                        if !old_member_ids.contains(&member.user_id)
+                            && state.user_id != Some(member.user_id)
+                        {
+                            results.push((
+                                Some(group_id),
+                                DisplayMessage::system(&format!(
+                                    "{} joined the group.",
+                                    member.display_name()
+                                )),
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(results)
         }
         SseEvent::MemberRemoved {
             group_id,
@@ -167,7 +200,7 @@ async fn handle_group_deleted(
 
     Ok(vec![(
         None,
-        DisplayMessage::system(&format!("Room #{room_name} has been deleted")),
+        DisplayMessage::system(&format!("Room #{room_name} has been deleted.")),
     )])
 }
 
@@ -287,7 +320,9 @@ async fn handle_welcome(
     } else {
         group_alias.to_string()
     };
-    let msg = DisplayMessage::system(&format!("You have been invited to #{display} ({group_id})"));
+    let msg = DisplayMessage::system(&format!(
+        "You have been invited to #{display} ({group_id})."
+    ));
     display_results.push((Some(group_id), msg));
 
     Ok(display_results)
@@ -328,8 +363,8 @@ async fn handle_member_removed(
         }
 
         results.push((
-            Some(group_id),
-            DisplayMessage::system(&format!("You were removed from #{room_name}")),
+            None,
+            DisplayMessage::system(&format!("You were removed from #{room_name}.")),
         ));
     } else {
         // Resolve display name from local member list before removal.
@@ -386,7 +421,7 @@ async fn handle_member_removed(
 
         results.push((
             Some(group_id),
-            DisplayMessage::system(&format!("{removed_name} was removed from the group")),
+            DisplayMessage::system(&format!("{removed_name} was removed from the group.")),
         ));
 
         if let Some(room) = state.rooms.get_mut(&group_id) {

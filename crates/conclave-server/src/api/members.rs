@@ -290,3 +290,124 @@ pub async fn list_admins(
         },
     ))
 }
+
+pub async fn ban_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::BanMemberRequest>(&body)?;
+
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::not_admin("only group admins can ban members"));
+    }
+
+    let target_user_id = parse_uuid(&request.user_id, "user_id")?;
+    state
+        .db
+        .get_user_by_id(target_user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    let is_member = state.db.is_group_member(group_id, target_user_id)?;
+
+    if is_member {
+        if !request.group_info.is_empty() {
+            state.db.store_group_info(group_id, &request.group_info)?;
+        }
+
+        if !request.commit_message.is_empty() {
+            state
+                .db
+                .store_message(group_id, auth.user_id, &request.commit_message)?;
+        }
+
+        state.db.remove_group_member(group_id, target_user_id)?;
+
+        // Notify all remaining members and the banned user.
+        let members = state.db.get_group_members(group_id)?;
+        let mut all_targets: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
+        all_targets.push(target_user_id);
+        broadcast_sse(
+            &state.sse_tx,
+            conclave_proto::ServerEvent {
+                event: Some(conclave_proto::server_event::Event::MemberRemoved(
+                    conclave_proto::MemberRemovedEvent {
+                        group_id: group_id.as_bytes().to_vec(),
+                        removed_user_id: target_user_id.as_bytes().to_vec(),
+                    },
+                )),
+            },
+            all_targets,
+        );
+    }
+
+    state.db.ban_user(group_id, target_user_id, auth.user_id)?;
+    state
+        .db
+        .delete_pending_invites_for_user_in_group(group_id, target_user_id)?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::BanMemberResponse {},
+    ))
+}
+
+pub async fn unban_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    let request = decode_proto::<conclave_proto::UnbanMemberRequest>(&body)?;
+
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::not_admin("only group admins can unban members"));
+    }
+
+    let target_user_id = parse_uuid(&request.user_id, "user_id")?;
+    state
+        .db
+        .get_user_by_id(target_user_id)?
+        .ok_or_else(|| Error::NotFound("user not found".into()))?;
+
+    if !state.db.is_banned(group_id, target_user_id)? {
+        return Err(Error::BadRequest(
+            "user is not banned from this group".into(),
+        ));
+    }
+
+    state.db.unban_user(group_id, target_user_id)?;
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::UnbanMemberResponse {},
+    ))
+}
+
+pub async fn list_banned(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    if !state.db.is_group_admin(group_id, auth.user_id)? {
+        return Err(Error::not_admin("only group admins can view the ban list"));
+    }
+
+    let banned = state.db.list_banned_users(group_id)?;
+    let users = banned
+        .into_iter()
+        .map(|row| conclave_proto::BannedUser {
+            user_id: row.user_id.as_bytes().to_vec(),
+            username: row.username,
+            alias: row.alias.unwrap_or_default(),
+            banned_at: row.banned_at as u64,
+            banned_by: row.banned_by.as_bytes().to_vec(),
+        })
+        .collect();
+
+    Ok(proto_response(
+        StatusCode::OK,
+        &conclave_proto::ListBannedUsersResponse { users },
+    ))
+}

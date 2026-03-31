@@ -60,7 +60,22 @@ impl Conclave {
                 self.fetch_messages_task(group_id, last_seq, mls_group_id)
             }
             SseUpdate::Welcome => self.accept_welcomes(),
-            SseUpdate::GroupUpdate => self.load_rooms_task(),
+            SseUpdate::GroupUpdate {
+                group_id,
+                update_type,
+            } => {
+                if update_type == conclave_proto::GroupUpdateType::Commit as i32 {
+                    if let Some(room) = self.rooms.get(&group_id) {
+                        self.member_snapshot_for_join_diff
+                            .insert(group_id, room.members.iter().map(|m| m.user_id).collect());
+                    }
+                    let new_msg_task = self.handle_sse_event(SseUpdate::NewMessage { group_id });
+                    let rooms_task = self.load_rooms_task();
+                    Task::batch([new_msg_task, rooms_task])
+                } else {
+                    self.load_rooms_task()
+                }
+            }
             SseUpdate::IdentityReset { group_id, user_id } => {
                 let display_name = self
                     .rooms
@@ -103,7 +118,7 @@ impl Conclave {
                     if self.active_room == Some(group_id) {
                         self.active_room = None;
                     }
-                    self.push_system_message(&format!("You were removed from #{room_name}"));
+                    self.push_system_message(&format!("You were removed from #{room_name}."));
 
                     // Clean up MLS group state for the group we were removed from.
                     if let (Some(mls_group_id), Some(our_user_id)) = (mls_group_id, self.user_id) {
@@ -144,7 +159,7 @@ impl Conclave {
                     self.add_message_to_room(
                         group_id,
                         DisplayMessage::system(&format!(
-                            "{removed_name} was removed from the group"
+                            "{removed_name} was removed from the group."
                         )),
                     );
 
@@ -165,7 +180,7 @@ impl Conclave {
                 if self.active_room == Some(group_id) {
                     self.active_room = None;
                 }
-                self.push_system_message(&format!("Room #{room_name} has been deleted"));
+                self.push_system_message(&format!("Room #{room_name} has been deleted."));
 
                 if let (Some(mls_group_id), Some(our_user_id)) = (mls_group_id, self.user_id) {
                     let data_dir = self.config.data_dir.clone();

@@ -20,7 +20,10 @@ pub enum SseUpdate {
         group_id: Uuid,
     },
     Welcome,
-    GroupUpdate,
+    GroupUpdate {
+        group_id: Uuid,
+        update_type: i32,
+    },
     MemberRemoved {
         group_id: Uuid,
         removed_user_id: Uuid,
@@ -175,7 +178,13 @@ fn decode_sse_event(hex_data: &str) -> Option<SseUpdate> {
             Some(SseUpdate::NewMessage { group_id })
         }
         conclave_client::operations::SseEvent::Welcome { .. } => Some(SseUpdate::Welcome),
-        conclave_client::operations::SseEvent::GroupUpdate { .. } => Some(SseUpdate::GroupUpdate),
+        conclave_client::operations::SseEvent::GroupUpdate {
+            group_id,
+            update_type,
+        } => Some(SseUpdate::GroupUpdate {
+            group_id,
+            update_type,
+        }),
         conclave_client::operations::SseEvent::MemberRemoved {
             group_id,
             removed_user_id,

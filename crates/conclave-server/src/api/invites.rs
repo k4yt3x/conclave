@@ -50,6 +50,10 @@ pub async fn escrow_invite(
         ));
     }
 
+    if state.db.is_banned(group_id, invitee_id)? {
+        return Err(Error::banned("user is banned from this group"));
+    }
+
     let invite_id = state.db.create_pending_invite(
         group_id,
         auth.user_id,

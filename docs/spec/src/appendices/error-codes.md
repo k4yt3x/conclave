@@ -49,6 +49,7 @@ Returned when access is explicitly denied by server policy.
 | Scenario | Error Code | Endpoint(s) |
 |----------|------------|-------------|
 | Group is not public | `ERROR_CODE_GROUP_NOT_PUBLIC` | `POST /api/v1/groups/{id}/join` when group visibility is PRIVATE |
+| User is banned | `ERROR_CODE_GROUP_BANNED` | `POST /api/v1/groups/{id}/join`, `POST /api/v1/groups/{id}/escrow-invite`, `POST /api/v1/invites/{id}/accept` |
 
 | Condition | Error Code | Context |
 |-----------|------------|---------|

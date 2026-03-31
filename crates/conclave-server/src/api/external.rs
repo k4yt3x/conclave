@@ -33,10 +33,11 @@ pub async fn external_join(
     }
 
     // Detect whether this is a new joiner (public join) or an existing
-    // member resetting (account reset). New joiners have no prior messages.
-    let is_new_joiner = !state
+    // member resetting (account reset). Public joins set a flag via
+    // join_public_group; consuming it here distinguishes the two cases.
+    let is_new_joiner = state
         .db
-        .user_has_messages_in_group(group_id, auth.user_id)?;
+        .take_pending_external_join(group_id, auth.user_id)?;
 
     if !request.mls_group_id.is_empty() {
         state.db.set_mls_group_id(group_id, &request.mls_group_id)?;

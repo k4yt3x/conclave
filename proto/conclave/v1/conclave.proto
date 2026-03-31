@@ -229,6 +229,32 @@ message RemoveMemberRequest {
 
 message RemoveMemberResponse {}
 
+message BanMemberRequest {
+  bytes user_id = 1;
+  bytes commit_message = 2;
+  bytes group_info = 3;
+}
+
+message BanMemberResponse {}
+
+message UnbanMemberRequest {
+  bytes user_id = 1;
+}
+
+message UnbanMemberResponse {}
+
+message BannedUser {
+  bytes user_id = 1;
+  string username = 2;
+  string alias = 3;
+  uint64 banned_at = 4;
+  bytes banned_by = 5;
+}
+
+message ListBannedUsersResponse {
+  repeated BannedUser users = 1;
+}
+
 message LeaveGroupRequest {
   bytes commit_message = 1;
   bytes group_info = 2;
@@ -412,6 +438,7 @@ enum ErrorCode {
   ERROR_CODE_GROUP_NOT_MEMBER = 400;
   ERROR_CODE_GROUP_NOT_ADMIN = 401;
   ERROR_CODE_GROUP_NOT_PUBLIC = 402;
+  ERROR_CODE_GROUP_BANNED = 403;
 }
 
 message ErrorResponse {

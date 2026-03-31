@@ -575,6 +575,44 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn ban_member(
+        &self,
+        group_id: Uuid,
+        user_id: Uuid,
+        commit_message: Vec<u8>,
+        group_info: Vec<u8>,
+    ) -> Result<()> {
+        let request = conclave_proto::BanMemberRequest {
+            user_id: user_id.as_bytes().to_vec(),
+            commit_message,
+            group_info,
+        };
+        self.post(&format!("/api/v1/groups/{group_id}/ban"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn unban_member(&self, group_id: Uuid, user_id: Uuid) -> Result<()> {
+        let request = conclave_proto::UnbanMemberRequest {
+            user_id: user_id.as_bytes().to_vec(),
+        };
+        self.post(&format!("/api/v1/groups/{group_id}/unban"), &request)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_banned_users(
+        &self,
+        group_id: Uuid,
+    ) -> Result<conclave_proto::ListBannedUsersResponse> {
+        let bytes = self
+            .get(&format!("/api/v1/groups/{group_id}/banned"))
+            .await?;
+        Ok(conclave_proto::ListBannedUsersResponse::decode(
+            bytes.as_slice(),
+        )?)
+    }
+
     pub async fn leave_group(
         &self,
         group_id: Uuid,

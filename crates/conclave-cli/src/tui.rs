@@ -140,6 +140,15 @@ pub async fn run(
             match commands::load_rooms(&api, &mut state, &msg_store).await {
                 Ok(room_infos) => {
                     state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
+
+                    let valid_ids: std::collections::HashSet<String> =
+                        state.group_mapping.values().cloned().collect();
+                    if let Err(error) =
+                        operations::cleanup_orphaned_mls_state(&config.data_dir, user_id, valid_ids)
+                            .await
+                    {
+                        tracing::warn!(%error, "failed to clean up orphaned MLS state");
+                    }
                 }
                 Err(e) => {
                     state.system_messages.push(DisplayMessage::system(&format!(
@@ -480,7 +489,7 @@ async fn handle_key_event(
         (KeyCode::Esc, _) if in_password_mode => {
             state.input_mode = InputMode::Normal;
             input.submit(true);
-            let msg = DisplayMessage::system("Cancelled.");
+            let msg = DisplayMessage::system("Input cancelled.");
             add_and_render_message(stdout, state, input, None, msg, msg_store, notifications);
             let _ = render::render_full(stdout, state, input);
             return Ok(LoopAction::Continue);
@@ -929,7 +938,7 @@ async fn handle_password_enter(
                         state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
                         let msg = DisplayMessage::system(&format!(
-                            "Registered and logged in as {} (user ID {})",
+                            "Registered and logged in as {} (user ID {}).",
                             result.username, result.user_id
                         ));
                         add_and_render_message(
@@ -1003,6 +1012,18 @@ async fn handle_password_enter(
                     let room_infos = commands::load_rooms(api, state, msg_store).await?;
                     state.group_mapping = build_group_mapping(&room_infos, &config.data_dir);
 
+                    let valid_ids: std::collections::HashSet<String> =
+                        state.group_mapping.values().cloned().collect();
+                    if let Err(error) = operations::cleanup_orphaned_mls_state(
+                        &config.data_dir,
+                        result.user_id,
+                        valid_ids,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "failed to clean up orphaned MLS state");
+                    }
+
                     let unmapped_count = state
                         .rooms
                         .keys()
@@ -1025,7 +1046,7 @@ async fn handle_password_enter(
                     }
 
                     let msg = DisplayMessage::system(&format!(
-                        "Logged in as {} (user ID {})",
+                        "Logged in as {} (user ID {}).",
                         result.username, result.user_id
                     ));
                     add_and_render_message(
@@ -1246,7 +1267,7 @@ async fn accept_pending_welcomes(
         let id_string = result.group_id.to_string();
         let display = result.group_alias.as_deref().unwrap_or(&id_string);
         state.system_messages.push(DisplayMessage::system(&format!(
-            "Joined #{display} ({})",
+            "Joined #{display} ({}).",
             result.group_id
         )));
     }

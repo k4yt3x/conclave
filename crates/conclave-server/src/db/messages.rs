@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use uuid::Uuid;
 
 use crate::db::StoredMessageRow;
@@ -26,18 +26,6 @@ impl Database {
             params![gid_str, sender_id.to_string(), mls_message, next_seq],
         )?;
         Ok(next_seq)
-    }
-
-    /// Check whether a user has sent any messages in a group.
-    pub fn user_has_messages_in_group(&self, group_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let conn = self.lock_conn();
-        let exists: Option<i64> = conn
-            .prepare("SELECT 1 FROM messages WHERE group_id = ?1 AND sender_id = ?2 LIMIT 1")?
-            .query_row(params![group_id.to_string(), user_id.to_string()], |row| {
-                row.get(0)
-            })
-            .optional()?;
-        Ok(exists.is_some())
     }
 
     pub fn get_messages(

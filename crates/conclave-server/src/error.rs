@@ -69,6 +69,13 @@ impl Error {
             code: ErrorCode::GroupNotPublic.into(),
         }
     }
+
+    pub fn banned(message: impl Into<String>) -> Self {
+        Error::Forbidden {
+            message: message.into(),
+            code: ErrorCode::GroupBanned.into(),
+        }
+    }
 }
 
 impl IntoResponse for Error {

@@ -63,6 +63,9 @@ pub struct Conclave {
     /// missed-message fetch until the rooms are actually in `self.rooms`.
     pub(crate) fetch_messages_on_rooms_load: bool,
     pub(crate) verification_status: HashMap<Uuid, VerificationStatus>,
+    /// Snapshot of member IDs taken before load_rooms so handle_rooms_loaded
+    /// can diff to detect new members (e.g., public joins via external commit).
+    pub(crate) member_snapshot_for_join_diff: HashMap<Uuid, HashSet<Uuid>>,
     pub(crate) window_focused: bool,
     pub(crate) window_size: iced::Size,
 }
@@ -160,6 +163,7 @@ impl Conclave {
             fetching_groups: HashSet::new(),
             fetch_messages_on_rooms_load: false,
             verification_status: HashMap::new(),
+            member_snapshot_for_join_diff: HashMap::new(),
             window_focused: true,
             window_size: iced::Size::new(1024.0, 768.0),
         };
@@ -336,7 +340,7 @@ impl Conclave {
             Message::NickResult(result) => match result {
                 Ok(alias) => {
                     self.user_alias = Some(alias.clone());
-                    self.push_system_message(&format!("Alias set to: {alias}"));
+                    self.push_system_message(&format!("Alias set to: {alias}."));
                     Task::none()
                 }
                 Err(e) => {
@@ -405,7 +409,7 @@ impl Conclave {
                             .map(|r| r.display_name())
                             .unwrap_or_default();
                         self.push_system_message(&format!(
-                            "Switched away from #{name} (use /part to leave)"
+                            "Switched away from #{name} (use /part to leave)."
                         ));
                     }
                 }
@@ -752,7 +756,7 @@ impl Conclave {
                 }
             }
 
-            self.push_system_message(&format!("Switched to #{name}"));
+            self.push_system_message(&format!("Switched to #{name}."));
         } else {
             self.push_system_message(&format!(
                 "Unknown room '{target}'. Use /rooms to list available rooms."
@@ -794,7 +798,7 @@ impl Conclave {
         let group_id = match self.active_room {
             Some(id) => id,
             None => {
-                self.push_system_message("No active room — use /join first");
+                self.push_system_message("No active room — use /join first.");
                 return;
             }
         };
@@ -802,7 +806,7 @@ impl Conclave {
         let mls_group_id = match self.group_mapping.get(&group_id) {
             Some(id) => id.clone(),
             None => {
-                self.push_system_message("Group mapping not found");
+                self.push_system_message("Group mapping not found for this room.");
                 return;
             }
         };
@@ -816,7 +820,7 @@ impl Conclave {
         if let Some(mls) = &self.mls {
             match mls.group_info_details(&mls_group_id) {
                 Ok(details) => {
-                    self.push_system_message(&format!("Group: #{room_name}"));
+                    self.push_system_message(&format!("Group: #{room_name}."));
                     self.push_system_message(&format!("  Server ID: {group_id}"));
                     self.push_system_message(&format!("  MLS Group ID: {mls_group_id}"));
                     self.push_system_message(&format!("  Epoch: {}", details.epoch));
@@ -848,7 +852,7 @@ impl Conclave {
 
     pub(crate) fn show_unread(&mut self) {
         if self.rooms.is_empty() {
-            self.push_system_message("No rooms.");
+            self.push_system_message("No rooms joined yet.");
             return;
         }
 

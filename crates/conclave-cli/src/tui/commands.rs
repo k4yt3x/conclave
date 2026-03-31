@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -53,6 +54,9 @@ pub async fn execute(
         | Command::Admins
         | Command::Invited
         | Command::Uninvite { .. }
+        | Command::Ban { .. }
+        | Command::Unban { .. }
+        | Command::Banned
         | Command::Members => execute_member(cmd, api, state, config, msg_store).await,
         Command::Invites | Command::Accept { .. } | Command::Decline { .. } => {
             execute_invite(cmd, api, state, config, msg_store).await
@@ -216,7 +220,7 @@ async fn execute_room(
             state.active_room = Some(result.server_group_id);
             state.scroll_offset = 0;
             msgs.push(DisplayMessage::system(&format!(
-                "Created and joined #{name} ({})",
+                "Created and joined #{name} ({}).",
                 result.server_group_id
             )));
         }
@@ -247,7 +251,7 @@ async fn execute_room(
                 let id_string = result.group_id.to_string();
                 let display = result.group_alias.as_deref().unwrap_or(&id_string);
                 msgs.push(DisplayMessage::system(&format!(
-                    "Joined #{display} ({})",
+                    "Joined #{display} ({}).",
                     result.group_id
                 )));
             }
@@ -297,7 +301,7 @@ async fn execute_room(
                         store.set_last_read_seq(gid, room.last_read_seq);
                     }
                 }
-                msgs.push(DisplayMessage::system(&format!("Switched to #{name}")));
+                msgs.push(DisplayMessage::system(&format!("Switched to #{name}.")));
             } else {
                 // Room not found locally — try joining as a public room.
                 let user_id = require_user_id(state)?;
@@ -349,7 +353,7 @@ async fn execute_room(
                     }
 
                     msgs.push(DisplayMessage::system(&format!(
-                        "Joined public room #{target}"
+                        "Joined public room #{target}."
                     )));
                 } else {
                     msgs.push(DisplayMessage::system(&format!(
@@ -369,10 +373,10 @@ async fn execute_room(
 
                 state.scroll_offset = 0;
                 msgs.push(DisplayMessage::system(&format!(
-                    "Switched away from #{name} (use /part to leave the group)"
+                    "Switched away from #{name} (use /part to leave the group)."
                 )));
             } else {
-                msgs.push(DisplayMessage::system("No active room."));
+                msgs.push(DisplayMessage::system("No active room — use /join first."));
             }
         }
 
@@ -408,7 +412,7 @@ async fn execute_room(
             state.active_room = None;
             state.scroll_offset = 0;
 
-            msgs.push(DisplayMessage::system(&format!("Left #{name}")));
+            msgs.push(DisplayMessage::system(&format!("Left #{name}.")));
         }
 
         Command::Unread => {
@@ -417,7 +421,7 @@ async fn execute_room(
                 return Ok((msgs, false));
             }
             if state.rooms.is_empty() {
-                msgs.push(DisplayMessage::system("No rooms."));
+                msgs.push(DisplayMessage::system("No rooms joined yet."));
                 return Ok((msgs, false));
             }
 
@@ -472,7 +476,7 @@ async fn execute_room(
                 .map(|r| r.display_name())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            msgs.push(DisplayMessage::system(&format!("Group: #{room_name}")));
+            msgs.push(DisplayMessage::system(&format!("Group: #{room_name}.")));
             msgs.push(DisplayMessage::system(&format!("  Server ID: {group_id}")));
             msgs.push(DisplayMessage::system(&format!(
                 "  MLS Group ID: {mls_group_id}"
@@ -523,13 +527,13 @@ async fn execute_room(
             let server = format_duration(policy.server_retention_seconds);
             let group = format_duration(policy.group_expiry_seconds);
             msgs.push(DisplayMessage::system(&format!(
-                "Server retention: {server}"
+                "Server retention: {server}."
             )));
-            msgs.push(DisplayMessage::system(&format!("Room expiry: {group}")));
+            msgs.push(DisplayMessage::system(&format!("Room expiry: {group}.")));
             let effective =
                 compute_effective(policy.server_retention_seconds, policy.group_expiry_seconds);
             msgs.push(DisplayMessage::system(&format!(
-                "Effective: {}",
+                "Effective: {}.",
                 format_duration(effective)
             )));
         }
@@ -543,7 +547,7 @@ async fn execute_room(
             let seconds = parse_duration(&dur)?;
             api.lock().await.set_group_expiry(group_id, seconds).await?;
             msgs.push(DisplayMessage::system(&format!(
-                "Message expiry set to {}",
+                "Message expiry set to {}.",
                 format_duration(seconds)
             )));
         }
@@ -567,7 +571,7 @@ async fn execute_room(
             state.scroll_offset = 0;
 
             msgs.push(DisplayMessage::system(&format!(
-                "Room #{name} has been deleted"
+                "Room #{name} has been deleted."
             )));
         }
 
@@ -584,7 +588,9 @@ async fn execute_room(
             } else {
                 "private"
             };
-            msgs.push(DisplayMessage::system(&format!("Room visibility: {label}")));
+            msgs.push(DisplayMessage::system(&format!(
+                "Room visibility: {label}."
+            )));
         }
 
         Command::Visibility {
@@ -606,7 +612,7 @@ async fn execute_room(
                 .await?;
 
             msgs.push(DisplayMessage::system(&format!(
-                "Room visibility set to {visibility}"
+                "Room visibility set to {visibility}."
             )));
         }
 
@@ -642,7 +648,7 @@ async fn execute_room(
             load_rooms(api, state, msg_store).await?;
 
             if state.rooms.is_empty() {
-                msgs.push(DisplayMessage::system("No rooms."));
+                msgs.push(DisplayMessage::system("No rooms joined yet."));
             } else {
                 msgs.push(DisplayMessage::system("Rooms:"));
                 for room in state.rooms.values() {
@@ -729,7 +735,7 @@ async fn execute_member(
                     })
                     .collect();
                 msgs.push(DisplayMessage::system(&format!(
-                    "Invited {} to the room",
+                    "Invited {} to the room.",
                     display_names.join(", ")
                 )));
             }
@@ -760,6 +766,18 @@ async fn execute_member(
                     Error::Other(format!("user '{target}' not found in the room member list"))
                 })?;
 
+            // Sync MLS state before roster lookup to ensure recent
+            // commits (e.g., new member joins) have been processed.
+            sync_mls_state(
+                api,
+                state,
+                group_id,
+                &mls_group_id,
+                &config.data_dir,
+                user_id,
+            )
+            .await;
+
             {
                 let api_guard = api.lock().await;
                 operations::kick_member(
@@ -776,7 +794,7 @@ async fn execute_member(
             load_rooms(api, state, msg_store).await?;
 
             msgs.push(DisplayMessage::system(&format!(
-                "Removed {target} from the room"
+                "Removed {target} from the room."
             )));
         }
 
@@ -802,7 +820,7 @@ async fn execute_member(
                 .promote_member(group_id, target_user_id)
                 .await?;
             msgs.push(DisplayMessage::system(&format!(
-                "Promoted {target} to admin"
+                "Promoted {target} to admin."
             )));
         }
 
@@ -828,7 +846,7 @@ async fn execute_member(
                 .demote_member(group_id, target_user_id)
                 .await?;
             msgs.push(DisplayMessage::system(&format!(
-                "Demoted {target} to regular member"
+                "Demoted {target} to regular member."
             )));
         }
 
@@ -855,7 +873,7 @@ async fn execute_member(
                 .unwrap_or_default();
 
             msgs.push(DisplayMessage::system(&format!(
-                "Admins of #{room_name}: {}",
+                "Admins of #{room_name}: {}.",
                 admin_names.join(", ")
             )));
         }
@@ -929,8 +947,128 @@ async fn execute_member(
             }
 
             msgs.push(DisplayMessage::system(&format!(
-                "Cancelled invitation for {target_username}"
+                "Cancelled invitation for {target_username}."
             )));
+        }
+
+        Command::Ban { username: target } => {
+            let user_id = require_user_id(state)?;
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            // Try local member lookup first (MLS removal path).
+            let local_member = state.rooms.get(&group_id).and_then(|room| {
+                room.members
+                    .iter()
+                    .find(|m| m.username == target)
+                    .map(|m| m.user_id)
+            });
+
+            if let Some(target_user_id) = local_member {
+                let mls_group_id = state
+                    .group_mapping
+                    .get(&group_id)
+                    .ok_or_else(|| Error::Other("group mapping not found".into()))?
+                    .clone();
+
+                // Sync MLS state before roster lookup.
+                sync_mls_state(
+                    api,
+                    state,
+                    group_id,
+                    &mls_group_id,
+                    &config.data_dir,
+                    user_id,
+                )
+                .await;
+
+                {
+                    let api_guard = api.lock().await;
+                    operations::ban_member(
+                        &api_guard,
+                        group_id,
+                        &mls_group_id,
+                        target_user_id,
+                        &config.data_dir,
+                        user_id,
+                    )
+                    .await?;
+                }
+
+                load_rooms(api, state, msg_store).await?;
+            } else {
+                // Non-member: resolve username via API and ban without MLS removal.
+                let user_info = api.lock().await.get_user_by_username(&target).await?;
+                let target_user_id = Uuid::from_slice(&user_info.user_id)
+                    .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
+
+                api.lock()
+                    .await
+                    .ban_member(group_id, target_user_id, vec![], vec![])
+                    .await?;
+            }
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Banned {target} from the room."
+            )));
+        }
+
+        Command::Unban {
+            username: target_username,
+        } => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            let user_info = api
+                .lock()
+                .await
+                .get_user_by_username(&target_username)
+                .await?;
+            let target_user_id = Uuid::from_slice(&user_info.user_id)
+                .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
+
+            api.lock()
+                .await
+                .unban_member(group_id, target_user_id)
+                .await?;
+
+            msgs.push(DisplayMessage::system(&format!(
+                "Unbanned {target_username}."
+            )));
+        }
+
+        Command::Banned => {
+            let group_id = state
+                .active_room
+                .ok_or_else(|| Error::Other("no active room -- use /join first".into()))?;
+
+            let response = api.lock().await.list_banned_users(group_id).await?;
+
+            if response.users.is_empty() {
+                msgs.push(DisplayMessage::system("No banned users in this room."));
+            } else {
+                let room_name = state
+                    .rooms
+                    .get(&group_id)
+                    .map(|r| r.display_name())
+                    .unwrap_or_default();
+                msgs.push(DisplayMessage::system(&format!(
+                    "Banned users in #{room_name}:"
+                )));
+                for user in &response.users {
+                    let display = if user.alias.is_empty() {
+                        &user.username
+                    } else {
+                        &user.alias
+                    };
+                    msgs.push(DisplayMessage::system(&format!(
+                        "  {display} (@{})",
+                        user.username
+                    )));
+                }
+            }
         }
 
         Command::Members => {
@@ -964,11 +1102,11 @@ async fn execute_member(
                     })
                     .collect();
                 msgs.push(DisplayMessage::system(&format!(
-                    "Members of #{name}: {}",
+                    "Members of #{name}: {}.",
                     member_display.join(", ")
                 )));
             } else {
-                msgs.push(DisplayMessage::system("No active room."));
+                msgs.push(DisplayMessage::system("No active room — use /join first."));
             }
         }
 
@@ -1007,7 +1145,7 @@ async fn execute_invite(
                         .map(|id| id.to_string())
                         .unwrap_or_else(|_| "?".into());
                     msgs.push(DisplayMessage::system(&format!(
-                        "[{invite_uuid}] #{display} — invited by {}",
+                        "[{invite_uuid}] #{display} — invited by {}.",
                         invite.inviter_username
                     )));
                 }
@@ -1050,7 +1188,7 @@ async fn execute_invite(
                     let id_string = result.group_id.to_string();
                     let display = result.group_alias.as_deref().unwrap_or(&id_string);
                     msgs.push(DisplayMessage::system(&format!(
-                        "Accepted invitation to #{display} ({})",
+                        "Accepted invitation to #{display} ({}).",
                         result.group_id
                     )));
                 }
@@ -1152,7 +1290,7 @@ async fn execute_profile(
     match cmd {
         Command::Alias { alias } => {
             api.lock().await.update_profile(&alias).await?;
-            msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}")));
+            msgs.push(DisplayMessage::system(&format!("Alias set to: {alias}.")));
         }
 
         Command::Topic { topic } => {
@@ -1165,7 +1303,7 @@ async fn execute_profile(
                 .update_group(group_id, Some(&topic))
                 .await?;
             msgs.push(DisplayMessage::system(&format!(
-                "Room alias set to: {topic}"
+                "Room alias set to: {topic}."
             )));
         }
 
@@ -1175,13 +1313,15 @@ async fn execute_profile(
                 .map(|id| id.to_string())
                 .unwrap_or_else(|_| "?".into());
             msgs.push(DisplayMessage::system(&format!(
-                "User: {} (ID: {self_user_id})",
+                "User: {} (ID: {self_user_id}).",
                 resp.username
             )));
             if let Some(mls_mgr) = mls {
                 let fp = mls_mgr.signing_key_fingerprint()?;
                 let formatted = conclave_client::mls::format_fingerprint(&fp);
-                msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
+                msgs.push(DisplayMessage::system(&format!(
+                    "Fingerprint: {formatted}."
+                )));
             }
         }
 
@@ -1192,13 +1332,15 @@ async fn execute_profile(
             let resp_user_id = Uuid::from_slice(&resp.user_id)
                 .map_err(|e| Error::Other(format!("invalid user ID: {e}")))?;
             msgs.push(DisplayMessage::system(&format!(
-                "User: {} (ID: {})",
+                "User: {} (ID: {}).",
                 resp.username, resp_user_id
             )));
             if !resp.signing_key_fingerprint.is_empty() {
                 let formatted =
                     conclave_client::mls::format_fingerprint(&resp.signing_key_fingerprint);
-                msgs.push(DisplayMessage::system(&format!("Fingerprint: {formatted}")));
+                msgs.push(DisplayMessage::system(&format!(
+                    "Fingerprint: {formatted}."
+                )));
                 if let Some(store) = msg_store {
                     let status =
                         store.get_verification_status(resp_user_id, &resp.signing_key_fingerprint);
@@ -1208,10 +1350,10 @@ async fn execute_profile(
                         conclave_client::state::VerificationStatus::Verified => "Verified",
                         conclave_client::state::VerificationStatus::Changed => "Changed (warning!)",
                     };
-                    msgs.push(DisplayMessage::system(&format!("Status: {label}")));
+                    msgs.push(DisplayMessage::system(&format!("Status: {label}.")));
                 }
             } else {
-                msgs.push(DisplayMessage::system("Fingerprint: not available"));
+                msgs.push(DisplayMessage::system("Fingerprint: not available."));
             }
         }
 
@@ -1373,6 +1515,44 @@ fn resolve_display_name(user_id: Uuid, state: &AppState) -> String {
         }
     }
     format!("user#{user_id}")
+}
+
+/// Fetch and process pending messages for a group to bring the local MLS
+/// tree up to date. Best-effort: errors are logged but not propagated.
+async fn sync_mls_state(
+    api: &Arc<Mutex<ApiClient>>,
+    state: &mut AppState,
+    group_id: Uuid,
+    mls_group_id: &str,
+    data_dir: &Path,
+    user_id: Uuid,
+) {
+    let last_seq = state
+        .rooms
+        .get(&group_id)
+        .map(|r| r.last_seen_seq)
+        .unwrap_or(0);
+    let members = state
+        .rooms
+        .get(&group_id)
+        .map(|r| r.members.clone())
+        .unwrap_or_default();
+    let result = {
+        let api_guard = api.lock().await;
+        operations::fetch_and_decrypt(
+            &api_guard,
+            group_id,
+            last_seq,
+            mls_group_id,
+            data_dir,
+            user_id,
+            &members,
+        )
+        .await
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, "failed to sync MLS state before member operation");
+    }
 }
 
 pub async fn load_rooms(

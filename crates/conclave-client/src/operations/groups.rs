@@ -218,6 +218,43 @@ pub async fn kick_member(
     Ok(())
 }
 
+/// Ban a member from a group: MLS removal + server-side ban list entry.
+pub async fn ban_member(
+    api: &ApiClient,
+    server_group_id: Uuid,
+    mls_group_id: &str,
+    target_user_id: Uuid,
+    data_dir: &Path,
+    user_id: Uuid,
+) -> Result<()> {
+    let data_dir = data_dir.to_path_buf();
+    let mls_group_id = mls_group_id.to_string();
+
+    let (commit_bytes, group_info_bytes) = tokio::task::spawn_blocking(move || {
+        let mls = MlsManager::new(&data_dir, user_id)?;
+        let member_index = mls
+            .find_member_index(&mls_group_id, target_user_id)?
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "user with ID {target_user_id} not found in MLS roster"
+                ))
+            })?;
+        mls.remove_member(&mls_group_id, member_index)
+    })
+    .await
+    .map_err(super::map_join_error)??;
+
+    api.ban_member(
+        server_group_id,
+        target_user_id,
+        commit_bytes,
+        group_info_bytes,
+    )
+    .await?;
+
+    Ok(())
+}
+
 /// Leave a group: produce an MLS self-remove commit, notify the server, and
 /// delete local MLS group state.
 pub async fn leave_group(
@@ -284,6 +321,21 @@ pub async fn delete_mls_group_state(
     tokio::task::spawn_blocking(move || {
         let mls = MlsManager::new(&data_dir, user_id)?;
         mls.delete_group_state(&mls_group_id)
+    })
+    .await
+    .map_err(super::map_join_error)?
+}
+
+/// Delete local MLS group state for groups no longer present on the server.
+pub async fn cleanup_orphaned_mls_state(
+    data_dir: &Path,
+    user_id: Uuid,
+    valid_mls_group_ids: std::collections::HashSet<String>,
+) -> Result<()> {
+    let data_dir = data_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mls = MlsManager::new(&data_dir, user_id)?;
+        mls.cleanup_orphaned_groups(&valid_mls_group_ids)
     })
     .await
     .map_err(super::map_join_error)?

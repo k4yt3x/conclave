@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Public rooms: `/visibility`, `/discover`, and `/join` for discoverable open groups.
+- Ban system: `/ban`, `/unban`, and `/banned` to block users from rejoining rooms.
+- Join/leave notifications shown when members enter or leave a room.
 - Typed protobuf enums for `GroupRole`, `GroupUpdateType`, and `GroupVisibility`.
 - Configurable `auth_header` setting for server and client config.
 - Custom HTTP headers support (`[custom_headers]`) in client config.
@@ -24,14 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session reconnect validates the token before showing "Welcome back".
 - Auth header misconfiguration no longer triggers auto-logout.
 - TUI auto-logout now deletes the stale session file.
-
+- False "identity reset" warning when a kicked user rejoins a public room.
+- "Incorrect epoch" error when rejoining a room after being kicked while offline.
+- "Not found in MLS roster" error when kicking a user with pending MLS commits.
+- Broken MLS state after a kicked user rejoins via external commit.
+- Orphaned local MLS group state cleaned up automatically on client startup.
+- MLS state synced before kick/ban operations to prevent roster desync.
+- `GroupUpdate(Commit)` SSE events now correctly process MLS commits in both clients.
 - Atomic file permissions on Unix for session and group mapping files.
 - Proper error propagation for system clock errors in session expiry.
+- Consistent system message formatting across TUI and GUI.
 
 ### Changed
 
 - `/expunge` command now uses interactive password prompt instead of accepting password as argument.
 - GUI dashboard overlays refactored into a single `Overlay` enum.
+- Public room rejoin detection uses `pending_external_joins` flag instead of message history heuristic.
 - **BREAKING**: `GroupMember.role` and `GroupUpdateEvent.update_type` switched to typed enums.
 - **BREAKING**: Removed unused `created_at` from `users`/`groups` tables and `GroupInfo` proto.
 - **BREAKING**: User and group IDs changed from integers to UUID v4.

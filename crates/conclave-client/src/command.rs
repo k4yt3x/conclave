@@ -247,6 +247,27 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "/uninvite <username>",
         description: "Cancel a pending invite",
     },
+    CommandSpec {
+        name: "ban",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/ban <username>",
+        description: "Ban a member from the room",
+    },
+    CommandSpec {
+        name: "unban",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/unban <username>",
+        description: "Unban a user from the room",
+    },
+    CommandSpec {
+        name: "banned",
+        aliases: &[],
+        category: CommandCategory::Members,
+        usage: "/banned",
+        description: "List banned users in the room",
+    },
     // Invites
     CommandSpec {
         name: "invites",
@@ -448,6 +469,13 @@ pub enum Command {
     Uninvite {
         username: String,
     },
+    Ban {
+        username: String,
+    },
+    Unban {
+        username: String,
+    },
+    Banned,
 
     // Invites
     Invites,
@@ -664,6 +692,23 @@ fn parse_command_args(name: &str, parts: &[&str], full_input: &str) -> Result<Co
                 username: parts[1].to_string(),
             })
         }
+        "ban" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /ban <username>".into()));
+            }
+            Ok(Command::Ban {
+                username: parts[1].to_string(),
+            })
+        }
+        "unban" => {
+            if parts.len() < 2 {
+                return Err(Error::Other("Usage: /unban <username>".into()));
+            }
+            Ok(Command::Unban {
+                username: parts[1].to_string(),
+            })
+        }
+        "banned" => Ok(Command::Banned),
 
         // Invites
         "invites" => Ok(Command::Invites),
@@ -1280,6 +1325,40 @@ mod tests {
             panic!("expected Discover variant");
         };
         assert_eq!(pattern, Some("dev".to_string()));
+    }
+
+    #[test]
+    fn test_parse_ban() {
+        let cmd = parse("/ban alice").unwrap();
+        let Command::Ban { username } = cmd else {
+            panic!("expected Ban variant");
+        };
+        assert_eq!(username, "alice");
+    }
+
+    #[test]
+    fn test_parse_ban_missing_arg() {
+        assert!(parse("/ban").is_err());
+    }
+
+    #[test]
+    fn test_parse_unban() {
+        let cmd = parse("/unban alice").unwrap();
+        let Command::Unban { username } = cmd else {
+            panic!("expected Unban variant");
+        };
+        assert_eq!(username, "alice");
+    }
+
+    #[test]
+    fn test_parse_unban_missing_arg() {
+        assert!(parse("/unban").is_err());
+    }
+
+    #[test]
+    fn test_parse_banned() {
+        let cmd = parse("/banned").unwrap();
+        assert!(matches!(cmd, Command::Banned));
     }
 
     #[test]

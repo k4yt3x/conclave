@@ -281,6 +281,10 @@ pub async fn join_public_group(
         return Err(Error::Conflict("already a member of this group".into()));
     }
 
+    if state.db.is_banned(group_id, auth.user_id)? {
+        return Err(Error::banned("you are banned from this group"));
+    }
+
     // Check for pending invite.
     if state.db.has_pending_invite(group_id, auth.user_id)? {
         return Err(Error::Conflict(
@@ -294,6 +298,7 @@ pub async fn join_public_group(
         .ok_or_else(|| Error::BadRequest("no group info available for this group".into()))?;
 
     state.db.add_group_member(group_id, auth.user_id)?;
+    state.db.add_pending_external_join(group_id, auth.user_id)?;
 
     Ok(proto_response(
         StatusCode::OK,
